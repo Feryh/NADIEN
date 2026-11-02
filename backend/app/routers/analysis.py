@@ -198,15 +198,21 @@ def auto_assign_areas(db: Session = Depends(get_db)):
 # --------------------------------------------------------------------------- drill-down topology
 
 
+MAX_NEIGHBOR_NODES = 400
+
+
 @router.get("/topology/view")
 def topology_view(
-    level: str = Query("area", pattern="^(area|pop|device)$"),
+    level: str = Query("area", pattern="^(area|pop|device|neighbors)$"),
     area: str | None = None,
     pop: str | None = None,
+    device_id: int | None = None,
+    depth: int = Query(1, ge=1, le=2),
     db: Session = Depends(get_db),
 ):
     """area: areas + inter-area trunks · pop (needs `area`): POPs of one area + neighbouring areas ·
-    device (needs `pop`): devices of one POP grouped by site + links out to other POPs."""
+    device (needs `pop`): devices of one POP + links out to other POPs ·
+    neighbors (needs `device_id`): one device and everything within `depth` hops."""
     ctx = _context(db)
     links = _links(db)
     if level == "area":
@@ -215,9 +221,55 @@ def topology_view(
         if not area:
             raise HTTPException(422, "area is required for level=pop")
         return _pop_level(ctx, links, area)
+    if level == "neighbors":
+        if device_id is None:
+            raise HTTPException(422, "device_id is required for level=neighbors")
+        return _neighbor_level(ctx, links, device_id, depth)
     if not pop:
         raise HTTPException(422, "pop is required for level=device")
     return _device_level(ctx, links, pop)
+
+
+def _device_node(ctx: _Ctx, d: Any, center: bool = False) -> dict:
+    code = ctx.pop_code(d.id)
+    return {
+        "id": f"dev:{d.id}", "kind": "device", "device_id": d.id, "label": d.hostname, "pop": code,
+        "site": f"site:{site_for(d.hostname, code)}", "role": d.role, "category": category_for(d.role),
+        "tier": ROLE_TIER.get(d.role, 4), "vendor": ctx.vendors.get(d.vendor_id or -1), "status": d.status,
+        "x": d.map_x, "y": d.map_y, "center": center,
+    }
+
+
+def _neighbor_level(ctx: _Ctx, links, device_id: int, depth: int) -> dict:
+    if device_id not in ctx.devices:
+        raise HTTPException(404, f"Device {device_id} not found")
+    adjacency: dict[int, set[int]] = defaultdict(set)
+    for link in links:
+        if link.a_device_id in ctx.devices and link.b_device_id in ctx.devices and link.a_device_id != link.b_device_id:
+            adjacency[link.a_device_id].add(link.b_device_id)
+            adjacency[link.b_device_id].add(link.a_device_id)
+    included, frontier, truncated = {device_id}, {device_id}, False
+    for _ in range(depth):
+        nxt = set()
+        for node in frontier:
+            for other in sorted(adjacency[node]):
+                if other not in included:
+                    if len(included) >= MAX_NEIGHBOR_NODES:
+                        truncated = True
+                        break
+                    included.add(other)
+                    nxt.add(other)
+        frontier = nxt
+    edges: dict[tuple[str, str], _Agg] = defaultdict(_Agg)
+    for link in links:
+        if link.a_device_id in included and link.b_device_id in included and link.a_device_id != link.b_device_id:
+            edges[_pair(f"dev:{link.a_device_id}", f"dev:{link.b_device_id}")].add(link)
+    center = ctx.devices[device_id]
+    nodes = [_device_node(ctx, ctx.devices[i], i == device_id)
+             for i in sorted(included, key=lambda i: (ROLE_TIER.get(ctx.devices[i].role, 4), ctx.devices[i].hostname))]
+    return {"level": "neighbors", "device": center.hostname, "device_id": device_id, "depth": depth,
+            "pop": ctx.pop_code(device_id), "area": ctx.area_of_device(device_id), "truncated": truncated,
+            "nodes": nodes, "edges": _edges(edges)}
 
 
 def _area_level(ctx: _Ctx, links) -> dict:
@@ -282,6 +334,8 @@ def _pop_level(ctx: _Ctx, links, area: str) -> dict:
             "id": f"pop:{p.code}", "kind": "pop", "label": p.code, "name": p.name, "area": area,
             "devices": len(devs), "sites": len({site_for(d.hostname, p.code) for d in devs}),
             "categories": dict(Counter(category_for(d.role) for d in devs)),
+            # Highest role in the POP: core POPs (P/DCI) sit in the middle of the ring layout.
+            "tier": min((ROLE_TIER.get(d.role, 4) for d in devs), default=4),
             "internal": inner[pid].as_dict(), "lat": p.latitude, "lon": p.longitude,
         })
     for remote_area, count in external.items():
@@ -308,17 +362,8 @@ def _device_level(ctx: _Ctx, links, pop_code: str) -> dict:
             edges[_pair(f"dev:{mine}", f"pop:{remote_pop}")].add(link)
             external[remote_pop].add(theirs)
 
-    nodes = []
-    sites = sorted({site_for(d.hostname, pop.code) for d in local.values()})
-    for site in sites:
-        nodes.append({"id": f"site:{site}", "kind": "site", "label": site if site != "-" else "(tanpa site)"})
-    for d in sorted(local.values(), key=lambda d: (ROLE_TIER.get(d.role, 4), d.hostname)):
-        nodes.append({
-            "id": f"dev:{d.id}", "kind": "device", "device_id": d.id, "label": d.hostname,
-            "site": f"site:{site_for(d.hostname, pop.code)}", "role": d.role, "category": category_for(d.role),
-            "tier": ROLE_TIER.get(d.role, 4), "vendor": ctx.vendors.get(d.vendor_id or -1), "status": d.status,
-            "x": d.map_x, "y": d.map_y,
-        })
+    nodes = [_device_node(ctx, d)
+             for d in sorted(local.values(), key=lambda d: (ROLE_TIER.get(d.role, 4), d.hostname))]
     for code, remote_devices in sorted(external.items()):
         rp = next((p for p in ctx.pops.values() if p.code == code), None)
         nodes.append({

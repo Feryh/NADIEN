@@ -4,8 +4,12 @@ import { Link as RouterLink, useSearchParams } from 'react-router-dom'
 import { api, CapacityColor, DiscoveryResult } from '../api'
 import { CAPACITY_HEX, fmtG } from '../components/ui'
 
-// Drill-down: all areas -> POPs of one area -> devices of one POP (grouped by site, layered by role).
-type Level = 'area' | 'pop' | 'device'
+// Drill-down topology:
+//   area      — areas west→east as a schematic, trunks between them
+//   pop       — POPs of one area in rows by their highest role, other areas as the top (uplink) row
+//   device    — devices of one POP in role rows (Core → PE/BNG → Metro → OLT/Access), other POPs on top
+//   neighbors — one device and everything within 1–2 hops, same role rows
+type Level = 'area' | 'pop' | 'device' | 'neighbors'
 
 interface EdgeData {
   id: string
@@ -22,10 +26,11 @@ interface EdgeData {
 
 interface NodeData {
   id: string
-  kind: 'area' | 'pop' | 'device' | 'site' | 'external_area' | 'external_pop'
+  kind: 'area' | 'pop' | 'device' | 'external_area' | 'external_pop'
   label: string
   name?: string
   area?: string
+  pop?: string
   pops?: number
   devices?: number
   sites?: number
@@ -41,6 +46,7 @@ interface NodeData {
   vendor?: string | null
   status?: string
   device_id?: number
+  center?: boolean
   x?: number | null
   y?: number | null
 }
@@ -50,9 +56,15 @@ interface View {
   area?: string
   pop?: string
   pop_name?: string
+  device?: string
+  device_id?: number
+  depth?: number
+  truncated?: boolean
   nodes: NodeData[]
   edges: EdgeData[]
 }
+
+type Pos = { x: number; y: number }
 
 const ROLE_COLOR: Record<string, string> = {
   p: '#6366f1', dci: '#f97316', pe: '#0ea5e9', bng: '#e879f9', agg: '#14b8a6', access: '#64748b', olt: '#a3e635',
@@ -67,65 +79,75 @@ const STYLE = [
       label: 'data(display)',
       'text-wrap': 'wrap',
       color: '#e2e8f0',
-      'font-size': 11,
-      'min-zoomed-font-size': 7,
+      'font-size': 12,
       'text-valign': 'bottom',
-      'text-margin-y': 5,
+      'text-margin-y': 6,
       'background-color': '#334155',
     },
   },
   {
-    selector: 'node[kind="area"], node[kind="pop"]',
+    selector: 'node[kind="area"]',
     style: {
       shape: 'round-rectangle',
-      width: 'data(size)',
-      height: 'data(size)',
-      'background-color': '#0ea5e9',
-      'background-opacity': 0.25,
+      width: 'data(w)',
+      height: 'data(h)',
+      'background-color': '#0c4a6e',
       'border-color': '#38bdf8',
       'border-width': 2,
       'text-valign': 'center',
       'text-margin-y': 0,
-      'font-size': 12,
+      'font-size': 15,
       'font-weight': 'bold',
+      'text-max-width': 'data(w)',
+    },
+  },
+  {
+    selector: 'node[kind="pop"]',
+    style: {
+      shape: 'round-rectangle',
+      width: 'data(w)',
+      height: 34,
+      'background-color': 'data(tierColor)',
+      'background-opacity': 0.9,
+      'border-color': '#0f172a',
+      'border-width': 2,
+      'text-valign': 'center',
+      'text-margin-y': 0,
+      'font-size': 13,
+      'font-weight': 'bold',
+      color: '#0b1120',
     },
   },
   {
     selector: 'node[kind="external_area"], node[kind="external_pop"]',
     style: {
       shape: 'round-rectangle',
-      width: 70,
-      height: 34,
+      width: 'data(w)',
+      height: 30,
       'background-color': '#1e293b',
       'border-color': '#64748b',
       'border-style': 'dashed',
       'border-width': 1.5,
       'text-valign': 'center',
       'text-margin-y': 0,
-      color: '#94a3b8',
-      'font-size': 10,
-    },
-  },
-  {
-    selector: 'node[kind="site"]',
-    style: {
-      shape: 'round-rectangle',
-      'background-color': '#1e293b',
-      'background-opacity': 0.5,
-      'border-color': '#334155',
-      'border-width': 1,
-      'text-valign': 'top',
-      'text-margin-y': -4,
-      color: '#94a3b8',
-      'font-size': 13,
-      'font-weight': 'bold',
-      padding: '18px',
+      color: '#cbd5e1',
+      'font-size': 11,
     },
   },
   {
     selector: 'node[kind="device"]',
-    style: { width: 22, height: 22, 'background-color': 'data(roleColor)', 'font-size': 9, 'border-width': 1, 'border-color': '#0f172a' },
+    style: {
+      width: 26,
+      height: 26,
+      'background-color': 'data(roleColor)',
+      'border-width': 2,
+      'border-color': '#0f172a',
+      'font-size': 11,
+      'text-max-width': 140,
+      'text-wrap': 'ellipsis',
+    },
   },
+  { selector: 'node[?center]', style: { width: 40, height: 40, 'border-color': '#facc15', 'border-width': 4, 'font-weight': 'bold' } },
   { selector: 'node[status="maintenance"], node[status="decommissioned"]', style: { opacity: 0.5 } },
   {
     selector: 'edge',
@@ -133,22 +155,24 @@ const STYLE = [
       width: 'data(width)',
       'line-color': 'data(colorHex)',
       'curve-style': 'bezier',
-      label: 'data(display)',
-      'font-size': 9,
-      'min-zoomed-font-size': 8,
-      color: '#cbd5e1',
+      label: '',
+      'font-size': 10,
+      color: '#e2e8f0',
       'text-background-color': '#0f172a',
-      'text-background-opacity': 0.85,
+      'text-background-opacity': 0.9,
       'text-background-padding': '2px',
       'text-rotation': 'autorotate',
-      opacity: 0.85,
+      opacity: 0.75,
     },
   },
+  { selector: 'edge.labeled, edge:selected', style: { label: 'data(display)', opacity: 1 } },
   { selector: 'edge[allDown = 1]', style: { 'line-style': 'dashed', 'line-color': '#64748b' } },
-  { selector: '.faded', style: { opacity: 0.12 } },
+  { selector: '.faded', style: { opacity: 0.08 } },
   { selector: '.hit', style: { 'border-color': '#facc15', 'border-width': 4 } },
-  { selector: ':selected', style: { 'overlay-color': '#38bdf8', 'overlay-opacity': 0.25, 'overlay-padding': 6 } },
+  { selector: 'node:selected', style: { 'overlay-color': '#38bdf8', 'overlay-opacity': 0.25, 'overlay-padding': 6 } },
 ] as unknown as cytoscape.CytoscapeOptions['style']
+
+const TIER_COLOR = ['#818cf8', '#38bdf8', '#2dd4bf', '#a3e635', '#94a3b8']
 
 function edgeWidth(capacity: number): number {
   return Math.min(1.5 + Math.log10(Math.max(capacity, 1)) * 2.2, 12)
@@ -159,9 +183,8 @@ function nodeDisplay(n: NodeData): string {
     case 'area':
       return `${n.label}\n${n.pops} POP · ${n.devices} perangkat`
     case 'pop':
-      return `${n.label}\n${n.devices} perangkat · ${n.sites} site`
+      return n.label
     case 'external_area':
-      return `→ ${n.label}`
     case 'external_pop':
       return `→ ${n.label}`
     default:
@@ -169,57 +192,103 @@ function nodeDisplay(n: NodeData): string {
   }
 }
 
-/** Device level: sites as columns in a grid, devices in role rows inside each site, other POPs on the right. */
-function deviceLayout(view: View): Record<string, { x: number; y: number }> {
-  const pos: Record<string, { x: number; y: number }> = {}
-  const devices = view.nodes.filter((n) => n.kind === 'device')
-  const sites = view.nodes.filter((n) => n.kind === 'site').map((s) => s.id)
-  const perRow = 9
-  const colsPerSiteRow = Math.max(1, Math.ceil(Math.sqrt(sites.length * 1.6)))
-  let siteX = 0
-  let siteY = 0
-  let rowHeight = 0
-  sites.forEach((siteId, i) => {
-    if (i > 0 && i % colsPerSiteRow === 0) {
-      siteX = 0
-      siteY += rowHeight + 140
-      rowHeight = 0
-    }
-    const members = devices.filter((d) => d.site === siteId)
-    const tiers = [...new Set(members.map((d) => d.tier ?? 4))].sort()
-    let y = siteY
-    let width = 0
-    for (const tier of tiers) {
-      const row = members.filter((d) => (d.tier ?? 4) === tier)
-      row.forEach((d, k) => {
-        pos[d.id] = { x: siteX + (k % perRow) * 110, y: y + Math.floor(k / perRow) * 70 }
-      })
-      width = Math.max(width, Math.min(row.length, perRow) * 110)
-      y += Math.ceil(row.length / perRow) * 70 + 40
-    }
-    rowHeight = Math.max(rowHeight, y - siteY)
-    siteX += width + 120
-  })
-  const maxX = Math.max(0, ...Object.values(pos).map((p) => p.x))
-  view.nodes
-    .filter((n) => n.kind === 'external_pop')
-    .forEach((n, k) => {
-      pos[n.id] = { x: maxX + 320 + Math.floor(k / 25) * 130, y: (k % 25) * 55 }
+/**
+ * Compact schematic: a northern row (Sumatera, Kalimantan, Sulawesi, Maluku-Papua…) and a southern
+ * row (Jawa, Bali-NT), each west→east; areas without a location (unmapped) on a row below.
+ */
+function areaLayout(view: View): Record<string, Pos> {
+  const pos: Record<string, Pos> = {}
+  const byLon = (a: NodeData, b: NodeData) => (a.lon ?? 0) - (b.lon ?? 0)
+  const north = view.nodes.filter((n) => n.lon != null && (n.lat ?? 0) > -4).sort(byLon)
+  const south = view.nodes.filter((n) => n.lon != null && (n.lat ?? 0) <= -4).sort(byLon)
+  const other = view.nodes.filter((n) => n.lon == null)
+  const dx = 270
+  const width = Math.max(north.length, south.length, other.length) * dx
+  const place = (row: NodeData[], y: number) =>
+    row.forEach((n, i) => {
+      pos[n.id] = { x: (width - row.length * dx) / 2 + i * dx, y }
     })
+  place(north, 0)
+  place(south, 230)
+  place(other, 460)
+  return pos
+}
+
+/**
+ * Role rows with crossing reduction: each row is ordered by the average position of its
+ * neighbours in the rows above/below (barycentre heuristic, a few sweeps), then long rows wrap.
+ * Other POPs (external) form the top row.
+ */
+function layeredLayout(view: View): Record<string, Pos> {
+  // Devices/POPs by role tier; other POPs/areas (external) form the top "uplink" row.
+  const rowOf = (n: NodeData) => (n.kind === 'device' || n.kind === 'pop' ? (n.tier ?? 4) : -1)
+  const rows = new Map<number, NodeData[]>()
+  for (const n of view.nodes) {
+    const r = rowOf(n)
+    rows.set(r, [...(rows.get(r) ?? []), n])
+  }
+  const rowKeys = [...rows.keys()].sort((a, b) => a - b)
+  for (const r of rowKeys) rows.get(r)!.sort((a, b) => (a.site ?? '').localeCompare(b.site ?? '') || a.label.localeCompare(b.label))
+
+  const neighbours = new Map<string, string[]>()
+  for (const e of view.edges) {
+    neighbours.set(e.source, [...(neighbours.get(e.source) ?? []), e.target])
+    neighbours.set(e.target, [...(neighbours.get(e.target) ?? []), e.source])
+  }
+  const order = new Map<string, number>()
+  const index = () => rowKeys.forEach((r) => rows.get(r)!.forEach((n, i) => order.set(n.id, i / Math.max(rows.get(r)!.length - 1, 1))))
+  index()
+  const rowById = new Map(view.nodes.map((n) => [n.id, rowOf(n)]))
+  const sweep = (keys: number[], towards: (r: number, other: number) => boolean) => {
+    for (const r of keys) {
+      const row = rows.get(r)!
+      const bary = new Map<string, number>()
+      for (const n of row) {
+        const ref = (neighbours.get(n.id) ?? []).filter((o) => towards(r, rowById.get(o) ?? r)).map((o) => order.get(o) ?? 0)
+        bary.set(n.id, ref.length ? ref.reduce((s, v) => s + v, 0) / ref.length : order.get(n.id) ?? 0)
+      }
+      row.sort((a, b) => bary.get(a.id)! - bary.get(b.id)!)
+      row.forEach((n, i) => order.set(n.id, i / Math.max(row.length - 1, 1)))
+    }
+  }
+  for (let pass = 0; pass < 4; pass++) {
+    sweep(rowKeys.slice(1), (r, o) => o < r)
+    sweep([...rowKeys].reverse().slice(1), (r, o) => o > r)
+  }
+
+  const pos: Record<string, Pos> = {}
+  const perLine = 12
+  const dx = 165
+  const widest = Math.min(perLine, Math.max(...rowKeys.map((r) => rows.get(r)!.length)))
+  let y = 0
+  for (const r of rowKeys) {
+    const row = rows.get(r)!
+    row.forEach((n, i) => {
+      const line = Math.floor(i / perLine)
+      const inLine = Math.min(perLine, row.length - line * perLine)
+      const offset = ((widest - inLine) * dx) / 2
+      pos[n.id] = { x: offset + (i % perLine) * dx, y: y + line * 85 }
+    })
+    y += Math.ceil(row.length / perLine) * 85 + 70
+  }
   return pos
 }
 
 function buildElements(view: View): ElementDefinition[] {
   const maxDevices = Math.max(1, ...view.nodes.map((n) => n.devices ?? 0))
-  const nodes: ElementDefinition[] = view.nodes.map((n) => ({
-    data: {
-      ...n,
-      display: nodeDisplay(n),
-      parent: n.kind === 'device' ? n.site : undefined,
-      roleColor: ROLE_COLOR[n.role ?? ''] ?? '#64748b',
-      size: n.kind === 'area' ? 70 + 90 * Math.sqrt((n.devices ?? 0) / maxDevices) : 46 + 50 * Math.sqrt((n.devices ?? 0) / maxDevices),
-    },
-  }))
+  const nodes: ElementDefinition[] = view.nodes.map((n) => {
+    const scale = Math.sqrt((n.devices ?? 0) / maxDevices)
+    return {
+      data: {
+        ...n,
+        display: nodeDisplay(n),
+        roleColor: ROLE_COLOR[n.role ?? ''] ?? '#64748b',
+        tierColor: TIER_COLOR[n.tier ?? 4],
+        w: n.kind === 'area' ? 170 + 60 * scale : n.kind === 'pop' ? Math.max(60, n.label.length * 10 + 24) : Math.max(70, n.label.length * 7 + 26),
+        h: 70 + 40 * scale,
+      },
+    }
+  })
   const edges: ElementDefinition[] = view.edges.map((e) => ({
     data: {
       ...e,
@@ -233,41 +302,20 @@ function buildElements(view: View): ElementDefinition[] {
 }
 
 function runLayout(cy: Core, view: View) {
-  if (view.level === 'device') {
-    const auto = deviceLayout(view)
-    const saved: Record<string, { x: number; y: number }> = {}
-    for (const n of view.nodes) if (n.kind === 'device' && n.x != null && n.y != null) saved[n.id] = { x: n.x, y: n.y }
-    cy.layout({
-      name: 'preset',
-      padding: 30,
-      positions: (node: cytoscape.NodeSingular) => saved[node.id()] ?? auto[node.id()] ?? { x: 0, y: 0 },
-    } as cytoscape.LayoutOptions).run()
+  if (view.level === 'area') {
+    const pos = areaLayout(view)
+    cy.layout({ name: 'preset', padding: 50, positions: (n: cytoscape.NodeSingular) => pos[n.id()] } as cytoscape.LayoutOptions).run()
     return
   }
-  const mapped = view.nodes.filter((n) => n.lon != null && n.lat != null)
-  if (view.level === 'area' && mapped.length >= Math.max(2, view.nodes.length - 1)) {
-    const k = 120
-    let unmapped = 0
-    cy.layout({
-      name: 'preset',
-      padding: 40,
-      positions: (node: cytoscape.NodeSingular) => {
-        const n = node.data() as NodeData
-        if (n.lon != null && n.lat != null) return { x: (n.lon - 95) * k, y: -n.lat * k }
-        return { x: (unmapped++ * 300), y: 12 * k }
-      },
-    } as cytoscape.LayoutOptions).run()
-    return
+  const auto = layeredLayout(view)
+  const saved: Record<string, Pos> = {}
+  if (view.level === 'device') {
+    for (const n of view.nodes) if (n.kind === 'device' && n.x != null && n.y != null) saved[n.id] = { x: n.x, y: n.y }
   }
   cy.layout({
-    name: 'cose',
-    animate: false,
-    padding: 40,
-    nodeRepulsion: () => 60000,
-    idealEdgeLength: () => 170,
-    gravity: 0.3,
-    numIter: 2000,
-    randomize: false,
+    name: 'preset',
+    padding: 30,
+    positions: (n: cytoscape.NodeSingular) => saved[n.id()] ?? auto[n.id()] ?? { x: 0, y: 0 },
   } as cytoscape.LayoutOptions).run()
 }
 
@@ -276,6 +324,8 @@ export default function Topology() {
   const level = (params.get('level') as Level) || 'area'
   const area = params.get('area') ?? undefined
   const pop = params.get('pop') ?? undefined
+  const deviceId = params.get('device_id') ?? undefined
+  const depth = params.get('depth') ?? '1'
   const focus = params.get('focus') ?? undefined
 
   const container = useRef<HTMLDivElement>(null)
@@ -286,15 +336,18 @@ export default function Topology() {
   const [message, setMessage] = useState<{ text: string; error?: boolean } | null>(null)
   const [search, setSearch] = useState('')
   const [colorFilter, setColorFilter] = useState<'all' | 'warn' | 'red'>('all')
+  const [edgeLabels, setEdgeLabels] = useState(false)
   const [syncPhase, setSyncPhase] = useState<string | null>(null)
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
 
   const go = useCallback(
-    (next: { level: Level; area?: string; pop?: string; focus?: string }) => {
+    (next: { level: Level; area?: string; pop?: string; device_id?: number; depth?: number; focus?: string }) => {
       const p: Record<string, string> = { level: next.level }
       if (next.area) p.area = next.area
       if (next.pop) p.pop = next.pop
+      if (next.device_id != null) p.device_id = String(next.device_id)
+      if (next.depth) p.depth = String(next.depth)
       if (next.focus) p.focus = next.focus
       setParams(p)
     },
@@ -309,6 +362,8 @@ export default function Topology() {
       const q = new URLSearchParams({ level })
       if (area) q.set('area', area)
       if (pop) q.set('pop', pop)
+      if (deviceId) q.set('device_id', deviceId)
+      if (level === 'neighbors') q.set('depth', depth)
       setView(await api.get<View>(`/topology/view?${q}`))
     } catch (e) {
       setMessage({ text: (e as Error).message, error: true })
@@ -316,11 +371,16 @@ export default function Topology() {
     } finally {
       setLoading(false)
     }
-  }, [level, area, pop])
+  }, [level, area, pop, deviceId, depth])
 
   useEffect(() => {
     load()
   }, [load])
+
+  // Edge labels on by default only where there are few edges (area level).
+  useEffect(() => {
+    setEdgeLabels(level === 'area')
+  }, [level])
 
   // A running collector sync rebuilds topology itself and holds the DB writer; block manual discovery.
   useEffect(() => {
@@ -348,25 +408,45 @@ export default function Topology() {
       minZoom: 0.05,
       maxZoom: 3,
     })
-    cy.on('tap', 'node', (e) => setSelected({ node: e.target.data() as NodeData }))
-    cy.on('tap', 'edge', (e) => setSelected({ edge: e.target.data() as EdgeData }))
+    const highlight = (id: string | null) => {
+      cy.elements().removeClass('faded')
+      if (!id) return
+      const el = cy.getElementById(id)
+      // node: itself + neighbours and their links · edge: itself + its two ends
+      const keep = el.union(el.neighborhood()).union(el.connectedNodes())
+      cy.elements().not(keep).addClass('faded')
+    }
+    cy.on('tap', 'node', (e) => {
+      setSelected({ node: e.target.data() as NodeData })
+      highlight(e.target.id())
+    })
+    cy.on('tap', 'edge', (e) => {
+      setSelected({ edge: e.target.data() as EdgeData })
+      highlight(e.target.id())
+    })
     cy.on('tap', (e) => {
-      if (e.target === cy) setSelected(null)
+      if (e.target === cy) {
+        setSelected(null)
+        highlight(null)
+      }
     })
     cy.on('dbltap', 'node', (e) => {
       const n = e.target.data() as NodeData
       if (n.kind === 'area' || n.kind === 'external_area') go({ level: 'pop', area: n.label })
       else if (n.kind === 'pop' || n.kind === 'external_pop') go({ level: 'device', pop: n.label })
+      else if (n.kind === 'device' && n.device_id != null) go({ level: 'neighbors', device_id: n.device_id, depth: 1 })
     })
     cy.on('dragfree', 'node[kind="device"]', () => setDirty(true))
     cyRef.current = cy
     runLayout(cy, view)
+    cy.fit(undefined, 40)
     if (focus) {
       const hit = cy.nodes().filter((n) => (n.data('label') as string)?.toUpperCase() === focus.toUpperCase())
       if (hit.nonempty()) {
         hit.addClass('hit')
-        cy.animate({ center: { eles: hit }, zoom: 1.4 }, { duration: 300 })
+        cy.animate({ center: { eles: hit }, zoom: 1.2 }, { duration: 300 })
         setSelected({ node: hit.first().data() as NodeData })
+        highlight(hit.first().id())
       }
     }
     return () => cy.destroy()
@@ -379,8 +459,10 @@ export default function Topology() {
       const color = edge.data('color') as CapacityColor
       const visible = colorFilter === 'all' || (colorFilter === 'red' ? color === 'red' : color !== 'green')
       edge.style('display', visible ? 'element' : 'none')
+      if (edgeLabels) edge.addClass('labeled')
+      else edge.removeClass('labeled')
     })
-  }, [colorFilter, view])
+  }, [colorFilter, edgeLabels, view])
 
   async function findDevice(e: FormEvent) {
     e.preventDefault()
@@ -388,15 +470,14 @@ export default function Topology() {
     if (!term) return
     try {
       const [devices, pops] = await Promise.all([
-        api.get<{ hostname: string; pop_id: number }[]>(`/devices?q=${encodeURIComponent(term)}&limit=20`),
+        api.get<{ id: number; hostname: string; pop_id: number }[]>(`/devices?q=${encodeURIComponent(term)}&limit=20`),
         api.get<{ id: number; code: string }[]>('/pops?limit=10000'),
       ])
       const popMatch = pops.find((p) => p.code.toUpperCase() === term.toUpperCase())
       if (popMatch) return go({ level: 'device', pop: popMatch.code })
       const exact = devices.find((d) => d.hostname.toUpperCase() === term.toUpperCase()) ?? devices[0]
       if (!exact) return setMessage({ text: `"${term}" tidak ditemukan`, error: true })
-      const code = pops.find((p) => p.id === exact.pop_id)?.code
-      if (code) go({ level: 'device', pop: code, focus: exact.hostname })
+      go({ level: 'neighbors', device_id: exact.id, depth: 1 })
     } catch (err) {
       setMessage({ text: (err as Error).message, error: true })
     }
@@ -464,6 +545,8 @@ export default function Topology() {
   const node = selected?.node
   const edge = selected?.edge
   const nameOf = (id: string) => view?.nodes.find((n) => n.id === id)?.label ?? id
+  const viewArea = view?.area ?? area
+  const viewPop = view?.pop ?? pop
 
   return (
     <div className="topology">
@@ -472,20 +555,26 @@ export default function Topology() {
           <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'area' }) }} className={level === 'area' ? 'current' : ''}>
             Semua area
           </a>
-          {(level === 'pop' || level === 'device') && (view?.area || area) && (
+          {level !== 'area' && viewArea && (
             <>
               <span>›</span>
-              <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'pop', area: view?.area ?? area }) }} className={level === 'pop' ? 'current' : ''}>
-                {view?.area ?? area}
+              <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'pop', area: viewArea }) }} className={level === 'pop' ? 'current' : ''}>
+                {viewArea}
               </a>
             </>
           )}
-          {level === 'device' && (
+          {(level === 'device' || level === 'neighbors') && viewPop && (
             <>
               <span>›</span>
-              <span className="current">
-                {pop} {view?.pop_name && view.pop_name !== pop ? `· ${view.pop_name}` : ''}
-              </span>
+              <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'device', pop: viewPop }) }} className={level === 'device' ? 'current' : ''}>
+                {viewPop}{level === 'device' && view?.pop_name && view.pop_name !== viewPop ? ` · ${view.pop_name}` : ''}
+              </a>
+            </>
+          )}
+          {level === 'neighbors' && view?.device && (
+            <>
+              <span>›</span>
+              <span className="current">{view.device}</span>
             </>
           )}
         </nav>
@@ -493,11 +582,23 @@ export default function Topology() {
           <input className="search" placeholder="Cari hostname / kode POP…" value={search} onChange={(e) => setSearch(e.target.value)} />
           <button type="submit">Cari</button>
         </form>
+        {level === 'neighbors' && (
+          <div className="segmented">
+            {[1, 2].map((d) => (
+              <button key={d} className={depth === String(d) ? 'active' : ''} onClick={() => go({ level: 'neighbors', device_id: Number(deviceId), depth: d })}>
+                {d} hop
+              </button>
+            ))}
+          </div>
+        )}
         <select value={colorFilter} onChange={(e) => setColorFilter(e.target.value as 'all' | 'warn' | 'red')}>
           <option value="all">Semua link</option>
           <option value="warn">Kuning + Merah</option>
           <option value="red">Merah saja</option>
         </select>
+        <label className="check">
+          <input type="checkbox" checked={edgeLabels} onChange={(e) => setEdgeLabels(e.target.checked)} /> Label link
+        </label>
         <div className="spacer" />
         {level === 'area' && view?.nodes.some((n) => n.label === 'Belum dipetakan') && (
           <button onClick={autoAssign} title="Isi area POP yang masih kosong dari kode kota (tidak menimpa yang sudah diisi)">
@@ -524,6 +625,7 @@ export default function Topology() {
           {message.text}
         </div>
       )}
+      {view?.truncated && <div className="notice">Terlalu banyak tetangga — ditampilkan 400 perangkat pertama.</div>}
 
       <div className="topology-body">
         <div className="graph card">
@@ -532,9 +634,10 @@ export default function Topology() {
         </div>
         <aside className="side card">
           <div className="small muted">
-            {level === 'area' && 'Klik dua kali area untuk melihat POP di dalamnya.'}
-            {level === 'pop' && 'Klik dua kali POP untuk melihat perangkat per site; kotak putus-putus = area lain.'}
-            {level === 'device' && 'Perangkat dikelompokkan per site, baris atas ke bawah: Core → PE/BNG → Metro → OLT/Access. Kotak putus-putus = POP lain (klik dua kali untuk pindah).'}
+            {level === 'area' && 'Area disusun dari barat ke timur. Klik untuk menyorot jalurnya, klik dua kali untuk masuk ke POP area itu.'}
+            {level === 'pop' && 'Baris atas ke bawah: area lain (uplink, putus-putus) → POP core (P/DCI) → POP PE/BNG → POP Metro → POP OLT/Access. Klik untuk menyorot, klik dua kali POP untuk melihat perangkatnya.'}
+            {(level === 'device' || level === 'neighbors') &&
+              'Baris atas ke bawah: POP lain (uplink) → Core → PE/BNG → Metro → OLT/Access. Klik untuk menyorot tetangga, klik dua kali perangkat untuk melihat tetangganya.'}
           </div>
           <hr />
           <div className="legend">
@@ -543,9 +646,16 @@ export default function Topology() {
             <div><span className="swatch" style={{ background: CAPACITY_HEX.red }} /> ≥ 80% ({stats.red})</div>
             <div><span className="swatch dashed" /> semua link di jalur ini down</div>
             <div className="muted small">
-              {stats.groups} jalur · {stats.links} link fisik/logis. Label: jumlah link · kapasitas · committed %.
+              {stats.groups} jalur · {stats.links} link. Label: jumlah link · kapasitas · committed %.
             </div>
-            {level === 'device' && (
+            {level === 'pop' && (
+              <div className="role-legend">
+                {TIER_LABEL.slice(0, 4).map((t, i) => (
+                  <span key={t}><span className="dot" style={{ background: TIER_COLOR[i] }} /> POP {t}</span>
+                ))}
+              </div>
+            )}
+            {(level === 'device' || level === 'neighbors') && (
               <div className="role-legend">
                 {Object.entries(ROLE_COLOR).map(([role, color]) => (
                   <span key={role}><span className="dot" style={{ background: color }} /> {role.toUpperCase()}</span>
@@ -574,7 +684,7 @@ export default function Topology() {
                 )}
                 {node.kind === 'device' && (
                   <>
-                    <dt>Site</dt><dd>{node.site?.replace('site:', '')}</dd>
+                    <dt>POP · Site</dt><dd>{node.pop} · {node.site?.replace('site:', '')}</dd>
                     <dt>Role</dt><dd>{node.role?.toUpperCase()} ({TIER_LABEL[node.tier ?? 4]})</dd>
                     <dt>Vendor</dt><dd>{node.vendor ?? '–'}</dd>
                     <dt>Status</dt><dd>{node.status}</dd>
@@ -593,15 +703,20 @@ export default function Topology() {
                   {node.internal.down ? ` · ${node.internal.down} down` : ''}
                 </p>
               )}
-              {(node.kind === 'area' || node.kind === 'external_area') && (
-                <button onClick={() => go({ level: 'pop', area: node.label })}>Buka POP di area ini →</button>
-              )}
-              {(node.kind === 'pop' || node.kind === 'external_pop') && (
-                <button onClick={() => go({ level: 'device', pop: node.label })}>Buka perangkat di {node.label} →</button>
-              )}
-              {node.kind === 'device' && (
-                <RouterLink to={`/ports?q=${encodeURIComponent(node.label)}`}>Lihat port perangkat →</RouterLink>
-              )}
+              <div className="detail-actions">
+                {(node.kind === 'area' || node.kind === 'external_area') && (
+                  <button onClick={() => go({ level: 'pop', area: node.label })}>Buka POP di area ini →</button>
+                )}
+                {(node.kind === 'pop' || node.kind === 'external_pop') && (
+                  <button onClick={() => go({ level: 'device', pop: node.label })}>Buka perangkat di {node.label} →</button>
+                )}
+                {node.kind === 'device' && node.device_id != null && (
+                  <>
+                    <button onClick={() => go({ level: 'neighbors', device_id: node.device_id, depth: 1 })}>Lihat tetangga perangkat →</button>
+                    <RouterLink to={`/ports?q=${encodeURIComponent(node.label)}`}>Lihat port perangkat →</RouterLink>
+                  </>
+                )}
+              </div>
             </div>
           )}
           {edge && (
@@ -613,7 +728,7 @@ export default function Topology() {
                 <dt>Trafik</dt><dd>{fmtG(edge.current_gbps)} ({edge.utilization_pct}%)</dd>
                 <dt>Committed</dt><dd>{edge.committed_pct}%</dd>
               </dl>
-              {level === 'device' && <RouterLink to="/capacity">Detail kapasitas & forecast →</RouterLink>}
+              {(level === 'device' || level === 'neighbors') && <RouterLink to="/capacity">Detail kapasitas & forecast →</RouterLink>}
             </div>
           )}
         </aside>
