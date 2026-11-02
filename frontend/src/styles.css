@@ -145,7 +145,16 @@ tr.clickable:hover, tr.selected { background: var(--panel-2); }
 .kpi-value.ok { color: var(--ok); }
 .kpi-value.warn { color: #eab308; }
 .speed-chip { display: inline-block; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; margin: 1px 3px 1px 0; white-space: nowrap; }
+.port-count-link { padding: 0; border: 0; background: none; color: var(--accent); text-decoration: underline; font-variant-numeric: tabular-nums; }
+.port-count-link:hover { color: #7dd3fc; }
+.interface-list { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; white-space: normal; }
 .search.narrow { width: 130px; }
+.path-card { border-top: 3px solid var(--accent); }
+.path-chain { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 6px; font-size: 13px; }
+.path-chain .arrow { color: var(--muted); margin: 0 6px; }
+.after-bar { position: relative; height: 16px; background: #1e293b; border-radius: 4px; overflow: hidden; }
+.after-bar div { height: 100%; }
+.after-bar span { position: absolute; inset: 0; display: grid; place-items: center; font-size: 11px; color: #e2e8f0; }
 .crumbs { display: flex; gap: 8px; align-items: center; font-weight: 600; }
 .crumbs a { color: var(--muted); }
 .crumbs .current { color: var(--text); }

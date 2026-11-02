@@ -3,6 +3,7 @@ import Capacity from './pages/Capacity'
 import Collectors from './pages/Collectors'
 import Dashboard from './pages/Dashboard'
 import Inventory from './pages/Inventory'
+import Paths from './pages/Paths'
 import Ports from './pages/Ports'
 import Topology from './pages/Topology'
 
@@ -12,12 +13,12 @@ const NAV = [
   { to: '/ports', label: 'Kapasitas Port', phase: 1 },
   { to: '/topology', label: 'Topology', phase: 2 },
   { to: '/capacity', label: 'Capacity Planning', phase: 3 },
+  { to: '/paths', label: 'Customer Path', phase: 4 },
   { to: '/collectors', label: 'Collectors', phase: 1 },
 ]
 
 // Shown in the sidebar so the roadmap stays visible; enabled as each sprint lands.
 const ROADMAP = [
-  { label: 'Customer Path', phase: 4 },
   { label: 'Service Validation', phase: 5 },
   { label: 'MoP Generator', phase: 6 },
   { label: 'Config Generator', phase: 7 },
@@ -62,6 +63,7 @@ export default function App() {
           <Route path="/inventory/:entityKey" element={<Inventory />} />
           <Route path="/topology" element={<Topology />} />
           <Route path="/ports" element={<Ports />} />
+          <Route path="/paths" element={<Paths />} />
           <Route path="/capacity" element={<Capacity />} />
           <Route path="/collectors" element={<Collectors />} />
           <Route path="*" element={<Navigate to="/" replace />} />

@@ -319,3 +319,20 @@ class Service(TimestampMixin, Base):
     protection: Mapped[str] = mapped_column(String(16), default="none")  # none | 1+1 | 1:1
     status: Mapped[str] = mapped_column(String(16), default="active")  # planned | reserved | active | terminated
     notes: Mapped[str | None] = mapped_column(Text)
+
+
+class ServicePath(TimestampMixin, Base):
+    """Engineered path of a service (Phase 4): the links it rides and the bandwidth reserved on them."""
+
+    __tablename__ = "service_paths"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    service_id: Mapped[int] = mapped_column(ForeignKey("services.id", ondelete="CASCADE"))
+    role: Mapped[str] = mapped_column(String(16))  # primary | backup
+    device_ids: Mapped[list] = mapped_column(JSONType)
+    link_ids: Mapped[list] = mapped_column(JSONType)
+    hops: Mapped[int] = mapped_column(Integer)
+    latency_ms: Mapped[float | None] = mapped_column(Float)
+    latency_estimated: Mapped[bool] = mapped_column(Boolean, default=True)
+    reserved_gbps: Mapped[float] = mapped_column(Float, default=0)  # 0 when not reserved (1:1 backup)
+    released: Mapped[bool] = mapped_column(Boolean, default=False)
