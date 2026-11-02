@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app import models as m
 from app.collectors.observium.client import ObserviumClient
-from app.collectors.observium.rrd import RrdError, build_script, open_runner, parse_output, sync_rrd
+from app.collectors.observium.rrd import RrdError, ScriptSource, build_script, open_runner, parse_output, sync_rrd
 from app.collectors.observium.sync import sync_observium
 from app.config import settings
 
@@ -65,7 +65,7 @@ def test_clipped_400g_link_is_flagged(synced, monkeypatch):
     start = int(datetime.now(timezone.utc).timestamp()) // DAY * DAY - 4 * DAY
     # 400G link stuck at the 100G DS max, with a day lost above it.
     rows = [(1.249e10, 1e10), (float("nan"), 1e10), (1.249e10, 1e10), (1.2e10, 1e10), (1.2e10, 1e10)]
-    report = sync_rrd(db, FakeRunner({"/rrd/jkt-p-01.metro.net/port-21.rrd": xport(start, rows)}), days=5)
+    report = sync_rrd(db, ScriptSource(FakeRunner({"/rrd/jkt-p-01.metro.net/port-21.rrd": xport(start, rows)})), days=5)
     assert report["days_without_data"] == 1
     assert len(report["possibly_clipped"]) == 1 and "400G link" in report["possibly_clipped"][0]
 
@@ -97,7 +97,7 @@ def test_sync_rrd_writes_daily_peaks(synced, monkeypatch):
     # JKT-P-01 port 21 (A side of JKT–SBY): growth from 100G to 280G over 90 days.
     rows = [((100 + 2 * i) * 1.25e8, (50 + i) * 1.25e8) for i in range(90)]
     runner = FakeRunner({"/rrd/jkt-p-01.metro.net/port-21.rrd": xport(start, rows)})
-    report = sync_rrd(db, runner, days=90)
+    report = sync_rrd(db, ScriptSource(runner), days=90)
 
     core = next(l for l in db.scalars(select(m.Link)) if l.capacity_gbps == 400)
     samples = db.scalars(select(m.UtilizationSample).where(m.UtilizationSample.link_id == core.id)
@@ -120,17 +120,17 @@ def test_sync_rrd_uses_b_side_swapped_and_counts_missing(synced, monkeypatch):
     db.commit()
     start = int(datetime.now(timezone.utc).timestamp()) // DAY * DAY - 9 * DAY
     runner = FakeRunner({"/rrd/172.16.0.2/port-540.rrd": xport(start, [(1.25e9, 3.75e9)] * 10)})
-    sync_rrd(db, runner, days=10)
+    sync_rrd(db, ScriptSource(runner), days=10)
     s = db.scalars(select(m.UtilizationSample).where(m.UtilizationSample.link_id == core.id)).all()
     assert {(x.in_gbps, x.out_gbps) for x in s} == {(30.0, 10.0)}  # B's out is the link's in
     assert a_ref is not None
 
-    missing = sync_rrd(db, FakeRunner({}), days=10)
+    missing = sync_rrd(db, ScriptSource(FakeRunner({})), days=10)
     assert missing["missing_files"] == 1
 
 
 def test_rrd_requires_access_settings(monkeypatch):
-    monkeypatch.setattr(settings, "observium_rrd_local", False)
+    monkeypatch.setattr(settings, "observium_rrd_source", "ssh")
     monkeypatch.setattr(settings, "observium_ssh_user", None)
     with pytest.raises(RrdError, match="not configured"):
         open_runner()

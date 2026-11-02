@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,9 +37,11 @@ class Settings(BaseSettings):
     observium_include_cdp: bool = True
 
     # Observium RRD history (daily peaks per port) for utilization trends.
-    # Read over SSH on the Observium server (rrdtool xport), or locally when NADIEN runs there.
+    # "api": graph.php JSON with the REST API login (no extra access). "ssh" / "local": rrdtool xport
+    # of the exact daily MAX archive on the Observium server, over SSH or when NADIEN runs there.
+    observium_rrd_source: Literal["api", "ssh", "local"] = "api"
+    observium_graph_workers: int = 6  # parallel graph.php requests; each one runs rrdtool on Observium
     observium_rrd_path: str = "/opt/observium/rrd"
-    observium_rrd_local: bool = False
     observium_ssh_host: str | None = None  # default: the host of NADIEN_OBSERVIUM_URL
     observium_ssh_port: int = 22
     observium_ssh_user: str | None = None

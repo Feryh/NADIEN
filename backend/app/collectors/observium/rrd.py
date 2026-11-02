@@ -1,15 +1,19 @@
 """Daily utilization history from Observium's RRD files.
 
 Observium keeps one RRD per port at <rrd_dir>/<observium hostname>/port-<ifIndex>.rrd with DS
-INOCTETS / OUTOCTETS (bytes/s) and a daily MAX archive (RRA:MAX:0.5:288). For every link we take
-the port on its A side (or B side, directions swapped, when A has no file) and export
-`days` daily peaks with `rrdtool xport`:
+INOCTETS / OUTOCTETS (bytes/s). For every link we take the port on its A side (or B side,
+directions swapped, when A is not usable) and read `days` daily peaks from one of two sources
+(NADIEN_OBSERVIUM_RRD_SOURCE):
+
+- "api" (default): Observium's graph.php with format=json, same login as the REST API — see
+  graph_api.py. Older days are peaks of 2-hour averages; the last 7 days are 5-minute exact.
+- "ssh" / "local": the daily MAX archive (RRA:MAX:0.5:288) exported with rrdtool on the
+  Observium server, over SSH or locally when NADIEN runs there:
 
     rrdtool xport --start end-90d --end now --step 86400 DEF:i=<f>:INOCTETS:MAX DEF:o=<f>:OUTOCTETS:MAX
 
-The same shell script runs over SSH on the Observium server or locally (NADIEN on that server),
-for a few hundred files per session; output is parsed here. Samples of each link inside the
-window are replaced by the daily peaks, and `current_gbps` becomes the last full day's peak.
+Samples of each link inside the window are replaced by the daily peaks, and `current_gbps`
+becomes the last full day's peak.
 """
 
 import re
@@ -90,16 +94,69 @@ class SshRunner:
 
 
 def open_runner() -> Runner:
-    if settings.observium_rrd_local:
+    if settings.observium_rrd_source == "local":
         return LocalRunner()
     host = settings.observium_ssh_host or urlparse(settings.observium_url).hostname
     if not host or not settings.observium_ssh_user:
         raise RrdError(
             "RRD access not configured: set NADIEN_OBSERVIUM_SSH_USER (+ NADIEN_OBSERVIUM_SSH_KEY_FILE or "
-            "_PASSWORD) for SSH to the Observium server, or NADIEN_OBSERVIUM_RRD_LOCAL=true when NADIEN runs on it"
+            "_PASSWORD) for SSH to the Observium server, or use NADIEN_OBSERVIUM_RRD_SOURCE=api"
         )
     return SshRunner(host, settings.observium_ssh_user, settings.observium_ssh_port, settings.observium_ssh_key_file,
                      settings.observium_ssh_password, settings.observium_ssh_known_hosts)
+
+
+@dataclass
+class Target:
+    link: m.Link
+    ref: m.ObserviumPort
+    swapped: bool  # the port is the B side: its in/out are the link's out/in
+
+
+class RrdSource(Protocol):
+    name: str
+    chunk_size: int
+
+    def usable(self, ref: m.ObserviumPort) -> bool: ...
+    def fetch(self, chunk: list[Target], days: int) -> dict[str, Any]: ...
+    def close(self) -> None: ...
+
+
+class ScriptSource:
+    """rrdtool xport of the daily MAX archive, run by a Runner (SSH or local)."""
+
+    chunk_size = CHUNK
+
+    def __init__(self, runner: Runner, name: str = "ssh"):
+        self.runner = runner
+        self.name = name
+
+    def usable(self, ref: m.ObserviumPort) -> bool:
+        return ref.if_index is not None
+
+    def fetch(self, chunk: list[Target], days: int) -> dict[str, Any]:
+        base = settings.observium_rrd_path.rstrip("/")
+        files = {str(t.link.id): f"{base}/{t.ref.observium_hostname}/port-{t.ref.if_index}.rrd" for t in chunk}
+        parsed = parse_output(self.runner.run(build_script(files, days)))
+        if "__error__" in parsed:
+            raise RrdError(f"Observium server: {parsed['__error__']}")
+        return parsed
+
+    def close(self) -> None:
+        self.runner.close()
+
+
+def open_source() -> RrdSource:
+    """The configured history source; access problems are raised here, before a job starts."""
+    if settings.observium_rrd_source == "api":
+        from .client import ObserviumClient, ObserviumError
+        from .graph_api import GraphApiSource
+
+        try:
+            return GraphApiSource(ObserviumClient())
+        except ObserviumError as exc:
+            raise RrdError(f"RRD via API not configured: {exc}") from exc
+    return ScriptSource(open_runner(), settings.observium_rrd_source)
 
 
 def build_script(files: dict[str, str], days: int) -> str:
@@ -157,49 +214,40 @@ def parse_output(text: str) -> dict[str, list[tuple[datetime, float, float]] | s
     return results
 
 
-@dataclass
-class _Target:
-    link: m.Link
-    path: str
-    swapped: bool  # file is the B side: its in/out are the link's out/in
-
-
-def _targets(db: Session) -> tuple[list[_Target], int]:
-    base = settings.observium_rrd_path.rstrip("/")
+def _targets(db: Session, source: RrdSource) -> tuple[list[Target], int]:
     refs = {r.interface_id: r for r in db.scalars(select(m.ObserviumPort))}
     targets, unmapped = [], 0
     for link in db.scalars(select(m.Link)):
         for iface_id, swapped in ((link.a_interface_id, False), (link.b_interface_id, True)):
             ref = refs.get(iface_id or -1)
-            if ref is not None and ref.if_index is not None:
-                targets.append(_Target(link, f"{base}/{ref.observium_hostname}/port-{ref.if_index}.rrd", swapped))
+            if ref is not None and source.usable(ref):
+                targets.append(Target(link, ref, swapped))
                 break
         else:
             unmapped += 1
     return targets, unmapped
 
 
-def sync_rrd(db: Session, runner: Runner, days: int = 90,
+def sync_rrd(db: Session, source: RrdSource, days: int = 90,
              progress: Callable[[str], None] | None = None) -> dict[str, Any]:
     step = progress or (lambda _p: None)
-    targets, unmapped = _targets(db)
-    report: dict[str, Any] = {"days": days, "links": len(targets) + unmapped, "links_without_port_map": unmapped,
-                              "links_with_history": 0, "missing_files": 0, "errors": [], "samples": 0,
-                              "days_without_data": 0, "possibly_clipped": []}
+    targets, unmapped = _targets(db, source)
+    report: dict[str, Any] = {"source": source.name, "days": days, "links": len(targets) + unmapped,
+                              "links_without_port_map": unmapped, "links_with_history": 0, "missing_files": 0,
+                              "errors": [], "error_count": 0, "samples": 0, "days_without_data": 0,
+                              "possibly_clipped": []}
     since = datetime.now(timezone.utc) - timedelta(days=days + 1)
-    for start in range(0, len(targets), CHUNK):
-        chunk = targets[start:start + CHUNK]
+    for start in range(0, len(targets), source.chunk_size):
+        chunk = targets[start:start + source.chunk_size]
         step(f"rrd {start + len(chunk)}/{len(targets)}")
-        output = runner.run(build_script({str(t.link.id): t.path for t in chunk}, days))
-        parsed = parse_output(output)
-        if "__error__" in parsed:
-            raise RrdError(f"Observium server: {parsed['__error__']}")
+        parsed = source.fetch(chunk, days)
         for t in chunk:
             got = parsed.get(str(t.link.id))
             if got == "MISSING":
                 report["missing_files"] += 1
                 continue
             if not isinstance(got, list):
+                report["error_count"] += 1
                 if len(report["errors"]) < 20:
                     report["errors"].append(f"{t.link.name}: {got or 'no output'}")
                 continue

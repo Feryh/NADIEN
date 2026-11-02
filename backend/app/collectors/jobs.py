@@ -20,7 +20,7 @@ from .configs.base import ParsedConfig
 from .configs.oxidized import OxidizedClient, sync_oxidized
 from .configs.rancid import FileSystem, open_from_settings, sync_rancid
 from .observium.client import ObserviumClient
-from .observium.rrd import Runner, open_runner, sync_rrd
+from .observium.rrd import RrdSource, open_source, sync_rrd
 from .observium.sync import sync_observium
 
 CHANGES_INVENTORY = {"inventory", "neighbours"}
@@ -76,15 +76,15 @@ def run_observium(
     return {"backup": backup, **report}
 
 
-def run_rrd(db: Session, days: int = 90, runner: "Runner | None" = None, progress: Progress = _noop) -> dict:
+def run_rrd(db: Session, days: int = 90, source: "RrdSource | None" = None, progress: Progress = _noop) -> dict:
     """Daily peaks from Observium RRDs. No backup: like utilization-only syncs it only adds samples."""
-    own = runner is None
-    runner = runner or open_runner()
+    own = source is None
+    source = source or open_source()
     try:
-        return {"backup": {"status": "skipped", "detail": "utilization only"}, **sync_rrd(db, runner, days, progress)}
+        return {"backup": {"status": "skipped", "detail": "utilization only"}, **sync_rrd(db, source, days, progress)}
     finally:
         if own:
-            runner.close()
+            source.close()
 
 
 def run_rancid(

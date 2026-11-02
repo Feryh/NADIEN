@@ -36,7 +36,7 @@ interface CollectorStatus {
   observium: { url: string; configured: boolean; auth: string | null; last_sync_at: string | null; last_status: string | null }
   rancid: { source: string | null; configured: boolean }
   oxidized: { url: string | null; configured: boolean }
-  rrd: { mode: 'local' | 'ssh'; path: string; configured: boolean; mapped_ports: number }
+  rrd: { mode: 'api' | 'local' | 'ssh'; path: string; configured: boolean; mapped_ports: number }
   parts: string[]
 }
 
@@ -179,7 +179,13 @@ export default function Collectors() {
         <div className="toolbar">
           <h2>Histori utilisasi (RRD Observium)</h2>
           <span className={`pill ${status?.rrd.configured ? 'pill-ok' : 'pill-bad'}`}>
-            {status?.rrd.configured ? `akses ${status.rrd.mode}` : 'akses SSH belum di-set'}
+            {status?.rrd.configured
+              ? status.rrd.mode === 'api'
+                ? 'via API Observium'
+                : `via ${status.rrd.mode}`
+              : status?.rrd.mode === 'api'
+                ? 'kredensial Observium belum di-set'
+                : 'akses SSH belum di-set'}
           </span>
           <span className={`pill ${status?.rrd.mapped_ports ? 'pill-ok' : 'pill-muted'}`}>
             {status?.rrd.mapped_ports ?? 0} port ter-mapping
@@ -198,12 +204,21 @@ export default function Collectors() {
             Ambil histori RRD
           </button>
         </div>
-        <p className="hint">
-          Peak harian (RRA MAX) in/out tiap link dibaca langsung dari file RRD Observium (<code>{status?.rrd.path}</code>) dengan{' '}
-          <code>rrdtool xport</code>, menggantikan sampel di rentang itu. Hasilnya dipakai untuk tren 7 / 30 / 90 hari di halaman
-          Capacity. Tidak dibuat backup (hanya menulis sampel utilisasi).
-        </p>
-        {!status?.rrd.configured && (
+        {status?.rrd.mode === 'api' ? (
+          <p className="hint">
+            Peak harian in/out tiap link diambil dari RRD Observium lewat <code>graph.php?format=json</code>, dengan login API yang
+            sama (tanpa SSH). 7 hari terakhir memakai data 5 menit (peak akurat). Hari yang lebih lama memakai rata-rata 2 jam, jadi
+            peak-nya sedikit lebih rendah dari aslinya. Satu link kira-kira 0,3 detik, jadi seluruh link sekitar 45 menit. Hasilnya
+            menggantikan sampel di rentang itu dan dipakai untuk tren 7 / 30 / 90 hari di halaman Capacity. Tidak dibuat backup.
+          </p>
+        ) : (
+          <p className="hint">
+            Peak harian (RRA MAX) in/out tiap link dibaca langsung dari file RRD Observium (<code>{status?.rrd.path}</code>) dengan{' '}
+            <code>rrdtool xport</code>, menggantikan sampel di rentang itu. Hasilnya dipakai untuk tren 7 / 30 / 90 hari di halaman
+            Capacity. Tidak dibuat backup (hanya menulis sampel utilisasi).
+          </p>
+        )}
+        {!status?.rrd.configured && status?.rrd.mode !== 'api' && (
           <p className="hint">
             Set di <code>backend/.env</code>: <code>NADIEN_OBSERVIUM_SSH_USER</code> + <code>NADIEN_OBSERVIUM_SSH_KEY_FILE</code>{' '}
             (atau <code>_PASSWORD</code>) — akun read-only ke server Observium yang bisa membaca{' '}

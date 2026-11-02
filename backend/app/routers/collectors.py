@@ -10,7 +10,7 @@ from ..collectors.configs.oxidized import OxidizedClient, os_hint
 from ..collectors.configs.rancid import RancidError, open_from_settings
 from ..collectors.observium.client import ObserviumClient, ObserviumError
 from ..collectors.observium.rrd import RrdError
-from ..collectors.observium.rrd import open_runner as open_rrd_runner
+from ..collectors.observium.rrd import open_source as open_rrd_source
 from ..collectors.runner import JobBusy, ensure_idle, runner
 from ..collectors.observium.sync import ALL_PARTS, SOURCE_NAME
 from ..config import settings
@@ -42,9 +42,13 @@ def status(db: Session = Depends(get_db)):
         },
         "oxidized": {"url": settings.oxidized_url, "configured": bool(settings.oxidized_url)},
         "rrd": {
-            "mode": "local" if settings.observium_rrd_local else "ssh",
+            "mode": settings.observium_rrd_source,
             "path": settings.observium_rrd_path,
-            "configured": bool(settings.observium_rrd_local or settings.observium_ssh_user),
+            "configured": {
+                "api": bool(settings.observium_token or (settings.observium_user and settings.observium_password)),
+                "ssh": bool(settings.observium_ssh_user),
+                "local": True,
+            }[settings.observium_rrd_source],
             "mapped_ports": db.scalar(select(func.count()).select_from(m.ObserviumPort)) or 0,
         },
         "parts": sorted(ALL_PARTS),
@@ -95,15 +99,15 @@ def observium_rrd(days: int = Query(90, ge=7, le=365)):
     """Start a background job: daily peak in/out for every link from Observium's RRD files over the
     last `days` days (replaces the link's samples in that window). Poll /collectors/jobs/current."""
     try:
-        runner_ = open_rrd_runner()  # SSH / local access checked now
+        source = open_rrd_source()  # credentials / SSH access checked now, not inside the job
     except RrdError as exc:
         raise HTTPException(400 if "not configured" in str(exc) else 502, str(exc)) from exc
 
     def job(db: Session, progress) -> dict:
         try:
-            return jobs.run_rrd(db, days, runner=runner_, progress=progress)
+            return jobs.run_rrd(db, days, source=source, progress=progress)
         finally:
-            runner_.close()
+            source.close()
 
     return _start("observium-rrd", job)
 

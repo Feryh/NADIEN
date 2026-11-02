@@ -94,7 +94,7 @@ Data valid diambil dari jaringan, bukan diisi manual:
 | Observium `/address` | IPv4 + prefix | Interface IPv4 |
 | Observium `/neighbours` | LLDP (CDP opsional) | Tabel LLDP → topology discovery |
 | Observium `/ports` rate | ifIn/OutOctets_rate | 1 sampel utilisasi per link per sync, `current_gbps` |
-| RRD Observium (`/opt/observium/rrd/<host>/port-<ifIndex>.rrd`, via SSH) | peak harian INOCTETS/OUTOCTETS (RRA MAX) 7–365 hari | histori utilisasi per link, tren 7/30/90 hari, `current_gbps` = peak hari penuh terakhir |
+| RRD Observium lewat `graph.php?format=json` (default), atau `rrdtool xport` via SSH | peak harian in/out 7–365 hari | histori utilisasi per link, tren 7/30/90 hari, `current_gbps` = peak hari penuh terakhir |
 | Config dari RANCID Observium (`/opt/observium/rancid`, via SFTP atau mount), Oxidized, atau upload | LAG membership, IP & MTU, loopback, IS-IS NET, SRv6 locator | Interface & Router |
 
 Parser config: **Cisco IOS-XR**, **Huawei VRP**, **Juniper Junos** (format kurung kurawal & `display set`), **Nokia SR OS** (classic & MD-CLI). Vendor terdeteksi otomatis.
@@ -119,7 +119,10 @@ python -m app.collectors.run config JKT-P-01 jkt-p-01.cfg   # satu file config
 Bisa juga lewat UI di menu **Collectors**, atau API `POST /api/collectors/observium/sync` dan `POST /api/collectors/configs/{hostname}` (body berupa teks config).
 
 Catatan:
-- API Observium hanya memberi rate *saat ini*. Histori diambil langsung dari file RRD Observium (`rrdtool xport` lewat SSH read-only, `NADIEN_OBSERVIUM_SSH_*`). Path file ditentukan dari hostname Observium + ifIndex port yang disimpan saat Full sync, jadi **jalankan Full sync dulu** sebelum import RRD. Halaman Capacity menampilkan tren growth 7, 30, dan 90 hari; forecast memakai jendela `NADIEN_TREND_WINDOW_DAYS` (default 90).
+- REST API Observium hanya memberi rate *saat ini*. Histori diambil dari RRD Observium, dengan dua pilihan sumber (`NADIEN_OBSERVIUM_RRD_SOURCE`):
+  - `api` (default): `graph.php?type=port_bits&format=json`, memakai login yang sama dengan REST API, tanpa SSH. Endpoint ini tidak terdokumentasi resmi, tapi sudah dites di server produksi. rrdtool memilih satu resolusi untuk satu rentang, jadi 90 hari keluar sebagai rata-rata 2 jam. Karena itu 7 hari terakhir diambil ulang dengan data 5 menit, supaya peak-nya akurat dan sama dengan Max di Observium. Hari yang lebih lama memakai peak dari rata-rata 2 jam, sedikit di bawah peak 5 menit yang asli. Butuh 2 request per link, sekitar 0,3 detik per link dengan 6 request paralel (`NADIEN_OBSERVIUM_GRAPH_WORKERS`), atau sekitar 45 menit untuk 9.000 link.
+  - `ssh` / `local`: peak harian asli dari archive MAX lewat `rrdtool xport` di server Observium (`NADIEN_OBSERVIUM_SSH_*`).
+- Mapping link ke port Observium (port_id, ifIndex) disimpan saat Full sync, jadi **jalankan Full sync dulu** sebelum import histori. Halaman Capacity menampilkan tren growth 7, 30, dan 90 hari. Forecast memakai jendela `NADIEN_TREND_WINDOW_DAYS` (default 90).
 - RRD port Observium dibuat dengan batas DS 12,5 GB/s (**100 Gbps**). Trafik di atas itu (mis. link 400G) disimpan RRD sebagai NaN sehingga hari itu hilang. Laporan import mencantumkan link yang kemungkinan terpotong (`possibly_clipped`). Solusinya di sisi Observium: naikkan max DS (`rrdtool tune ... --maximum INOCTETS:U`) untuk port tersebut.
 - API Observium tidak menyediakan konfigurasi device, sehingga config dibaca langsung dari arsip RANCID yang ditampilkan Observium. Semua folder `configs` di bawah base path (`var/<group>/configs/<host>`) dibaca. Nama file dicocokkan ke device lewat hostname, FQDN, atau IP management. Tipe parser diambil dari header `RANCID-CONTENT-TYPE`.
 - Akses SFTP bersifat read-only dan **host key yang belum dikenal ditolak**. Daftarkan dulu host key server Observium di `known_hosts`.
