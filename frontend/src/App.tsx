@@ -3,11 +3,13 @@ import Capacity from './pages/Capacity'
 import Collectors from './pages/Collectors'
 import Dashboard from './pages/Dashboard'
 import Inventory from './pages/Inventory'
+import Ports from './pages/Ports'
 import Topology from './pages/Topology'
 
 const NAV = [
   { to: '/', label: 'Dashboard', phase: 8 },
   { to: '/inventory', label: 'Inventory', phase: 1 },
+  { to: '/ports', label: 'Kapasitas Port', phase: 1 },
   { to: '/topology', label: 'Topology', phase: 2 },
   { to: '/capacity', label: 'Capacity Planning', phase: 3 },
   { to: '/collectors', label: 'Collectors', phase: 1 },
@@ -59,6 +61,7 @@ export default function App() {
           <Route path="/inventory" element={<Inventory />} />
           <Route path="/inventory/:entityKey" element={<Inventory />} />
           <Route path="/topology" element={<Topology />} />
+          <Route path="/ports" element={<Ports />} />
           <Route path="/capacity" element={<Capacity />} />
           <Route path="/collectors" element={<Collectors />} />
           <Route path="*" element={<Navigate to="/" replace />} />

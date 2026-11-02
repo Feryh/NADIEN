@@ -38,8 +38,9 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
     setError(null)
     try {
       const search = serverQuery ? `&q=${encodeURIComponent(serverQuery)}` : ''
+      const fixed = entity.query ? `&${entity.query}` : ''
       const [main, ...refRows] = await Promise.all([
-        api.get<Row[]>(`${entity.endpoint}?limit=${FETCH_LIMIT}${search}`),
+        api.get<Row[]>(`${entity.endpoint}?limit=${FETCH_LIMIT}${fixed}${search}`),
         ...refKeys.map((k) => api.get<Row[]>(`${ENTITY_BY_KEY[k].endpoint}?limit=${FETCH_LIMIT}`)),
       ])
       setRows(main)

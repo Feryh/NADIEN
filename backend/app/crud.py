@@ -56,13 +56,16 @@ def crud_router(
         skip: int = 0,
         limit: int = Query(1000, le=10000),
     ):
-        """List records. Any column name can be used as an exact-match filter, e.g. `?pop_id=3`."""
+        """List records. Any column is an exact-match filter (`?pop_id=3`); commas mean any-of (`?role=p,pe`)."""
         stmt = select(model)
         if q and search_columns:
             stmt = stmt.where(or_(*(c.ilike(f"%{q}%") for c in search_columns)))
         for key, value in request.query_params.items():
             if key in columns and key not in _RESERVED_PARAMS:
-                stmt = stmt.where(columns[key] == _coerce(columns[key], value))
+                if "," in value:  # ?role=p,pe,bng -> IN (...)
+                    stmt = stmt.where(columns[key].in_([_coerce(columns[key], v) for v in value.split(",") if v]))
+                else:
+                    stmt = stmt.where(columns[key] == _coerce(columns[key], value))
         return db.scalars(stmt.order_by(model.id).offset(skip).limit(limit)).all()
 
     @router.get("/{item_id}", response_model=read_schema)

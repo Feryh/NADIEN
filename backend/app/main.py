@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import models  # noqa: F401  (registers tables on Base.metadata)
 from .config import settings
 from .database import Base, engine
-from .routers import capacity, collectors, dashboard, integrations, inventory, topology
+from .routers import analysis, capacity, collectors, dashboard, integrations, inventory, topology
 
 
 @asynccontextmanager
@@ -34,6 +34,7 @@ for r in (
     integrations.router,
     collectors.router,
     collectors.backups,
+    analysis.router,
     topology.router,
     capacity.router,
     dashboard.router,

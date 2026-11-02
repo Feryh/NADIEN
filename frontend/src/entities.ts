@@ -20,6 +20,7 @@ export interface Entity {
   display: string // field used when other entities reference this one
   group: string
   external?: boolean
+  query?: string // fixed filter appended to list requests, e.g. "role=p,pe,bng,dci"
   fields: Field[]
 }
 
@@ -38,7 +39,7 @@ export const ENTITIES: Entity[] = [
       { name: 'code', label: 'Code', required: true },
       { name: 'name', label: 'Name', required: true },
       { name: 'tier', label: 'Tier', type: 'select', options: ['core', 'aggregation', 'access'] },
-      { name: 'region', label: 'Region' },
+      { name: 'region', label: 'Area' },
       { name: 'city', label: 'City' },
       { name: 'address', label: 'Address', type: 'textarea', hideInTable: true },
       { name: 'latitude', label: 'Lat', type: 'number' },
@@ -239,6 +240,26 @@ export const ENTITIES: Entity[] = [
     ],
   },
 ]
+
+// Device views split by category (same /devices endpoint, filtered by role).
+const deviceEntity = ENTITIES.find((e) => e.key === 'devices') as Entity
+const DEVICE_CATEGORIES: [string, string, string][] = [
+  ['devices-router', 'Router (P/PE/BNG/DCI)', 'p,pe,bng,dci'],
+  ['devices-metro', 'Metro / Aggregation', 'agg'],
+  ['devices-olt', 'OLT', 'olt'],
+  ['devices-access', 'Access / Switch', 'access'],
+]
+ENTITIES.splice(
+  1,
+  0,
+  ...DEVICE_CATEGORIES.map(([key, label, roles]) => ({
+    ...deviceEntity,
+    key,
+    label,
+    group: 'Perangkat per Kategori',
+    query: `role=${roles}`,
+  })),
+)
 
 export const ENTITY_BY_KEY: Record<string, Entity> = Object.fromEntries(ENTITIES.map((e) => [e.key, e]))
 export const GROUPS = [...new Set(ENTITIES.map((e) => e.group))]
