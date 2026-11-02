@@ -6,6 +6,7 @@ from .. import models as m
 from ..collectors.configs import parse_config
 from ..collectors.configs.apply import apply_config
 from ..collectors.configs.oxidized import OxidizedClient, os_hint, sync_oxidized
+from ..collectors.configs.rancid import RancidError, open_from_settings, sync_rancid
 from ..collectors.observium.client import ObserviumClient, ObserviumError
 from ..collectors.observium.sync import ALL_PARTS, SOURCE_NAME, sync_observium
 from ..config import settings
@@ -29,6 +30,11 @@ def status(db: Session = Depends(get_db)):
             "auth": auth,
             "last_sync_at": source.last_sync_at if source else None,
             "last_status": source.last_status if source else None,
+        },
+        "rancid": {
+            "source": settings.rancid_path
+            or (f"sftp://{settings.rancid_ssh_host}{settings.rancid_remote_path}" if settings.rancid_ssh_host else None),
+            "configured": bool(settings.rancid_path or (settings.rancid_ssh_host and settings.rancid_ssh_user)),
         },
         "oxidized": {"url": settings.oxidized_url, "configured": bool(settings.oxidized_url)},
         "parts": sorted(ALL_PARTS),
@@ -69,6 +75,21 @@ async def parse_preview(request: Request, vendor: str | None = None):
         return parse_config(text, vendor).as_dict()
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/configs/rancid/sync")
+def rancid_sync(discover: bool = True, db: Session = Depends(get_db)):
+    """Read every config in Observium's RANCID archive (local path or SFTP) and merge it into the inventory."""
+    try:
+        fs, base, source = open_from_settings()
+    except RancidError as exc:
+        raise HTTPException(400 if "not configured" in str(exc) else 502, str(exc)) from exc
+    try:
+        return sync_rancid(db, fs, base, source, discover)
+    except RancidError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    finally:
+        fs.close()
 
 
 @router.post("/configs/oxidized/sync")

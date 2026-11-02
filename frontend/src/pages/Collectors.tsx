@@ -3,6 +3,7 @@ import { api } from '../api'
 
 interface CollectorStatus {
   observium: { url: string; configured: boolean; auth: string | null; last_sync_at: string | null; last_status: string | null }
+  rancid: { source: string | null; configured: boolean }
   oxidized: { url: string | null; configured: boolean }
   parts: string[]
 }
@@ -84,21 +85,37 @@ export default function Collectors() {
       <div className="card">
         <div className="toolbar">
           <h2>Konfigurasi device</h2>
-          <span className={`pill ${status?.oxidized.configured ? 'pill-ok' : 'pill-muted'}`}>
-            Oxidized {status?.oxidized.configured ? 'terhubung' : 'belum di-set'}
+          <span className={`pill ${status?.rancid.configured ? 'pill-ok' : 'pill-bad'}`}>
+            RANCID {status?.rancid.configured ? 'siap' : 'belum di-set'}
           </span>
+          {status?.oxidized.configured && <span className="pill pill-ok">Oxidized siap</span>}
           <div className="spacer" />
+          {status?.oxidized.configured && (
+            <button disabled={!!busy} onClick={() => run('oxidized', () => api.post('/collectors/configs/oxidized/sync'))}>
+              {busy === 'oxidized' ? 'Menarik config…' : 'Sync dari Oxidized'}
+            </button>
+          )}
           <button
-            disabled={!!busy || !status?.oxidized.configured}
-            onClick={() => run('oxidized', () => api.post('/collectors/configs/oxidized/sync'))}
+            className="primary"
+            disabled={!!busy || !status?.rancid.configured}
+            onClick={() => run('rancid', () => api.post('/collectors/configs/rancid/sync'))}
           >
-            {busy === 'oxidized' ? 'Menarik config…' : 'Sync semua dari Oxidized'}
+            {busy === 'rancid' ? 'Membaca RANCID…' : 'Sync semua dari RANCID'}
           </button>
         </div>
         <p className="hint">
-          API Observium tidak menyediakan config. Ambil dari Oxidized (<code>NADIEN_OXIDIZED_URL</code>) atau tempel config satu
-          device di bawah. Config melengkapi: keanggotaan LAG, IP & MTU interface, loopback, IS-IS NET, SRv6 locator.
+          API Observium tidak menyediakan config, jadi config dibaca dari arsip RANCID yang dipakai Observium
+          {status?.rancid.source ? <> (<code>{status.rancid.source}</code>)</> : null}. Config melengkapi: keanggotaan LAG, IP &amp; MTU
+          interface, loopback, IS-IS NET, SRv6 locator.
         </p>
+        {!status?.rancid.configured && (
+          <p className="hint">
+            Set di <code>backend/.env</code>: <code>NADIEN_RANCID_SSH_HOST</code> + <code>NADIEN_RANCID_SSH_USER</code> +{' '}
+            <code>NADIEN_RANCID_SSH_KEY_FILE</code> (SFTP read-only ke server Observium, path default{' '}
+            <code>/opt/observium/rancid</code>) atau <code>NADIEN_RANCID_PATH</code> kalau folder di-mount lokal.
+          </p>
+        )}
+        <p className="hint">Atau tempel config satu device di bawah:</p>
         <div className="calc-form">
           <label>
             <span>Hostname (harus sudah ada di inventory)</span>

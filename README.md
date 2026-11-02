@@ -94,7 +94,7 @@ Data valid diambil dari jaringan, bukan diisi manual:
 | Observium `/address` | IPv4 + prefix | Interface IPv4 |
 | Observium `/neighbours` | LLDP (CDP opsional) | Tabel LLDP → topology discovery |
 | Observium `/ports` rate | ifIn/OutOctets_rate | 1 sampel utilisasi per link per sync, `current_gbps` |
-| Config (Oxidized / upload) | LAG membership, IP & MTU, loopback, IS-IS NET, SRv6 locator | Interface & Router |
+| Config dari RANCID Observium (`/opt/observium/rancid`, via SFTP atau mount), Oxidized, atau upload | LAG membership, IP & MTU, loopback, IS-IS NET, SRv6 locator | Interface & Router |
 
 Parser config: **Cisco IOS-XR**, **Huawei VRP**, **Juniper Junos** (format kurung kurawal & `display set`), **Nokia SR OS** (classic & MD-CLI). Vendor terdeteksi otomatis.
 
@@ -109,7 +109,8 @@ Menjalankan (kredensial hanya lewat env / `backend/.env`, lihat `backend/env.exa
 ```bash
 python -m app.collectors.run observium                      # full sync
 python -m app.collectors.run observium --parts utilization  # rate saja, jadwalkan tiap 5–15 menit
-python -m app.collectors.run oxidized                       # semua config dari Oxidized
+python -m app.collectors.run rancid                         # semua config dari arsip RANCID Observium
+python -m app.collectors.run oxidized                       # alternatif: config dari Oxidized
 python -m app.collectors.run config JKT-P-01 jkt-p-01.cfg   # satu file config
 ```
 
@@ -117,7 +118,8 @@ Bisa juga lewat UI di menu **Collectors**, atau API `POST /api/collectors/observ
 
 Catatan:
 - API Observium hanya memberi rate *saat ini*. Histori utilisasi terbentuk dari sync rutin, jadi tren growth makin akurat seiring waktu.
-- API Observium tidak menyediakan konfigurasi device, sehingga config diambil dari Oxidized.
+- API Observium tidak menyediakan konfigurasi device, sehingga config dibaca langsung dari arsip RANCID yang ditampilkan Observium. Semua folder `configs` di bawah base path (`var/<group>/configs/<host>`) dibaca. Nama file dicocokkan ke device lewat hostname, FQDN, atau IP management. Tipe parser diambil dari header `RANCID-CONTENT-TYPE`.
+- Akses SFTP bersifat read-only dan **host key yang belum dikenal ditolak**. Daftarkan dulu host key server Observium di `known_hosts`.
 
 ### Data eksternal (DWDM, ODF, Patch Panel, Fiber, Wavelength)
 

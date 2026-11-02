@@ -27,7 +27,19 @@ class Settings(BaseSettings):
     # LLDP is the mandatory topology source; CDP adjacencies are only imported when enabled.
     observium_include_cdp: bool = False
 
-    # Oxidized (device configurations — Observium's API does not expose configs).
+    # RANCID config archive used by Observium (Observium's API does not expose configs).
+    # Either a local/mounted path, or SFTP to the Observium server with a read-only SSH account.
+    rancid_path: str | None = None
+    rancid_ssh_host: str | None = None
+    rancid_ssh_port: int = 22
+    rancid_ssh_user: str | None = None
+    rancid_ssh_key_file: str | None = None
+    rancid_ssh_password: str | None = None
+    rancid_remote_path: str = "/opt/observium/rancid"
+    # Unknown host keys are rejected unless listed here (or in ~/.ssh/known_hosts).
+    rancid_ssh_known_hosts: str | None = None
+
+    # Oxidized (alternative config source).
     oxidized_url: str | None = None
     oxidized_user: str | None = None
     oxidized_password: str | None = None

@@ -2,6 +2,7 @@
 
     python -m app.collectors.run observium                     # full sync
     python -m app.collectors.run observium --parts utilization # rates only (run every 5–15 min)
+    python -m app.collectors.run rancid                        # configs from Observium's RANCID archive
     python -m app.collectors.run oxidized                      # configs from Oxidized
     python -m app.collectors.run config JKT-P-01 jkt-p-01.cfg [--vendor iosxr]
 
@@ -21,6 +22,7 @@ from ..services.topology import discover_links, norm_host
 from .configs import parse_config
 from .configs.apply import apply_config
 from .configs.oxidized import OxidizedClient, os_hint, sync_oxidized
+from .configs.rancid import RancidError, open_from_settings, sync_rancid
 from .observium.client import ObserviumClient, ObserviumError
 from .observium.sync import ALL_PARTS, sync_observium
 
@@ -31,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     obs = sub.add_parser("observium")
     obs.add_argument("--parts", default=",".join(sorted(ALL_PARTS)))
     obs.add_argument("--no-discover", action="store_true")
+    sub.add_parser("rancid")
     sub.add_parser("oxidized")
     cfg = sub.add_parser("config")
     cfg.add_argument("hostname")
@@ -47,6 +50,16 @@ def main(argv: list[str] | None = None) -> int:
             except ObserviumError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 2
+        elif args.cmd == "rancid":
+            try:
+                fs, base, source = open_from_settings()
+            except RancidError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+            try:
+                report = sync_rancid(db, fs, base, source)
+            finally:
+                fs.close()
         elif args.cmd == "oxidized":
             client = OxidizedClient()
             try:
