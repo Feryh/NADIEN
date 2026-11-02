@@ -1,0 +1,15 @@
+# Claude Code — file pribadi
+CLAUDE.local.md
+.claude/settings.local.json
+
+.env
+.env.*
+
+# Python
+.venv/
+__pycache__/
+*.db
+
+# Node
+node_modules/
+dist/
