@@ -13,6 +13,8 @@
 
 ## Menjalankan
 
+Panduan lengkap untuk lokal (Docker, native, Windows + WSL) dan server production ada di [docs/LAUNCH.md](docs/LAUNCH.md).
+
 ### Opsi A — Docker (paling mudah)
 
 ```bash
