@@ -183,6 +183,23 @@ export default function Topology() {
     load()
   }, [load])
 
+  // A running collector sync rebuilds topology itself and holds the DB writer; block manual discovery.
+  const [syncPhase, setSyncPhase] = useState<string | null>(null)
+  useEffect(() => {
+    let alive = true
+    const check = () =>
+      api
+        .get<{ status: string; phase: string }>('/collectors/jobs/current')
+        .then((j) => alive && setSyncPhase(j.status === 'running' ? j.phase : null))
+        .catch(() => undefined)
+    check()
+    const t = setInterval(check, 10000)
+    return () => {
+      alive = false
+      clearInterval(t)
+    }
+  }, [])
+
   const runLayout = useCallback(
     (cy: Core, layout: LayoutMode) => {
       if (!data) return
@@ -335,8 +352,13 @@ export default function Topology() {
         <button onClick={savePositions} disabled={!dirty}>
           Simpan posisi
         </button>
-        <button className="primary" onClick={discover} disabled={busy}>
-          {busy ? 'Discovering…' : 'Run discovery (LLDP)'}
+        <button
+          className="primary"
+          onClick={discover}
+          disabled={busy || !!syncPhase}
+          title={syncPhase ? `Sync sedang berjalan (${syncPhase}); topologi dibangun otomatis di akhir sync` : undefined}
+        >
+          {busy ? 'Discovering…' : syncPhase ? 'Sync berjalan…' : 'Run discovery (LLDP)'}
         </button>
       </div>
 

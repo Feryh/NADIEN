@@ -226,7 +226,7 @@ export default function Collectors() {
           </button>
           <button
             className="primary"
-            disabled={!!busy || !configText.trim() || !hostname.trim()}
+            disabled={!!busy || jobRunning || !configText.trim() || !hostname.trim()}
             onClick={() => run('apply', () => postText(`/collectors/configs/${encodeURIComponent(hostname.trim())}${query}`, configText))}
           >
             Import ke inventory
@@ -248,7 +248,7 @@ export default function Collectors() {
             {backups?.enabled ? `otomatis sebelum sync · simpan ${backups.keep} terakhir` : 'backup otomatis nonaktif'}
           </span>
           <div className="spacer" />
-          <button disabled={!!busy || !backups?.supported} onClick={() => run('backup', () => api.post('/backups'))}>
+          <button disabled={!!busy || jobRunning || !backups?.supported} onClick={() => run('backup', () => api.post('/backups'))}>
             {busy === 'backup' ? 'Membuat backup…' : 'Backup sekarang'}
           </button>
         </div>

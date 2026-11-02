@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from .. import models as m
 from .. import schemas as s
+from ..collectors import runner as jobs_runner
 from ..database import get_db
 from ..services.capacity import calculate
 from ..services.topology import discover_links, norm_host
@@ -92,6 +93,7 @@ def list_lldp(device_id: int | None = None, db: Session = Depends(get_db)):
 @router.post("/lldp")
 def ingest_lldp(tables: list[s.LldpTableIn], db: Session = Depends(get_db)):
     """Replace the LLDP neighbor table of each given device (output of a collector run)."""
+    jobs_runner.ensure_idle(jobs_runner.runner)
     by_host = {norm_host(d.hostname): d for d in db.scalars(select(m.Device))}
     unknown, stored = [], 0
     for table in tables:
@@ -112,4 +114,5 @@ def ingest_lldp(tables: list[s.LldpTableIn], db: Session = Depends(get_db)):
 @router.post("/discover", response_model=s.DiscoveryResult)
 def run_discovery(db: Session = Depends(get_db)):
     """Rebuild the link inventory from LLDP (mandatory) with config descriptions as backup."""
+    jobs_runner.ensure_idle(jobs_runner.runner)  # a sync already runs discovery at its end
     return discover_links(db)

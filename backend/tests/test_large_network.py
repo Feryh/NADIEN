@@ -283,6 +283,38 @@ def test_background_job_and_busy(db, job_runner, monkeypatch):
     assert job_runner.wait(5)["status"] == "ok"
 
 
+def test_bulk_writes_refused_while_sync_runs(db, job_runner):
+    """Manual discovery during a sync aborted the real sync with 'database is locked'."""
+    gate = threading.Event()
+    job_runner.start("observium", lambda _db, progress: (progress("ports"), gate.wait(10), {})[2])
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        api = TestClient(app)
+        discover = api.post("/api/topology/discover")
+        backup = api.post("/api/backups")
+        config = api.post("/api/collectors/configs/JKT-P-01", content=b"hostname JKT-P-01\n")
+        reads = api.get("/api/devices")
+    finally:
+        gate.set()
+        job_runner.wait(10)
+        app.dependency_overrides.clear()
+    assert discover.status_code == 409 and "sedang berjalan" in discover.json()["detail"]
+    assert backup.status_code == 409 and config.status_code == 409
+    assert reads.status_code == 200  # reading stays available
+
+
+def test_ports_committed_in_batches(db, monkeypatch):
+    from app.collectors.observium import sync as sync_mod
+
+    monkeypatch.setattr(sync_mod, "WRITE_BATCH", 3)
+    commits = []
+    original = db.commit
+    monkeypatch.setattr(db, "commit", lambda: (commits.append(1), original())[1])
+    c = ObserviumClient(base_url="http://o.test", token="t", transport=observium_transport())
+    sync_observium(db, c, {"inventory"}, discover=False)
+    assert len(commits) >= 5  # devices + several port batches + addresses + source record
+
+
 def test_failed_job_is_reported(job_runner):
     def boom(_db, progress):
         progress("ports")

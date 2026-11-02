@@ -47,6 +47,7 @@ PORT_FIELDS = (
     "ifAdminStatus,ifOperStatus,ifInOctets_rate,ifOutOctets_rate,deleted"
 )
 PAGE_SIZE = 5000
+WRITE_BATCH = 20000
 SOURCE_NAME = "Observium"
 UNASSIGNED = "UNASSIGNED"
 
@@ -242,6 +243,7 @@ def sync_observium(
     step("ports")
     iface_by_port: dict[str, m.Interface] = {}
     rates_by_port: dict[str, tuple[float | None, float | None]] = {}
+    pending = 0
     for row in client.fetch("ports", page_size=PAGE_SIZE, fields=PORT_FIELDS):
         rec = parse_port(row)
         device = device_by_obs.get(str(row.get("device_id")))
@@ -249,13 +251,18 @@ def sync_observium(
             continue
         if write_inventory:
             iface = writer.interface(device, rec)
+            pending += 1
+            if pending >= WRITE_BATCH:
+                # Short write transactions: other writers (UI edits) never wait long for the lock.
+                db.commit()
+                pending = 0
         else:
             iface = writer.ifaces.get((device.id, norm_if(rec.name)))
             if iface is None:
                 continue
         iface_by_port[rec.observium_id] = iface
         rates_by_port[rec.observium_id] = (rec.in_gbps, rec.out_gbps)
-    db.flush()  # one flush for every new interface, then ids are available
+    db.flush()  # ids for the last batch of new interfaces
     rates = {iface_by_port[p].id: r for p, r in rates_by_port.items()}
     report.counts["ports_seen"] = len(iface_by_port)
 

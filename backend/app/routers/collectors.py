@@ -9,7 +9,7 @@ from ..collectors.configs import parse_config
 from ..collectors.configs.oxidized import OxidizedClient, os_hint
 from ..collectors.configs.rancid import RancidError, open_from_settings
 from ..collectors.observium.client import ObserviumClient, ObserviumError
-from ..collectors.runner import JobBusy, runner
+from ..collectors.runner import JobBusy, ensure_idle, runner
 from ..collectors.observium.sync import ALL_PARTS, SOURCE_NAME
 from ..config import settings
 from ..database import get_db
@@ -130,6 +130,7 @@ async def import_config(
     db: Session = Depends(get_db),
 ):
     """Back up the DB, then merge one device's config (raw text body) into the inventory."""
+    ensure_idle(runner)
     text = await _read_text(request)
     device = next((d for d in db.scalars(select(m.Device)) if norm_host(d.hostname) == norm_host(hostname)), None)
     if device is None:
@@ -165,6 +166,7 @@ def get_backups(db: Session = Depends(get_db)):
 @backups.post("", status_code=201)
 def create_manual_backup(db: Session = Depends(get_db)):
     """Take a backup now. Restore is CLI-only on purpose: `python -m app.backup restore <name>`."""
+    ensure_idle(runner)  # every sync already starts with its own backup
     try:
         db.commit()
         return create_backup(jobs._engine(db), "manual").as_dict()

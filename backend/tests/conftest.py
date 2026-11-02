@@ -46,12 +46,14 @@ def db():
 @pytest.fixture
 def job_runner(db, tmp_path, monkeypatch):
     """Background jobs run against the test session, with their state file in tmp_path."""
+    from app.collectors import runner as runner_mod
     from app.collectors.runner import JobRunner
     from app.routers import collectors
 
     factory = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
     runner = JobRunner(session_factory=factory, state_file=tmp_path / "last-sync-job.json")
     monkeypatch.setattr(collectors, "runner", runner)
+    monkeypatch.setattr(runner_mod, "runner", runner)
     return runner
 
 

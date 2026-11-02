@@ -78,6 +78,10 @@ class JobRunner:
         except OSError:
             pass  # the in-memory copy is still served
 
+    def running(self) -> dict[str, Any] | None:
+        job = self._current
+        return dict(job) if job and job["status"] == "running" else None
+
     def current(self) -> dict[str, Any] | None:
         if self._current is not None:
             return dict(self._current)
@@ -94,3 +98,16 @@ class JobRunner:
 
 
 runner = JobRunner()
+
+
+def ensure_idle(job_runner: JobRunner) -> None:
+    """Refuse bulk writes (discovery, config import, backup) while a sync job is writing.
+
+    SQLite allows one writer at a time; a second large transaction would make one of them
+    time out with "database is locked" and abort a multi-minute sync.
+    """
+    from fastapi import HTTPException
+
+    job = job_runner.running()
+    if job:
+        raise HTTPException(409, f"Sync {job['kind']} sedang berjalan (tahap: {job['phase']}); coba lagi setelah selesai")
