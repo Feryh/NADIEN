@@ -12,10 +12,10 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from ..models import Device, Interface, Link, LldpNeighbor
+from ..models import Device, Interface, Link, LldpNeighbor, UtilizationSample
 from ..schemas import DiscoveryResult
 
 
@@ -83,7 +83,12 @@ class _Discovery:
         return unresolved
 
     def from_config(self) -> None:
-        """Pair uncovered ports whose descriptions name each other's hostname."""
+        """Pair uncovered ports whose descriptions name each other's hostname.
+
+        Only for device pairs LLDP saw no adjacency between at all: otherwise a bundle described
+        "TO-X" would be paired on top of its LLDP-discovered members and counted twice.
+        """
+        lldp_pairs = {frozenset((adj.a.device_id, adj.b.device_id)) for adj in self.adjacencies.values()}
         hosts = sorted(self.by_host.items(), key=lambda kv: -len(kv[0]))  # longest first: PE-1 vs PE-10
         candidates = [
             i for i in self.ifaces.values()
@@ -95,7 +100,7 @@ class _Discovery:
             desc = iface.description.lower()
             local = self.devices[iface.device_id]
             remote = next((d for h, d in hosts if h in desc and d.id != local.id), None)
-            if remote is None:
+            if remote is None or frozenset((local.id, remote.id)) in lldp_pairs:
                 continue
             local_host = norm_host(local.hostname)
             peers = [
@@ -162,10 +167,18 @@ def discover_links(db: Session) -> DiscoveryResult:
         seen_ids.add(link.id)
 
     # Discovered links that disappeared from LLDP/config are flagged, not deleted —
-    # capacity history and customer references stay intact.
-    marked_down = 0
-    for link in existing.values():
-        if link.id not in seen_ids and link.discovery_source in ("lldp", "config") and link.status == "up":
+    # capacity history and customer references stay intact. The exception is a member-level link
+    # whose ports now belong to a discovered bundle: it was superseded, not lost.
+    member_pairs = {pair for adj in run.adjacencies.values() if adj.link_type == "bundle" for pair in adj.member_pairs}
+    marked_down = superseded = 0
+    for key, link in existing.items():
+        if link.id in seen_ids or link.discovery_source not in ("lldp", "config"):
+            continue
+        if key in member_pairs:
+            db.execute(delete(UtilizationSample).where(UtilizationSample.link_id == link.id))
+            db.delete(link)
+            superseded += 1
+        elif link.status == "up":
             link.status = "down"
             marked_down += 1
 
@@ -177,6 +190,7 @@ def discover_links(db: Session) -> DiscoveryResult:
         created=created,
         updated=updated,
         marked_down=marked_down,
+        superseded=superseded,
         interfaces_created=run.stats["interfaces_created"],
         unresolved_neighbors=unresolved,
     )

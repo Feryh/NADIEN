@@ -21,6 +21,8 @@ Phase 1–3 (inventory, topology, capacity) sudah MVP. Lihat README.md untuk det
 - `cd backend && python -m app.seed --reset` — reset data contoh
 - `cd frontend && npm run dev` — frontend dev (:5173, proxy /api ke :8000)
 - `cd frontend && npm run typecheck` — cek TypeScript
+- `cd backend && python -m pytest -q` — test backend (butuh `requirements-dev.txt`)
+- `cd backend && python -m app.collectors.run observium` — sync dari Observium (kredensial via env)
 
 ## Architecture
 
@@ -30,6 +32,9 @@ Phase 1–3 (inventory, topology, capacity) sudah MVP. Lihat README.md untuk det
 - `backend/app/services/topology.py` — LLDP adalah sumber wajib, deskripsi config hanya backup.
 - `backend/app/services/capacity.py` — semua rumus kapasitas; warna dari committed % (current + reserved).
 - `frontend/src/entities.ts` — definisi field yang menggerakkan semua layar inventory.
+- `backend/app/collectors/` — Observium (inventory, LLDP, utilisasi) dan parser config 4 vendor.
+  Parser bersifat murni (tanpa DB) dan diuji dengan fixture di `backend/tests/fixtures/`.
+  Kredensial Observium/Oxidized hanya lewat env; jangan pernah ditulis ke file yang di-commit.
 
 ## Coding Conventions
 

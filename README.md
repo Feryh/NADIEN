@@ -57,6 +57,9 @@ backend/   FastAPI + SQLAlchemy 2 (PostgreSQL)
   app/services/topology.py   discovery link dari LLDP (wajib) + deskripsi config (backup)
   app/services/capacity.py   engine kapasitas & forecast
   app/seed.py                data contoh jaringan Metro
+  app/collectors/observium/  client + parser + sync Observium API
+  app/collectors/configs/    parser config IOS-XR, VRP, Junos, SR OS + Oxidized
+  tests/                     pytest dengan fixture Observium & config 4 vendor
 frontend/  React + TypeScript + Vite, Cytoscape.js (peta), Recharts (grafik)
 ```
 
@@ -79,6 +82,42 @@ months_to_full  = (capacity − reserved − current) / growth
 Contoh: link 400G, current 250G, growth 20G/bulan → **penuh dalam 7.5 bulan**.
 
 Nilai growth diambil dari override manual per link. Kalau kosong, dihitung dari tren regresi linear sampel utilisasi 90 hari terakhir (`POST /api/capacity/samples`). Ambang warna dan planning bisa diatur lewat env `NADIEN_UTIL_*`.
+
+### Collectors: Observium + config
+
+Data valid diambil dari jaringan, bukan diisi manual:
+
+| Sumber | Data | Masuk ke |
+|---|---|---|
+| Observium `/devices` | sysName, os, hardware, version, location (+lat/lon), status | POP (kode dari hostname), Vendor, Model, Software, Router |
+| Observium `/ports` | ifName, ifType, ifHighSpeed, ifMtu, admin/oper status, ifAlias | Interface (physical / bundle / subinterface) |
+| Observium `/address` | IPv4 + prefix | Interface IPv4 |
+| Observium `/neighbours` | LLDP (CDP opsional) | Tabel LLDP → topology discovery |
+| Observium `/ports` rate | ifIn/OutOctets_rate | 1 sampel utilisasi per link per sync, `current_gbps` |
+| Config (Oxidized / upload) | LAG membership, IP & MTU, loopback, IS-IS NET, SRv6 locator | Interface & Router |
+
+Parser config: **Cisco IOS-XR**, **Huawei VRP**, **Juniper Junos** (format kurung kurawal & `display set`), **Nokia SR OS** (classic & MD-CLI). Vendor terdeteksi otomatis.
+
+Aturan penggabungan:
+- **Observium** menang untuk state operasional (speed, status, ifAlias).
+- **Config** menang untuk hal yang tidak terlihat SNMP (LAG, loopback, IS-IS, SRv6).
+- **Field kurasi** (role device, POP device yang sudah ada) tidak pernah ditimpa.
+- Pencocokan memakai hostname (sysName tanpa domain) dan nama interface. Ini kunci yang sama dengan LLDP, jadi data tidak terduplikasi.
+
+Menjalankan (kredensial hanya lewat env / `backend/.env`, lihat `backend/env.example`):
+
+```bash
+python -m app.collectors.run observium                      # full sync
+python -m app.collectors.run observium --parts utilization  # rate saja, jadwalkan tiap 5–15 menit
+python -m app.collectors.run oxidized                       # semua config dari Oxidized
+python -m app.collectors.run config JKT-P-01 jkt-p-01.cfg   # satu file config
+```
+
+Bisa juga lewat UI di menu **Collectors**, atau API `POST /api/collectors/observium/sync` dan `POST /api/collectors/configs/{hostname}` (body berupa teks config).
+
+Catatan:
+- API Observium hanya memberi rate *saat ini*. Histori utilisasi terbentuk dari sync rutin, jadi tren growth makin akurat seiring waktu.
+- API Observium tidak menyediakan konfigurasi device, sehingga config diambil dari Oxidized.
 
 ### Data eksternal (DWDM, ODF, Patch Panel, Fiber, Wavelength)
 

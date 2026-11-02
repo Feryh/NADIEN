@@ -229,7 +229,7 @@ export const ENTITIES: Entity[] = [
     fields: [
       { name: 'name', label: 'Name', required: true },
       { name: 'system_type', label: 'System', type: 'select', options: ['nms', 'inventory', 'dwdm_ems', 'oss'], required: true },
-      { name: 'target_entity', label: 'Feeds', type: 'select', options: ['dwdm_nodes', 'odfs', 'patch_panels', 'fibers', 'dwdm_wavelengths'], required: true },
+      { name: 'target_entity', label: 'Feeds', type: 'select', options: ['devices', 'dwdm_nodes', 'odfs', 'patch_panels', 'fibers', 'dwdm_wavelengths'], required: true },
       { name: 'base_url', label: 'Base URL' },
       { name: 'auth_type', label: 'Auth', type: 'select', options: ['none', 'token', 'basic', 'oauth2'] },
       { name: 'enabled', label: 'Enabled', type: 'bool' },

@@ -189,7 +189,7 @@ class DwdmWavelengthRead(DwdmWavelengthCreate, ORMRead):
 class IntegrationSourceCreate(BaseModel):
     name: str
     system_type: Literal["nms", "inventory", "dwdm_ems", "oss"]
-    target_entity: Literal["dwdm_nodes", "odfs", "patch_panels", "fibers", "dwdm_wavelengths"]
+    target_entity: Literal["devices", "dwdm_nodes", "odfs", "patch_panels", "fibers", "dwdm_wavelengths"]
     base_url: str | None = None
     auth_type: Literal["none", "token", "basic", "oauth2"] | None = "none"
     enabled: bool = False
@@ -305,6 +305,7 @@ class DiscoveryResult(BaseModel):
     created: int
     updated: int
     marked_down: int
+    superseded: int = 0
     interfaces_created: int
     unresolved_neighbors: list[str]
 

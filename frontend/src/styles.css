@@ -148,6 +148,8 @@ tr.clickable:hover, tr.selected { background: var(--panel-2); }
 .inline { display: flex; gap: 4px; }
 .inline input { width: 90px; }
 .calc-result .big { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
+.config-input { width: 100%; font-family: Consolas, 'Cascadia Mono', monospace; font-size: 12px; }
+.result { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 12px; max-height: 480px; overflow: auto; font-size: 12px; margin: 12px 0 0; }
 .detail-stats { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-bottom: 12px; font-size: 13px; }
 
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
