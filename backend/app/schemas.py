@@ -307,6 +307,7 @@ class DiscoveryResult(BaseModel):
     marked_down: int
     superseded: int = 0
     interfaces_created: int
+    interfaces_removed: int = 0
     unresolved_neighbors: list[str]
 
 

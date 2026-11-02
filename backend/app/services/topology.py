@@ -20,7 +20,28 @@ from ..models import Device, Interface, Link, LldpNeighbor, UtilizationSample
 from ..schemas import DiscoveryResult
 
 
+_IP = re.compile(r"[\d.]+|[0-9a-fA-F:]*:[0-9a-fA-F:]*")
+
+
+def strip_domain(name: str) -> str:
+    """'jkt-p-01.metro.net' -> 'jkt-p-01', but 'R6.BAM.LEAF-CNDC.02' stays whole.
+
+    Only a trailing alphabetic label (a TLD such as .net / .id) marks an FQDN; dotted hostnames
+    like R6.BAM.LEAF-CNDC.02 would otherwise all collapse to 'R6'.
+    """
+    name = name.strip()
+    if "." not in name or _IP.fullmatch(name):
+        return name
+    last = name.rsplit(".", 1)[1]
+    return name.split(".", 1)[0] if last.isalpha() and 2 <= len(last) <= 24 else name
+
+
 def norm_host(name: str) -> str:
+    return strip_domain(name).lower()
+
+
+def legacy_host_key(name: str) -> str:
+    """Key used before dotted hostnames were kept whole (everything before the first dot)."""
     return name.strip().split(".")[0].lower()
 
 
@@ -58,6 +79,7 @@ class _Discovery:
         self.if_index = {(i.device_id, norm_if(i.name)): i for i in self.ifaces.values()}
         self.adjacencies: dict[frozenset[int], _Adjacency] = {}
         self.covered: set[int] = set()
+        self.created_ids: set[int] = set()
 
     def iface(self, device: Device, name: str) -> Interface:
         key = (device.id, norm_if(name))
@@ -68,6 +90,7 @@ class _Discovery:
             self.db.flush()
             self.if_index[key] = found
             self.ifaces[found.id] = found
+            self.created_ids.add(found.id)
             self.stats["interfaces_created"] += 1
         return found
 
@@ -148,6 +171,20 @@ class _Discovery:
                 remaining.remove(b)
                 self.add(a, b, "config")
 
+    def phantom_ids(self, valid_iface_ids: set[int] | None) -> set[int]:
+        """Ports the NMS does not know that carry nothing but a name — what discovery created
+        from LLDP port names that matched no real port. Never config-imported or edited ports."""
+        if valid_iface_ids is None:
+            return set()
+        # Only devices the NMS actually reported on; hand-made devices keep their bare ports.
+        synced_devices = {self.ifaces[i].device_id for i in valid_iface_ids if i in self.ifaces}
+        return {
+            i.id for i in self.ifaces.values()
+            if i.device_id in synced_devices and i.id not in valid_iface_ids and i.id not in self.created_ids
+            and i.if_type == "physical" and i.parent_id is None
+            and i.speed_gbps is None and not i.description and not i.ipv4_address and i.mtu is None
+        }
+
     def capacity(self, adj: _Adjacency) -> float | None:
         speeds = []
         for pair in adj.member_pairs:
@@ -158,7 +195,9 @@ class _Discovery:
         return sum(speeds) if speeds else None
 
 
-def discover_links(db: Session) -> DiscoveryResult:
+def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> DiscoveryResult:
+    """Rebuild links. `valid_iface_ids` (ports confirmed by the NMS this run) enables cleanup of
+    phantom ports left by earlier runs; without it nothing is treated as phantom."""
     run = _Discovery(db)
     unresolved = run.from_lldp()
     run.from_config()
@@ -201,20 +240,40 @@ def discover_links(db: Session) -> DiscoveryResult:
         seen_ids.add(link.id)
 
     # Discovered links that disappeared from LLDP/config are flagged, not deleted —
-    # capacity history and customer references stay intact. The exception is a member-level link
-    # whose ports now belong to a discovered bundle: it was superseded, not lost.
+    # capacity history and customer references stay intact. Exceptions, which were superseded
+    # rather than lost:
+    #  - a member-level link whose ports now belong to a discovered bundle;
+    #  - a config-described link between devices LLDP now sees directly;
+    #  - a link on a phantom port (created from an LLDP name that matched no real port).
     member_pairs = {pair for adj in run.adjacencies.values() if adj.link_type == "bundle" for pair in adj.member_pairs}
+    lldp_device_pairs = {
+        frozenset((adj.a.device_id, adj.b.device_id)) for adj in run.adjacencies.values() if adj.source == "lldp"
+    }
+    phantom = run.phantom_ids(valid_iface_ids)
     marked_down = superseded = 0
     for key, link in existing.items():
         if link.id in seen_ids or link.discovery_source not in ("lldp", "config"):
             continue
-        if key in member_pairs:
+        replaced = (
+            key in member_pairs
+            or (link.discovery_source == "config" and frozenset((link.a_device_id, link.b_device_id)) in lldp_device_pairs)
+            or bool(key & phantom)
+        )
+        if replaced:
             db.execute(delete(UtilizationSample).where(UtilizationSample.link_id == link.id))
             db.delete(link)
             superseded += 1
         elif link.status == "up":
             link.status = "down"
             marked_down += 1
+    db.flush()
+
+    removed = 0
+    if phantom:
+        in_use = {i for l in db.scalars(select(Link)) for i in (l.a_interface_id, l.b_interface_id) if i}
+        for iface_id in phantom - in_use:
+            db.delete(run.ifaces[iface_id])
+            removed += 1
 
     db.commit()
     sources = Counter(adj.source for adj in run.adjacencies.values())
@@ -226,5 +285,6 @@ def discover_links(db: Session) -> DiscoveryResult:
         marked_down=marked_down,
         superseded=superseded,
         interfaces_created=run.stats["interfaces_created"],
+        interfaces_removed=removed,
         unresolved_neighbors=unresolved,
     )

@@ -9,6 +9,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from ...services.topology import strip_domain
+
 # Observium `os` -> (vendor, OS family). Unknown OSes fall back to the row's own `vendor` field.
 OS_VENDOR: dict[str, tuple[str, str]] = {
     "iosxr": ("Cisco", "IOS-XR"),
@@ -64,11 +66,11 @@ def _is_ip(name: str) -> bool:
 
 
 def short_hostname(name: str) -> str:
-    """'jkt-p-01.metro.net' -> 'JKT-P-01'. IP addresses are returned unchanged."""
+    """'jkt-p-01.metro.net' -> 'JKT-P-01'; dotted names that are not FQDNs stay whole; IPs unchanged."""
     name = name.strip()
     if _is_ip(name):
         return name
-    return name.split(".")[0].upper()
+    return strip_domain(name).upper()
 
 
 # --------------------------------------------------------------------------- devices
@@ -242,6 +244,9 @@ class NeighbourRecord:
     remote_system_name: str
     remote_port_id: str
     protocol: str
+    # Observium's own resolution of the far end, when it found it among its ports/devices.
+    remote_observium_port_id: str | None = None
+    remote_address: str | None = None
 
 
 def neighbour_skip_reason(row: dict[str, Any], include_cdp: bool = False) -> str | None:
@@ -271,6 +276,8 @@ def parse_neighbour(row: dict[str, Any], include_cdp: bool = False) -> Neighbour
         remote_system_name=remote_host,
         remote_port_id=remote_port,
         protocol=protocol,
+        remote_observium_port_id=str(row["remote_port_id"]) if row.get("remote_port_id") not in (None, "", "0", 0) else None,
+        remote_address=(row.get("remote_address") or "").strip() or None,
     )
 
 

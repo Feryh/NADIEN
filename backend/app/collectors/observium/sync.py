@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from ... import models as m
 from ...config import settings
-from ...services.topology import discover_links, norm_host, norm_if
+from ...services.topology import discover_links, legacy_host_key, norm_host, norm_if
 from .client import ObserviumClient
 from .parsers import (
     OS_VENDOR,
@@ -143,6 +143,12 @@ class _Writer:
         model = self.model(vendor, rec.model)
         sw = self.software_version(vendor, rec.software)
         device = self.devices.get(norm_host(rec.hostname))
+        if device is None and "." in rec.hostname:
+            # Stored under the old cut-at-first-dot key ("R6" for R6.BAM.LEAF-CNDC.02): rename it.
+            device = self.devices.pop(legacy_host_key(rec.hostname), None)
+            if device is not None:
+                device.hostname = rec.hostname
+                self.report.counts["devices_renamed"] += 1
         if device is None:
             device = m.Device(hostname=rec.hostname, pop_id=self.pop(rec).id, role=rec.role)
             self.db.add(device)
@@ -270,7 +276,8 @@ def sync_observium(
 
     if discover and parts & {"inventory", "neighbours"}:
         step("discovery")
-        report.discovery = discover_links(db).model_dump()
+        valid = {i.id for i in iface_by_port.values()}
+        report.discovery = discover_links(db, valid_iface_ids=valid).model_dump()
 
     if "utilization" in parts:
         step("utilization")
@@ -283,21 +290,34 @@ def sync_observium(
 
 
 def _write_neighbours(db, client, device_by_obs, iface_by_port, report: SyncReport) -> None:
-    tables: dict[int, list[m.LldpNeighbor]] = {d.id: [] for d in device_by_obs.values()}
+    """Store neighbour tables with the far end resolved as precisely as possible:
+
+    1. Observium's remote_port_id -> our interface for that port: exact device + canonical port
+       name ("GigabitEthernet0/0/1", not the "Gi0/0/1" LLDP advertised). Avoids duplicate ports
+       and links paired to the wrong port.
+    2. remote_address = a device's management IP -> that device's hostname (port name as advertised).
+    3. Otherwise the advertised system name/port, matched by hostname during discovery.
+    LLDP wins over CDP when both report the same local port.
+    """
+    tables: dict[int, list[tuple[int, m.LldpNeighbor]]] = {d.id: [] for d in device_by_obs.values()}
+    devices_by_id = {d.id: d for d in device_by_obs.values()}
+    devices_by_ip = {d.mgmt_ip: d for d in device_by_obs.values() if d.mgmt_ip}
     protocols: Counter = Counter()
     skipped: Counter = Counter()
+    resolved: Counter = Counter()
     sample_keys: list[str] = []
     fetched = 0
+    include_cdp = settings.observium_include_cdp
     for row in client.fetch("neighbours", page_size=PAGE_SIZE):
         fetched += 1
         if not sample_keys:
             sample_keys = sorted(row.keys())
         protocols[str(row.get("protocol") or "none").lower()] += 1
-        reason = neighbour_skip_reason(row, settings.observium_include_cdp)
+        reason = neighbour_skip_reason(row, include_cdp)
         if reason:
             skipped[reason] += 1
             continue
-        rec = parse_neighbour(row, include_cdp=settings.observium_include_cdp)
+        rec = parse_neighbour(row, include_cdp=include_cdp)
         device = device_by_obs.get(rec.observium_device_id)
         local = iface_by_port.get(rec.local_port_id)
         if device is None:
@@ -307,23 +327,37 @@ def _write_neighbours(db, client, device_by_obs, iface_by_port, report: SyncRepo
             skipped["port_not_synced"] += 1
             report.warn(f"{device.hostname}: neighbour on unknown/skipped port_id {rec.local_port_id}")
             continue
-        tables[device.id].append(m.LldpNeighbor(
+
+        remote_name, remote_port = rec.remote_system_name, rec.remote_port_id
+        remote_iface = iface_by_port.get(rec.remote_observium_port_id or "")
+        if remote_iface is not None and remote_iface.device_id in devices_by_id:
+            remote_name, remote_port = devices_by_id[remote_iface.device_id].hostname, remote_iface.name
+            resolved["by_observium_port_id"] += 1
+        elif rec.remote_address in devices_by_ip:
+            remote_name = devices_by_ip[rec.remote_address].hostname
+            resolved["by_management_ip"] += 1
+        else:
+            resolved["by_advertised_name"] += 1
+
+        priority = 0 if rec.protocol == "lldp" else 1
+        tables[device.id].append((priority, m.LldpNeighbor(
             device_id=device.id,
             local_interface=local.name,
-            remote_system_name=rec.remote_system_name,
-            remote_port_id=rec.remote_port_id,
-        ))
+            remote_system_name=remote_name,
+            remote_port_id=remote_port,
+        )))
     report.diagnostics["neighbours"] = {
         "fetched": fetched,
         "protocols": dict(protocols),
         "skipped": dict(skipped),
+        "resolved": dict(resolved),
         "row_fields": sample_keys,
     }
     # Each synced device's neighbour table is replaced wholesale, mirroring Observium.
     db.execute(delete(m.LldpNeighbor).where(m.LldpNeighbor.device_id.in_(list(tables))))
     for rows in tables.values():
         seen: set[str] = set()
-        for n in rows:
+        for _, n in sorted(rows, key=lambda r: r[0]):  # LLDP first
             if norm_if(n.local_interface) in seen:  # unique per local port
                 continue
             seen.add(norm_if(n.local_interface))

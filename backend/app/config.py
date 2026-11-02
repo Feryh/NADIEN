@@ -30,8 +30,9 @@ class Settings(BaseSettings):
     observium_timeout_s: float = 60.0
     # POP code is taken from the hostname with this regex (first group), e.g. "JKT-P-01" -> "JKT".
     observium_pop_regex: str = r"^([A-Za-z]{3,4})[-_.]"
-    # LLDP is the mandatory topology source; CDP adjacencies are only imported when enabled.
-    observium_include_cdp: bool = False
+    # LLDP is the primary topology source; CDP fills in Cisco boxes that only speak CDP.
+    # When both report the same local port, LLDP wins. MNDP/ISDP are never used.
+    observium_include_cdp: bool = True
 
     # RANCID config archive used by Observium (Observium's API does not expose configs).
     # Either a local/mounted path, or SFTP to the Observium server with a read-only SSH account.
