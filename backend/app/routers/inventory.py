@@ -19,7 +19,7 @@ _ENTITIES = [
     ("/vendors", m.Vendor, s.VendorCreate, s.VendorRead, "Device Inventory", "name"),
     ("/device-models", m.DeviceModel, s.DeviceModelCreate, s.DeviceModelRead, "Device Inventory", "name"),
     ("/software", m.SoftwareVersion, s.SoftwareVersionCreate, s.SoftwareVersionRead, "Device Inventory", "version"),
-    ("/interfaces", m.Interface, s.InterfaceCreate, s.InterfaceRead, "Device Inventory", "name"),
+    ("/interfaces", m.Interface, s.InterfaceCreate, s.InterfaceRead, "Device Inventory", ("name", "description")),
     ("/customers", m.Customer, s.CustomerCreate, s.CustomerRead, "Customer Database", "name"),
     ("/services", m.Service, s.ServiceCreate, s.ServiceRead, "Customer Database", "circuit_id"),
 ]

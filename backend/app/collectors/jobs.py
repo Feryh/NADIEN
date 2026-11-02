@@ -6,6 +6,8 @@ skip the backup: they only add samples and run every few minutes, which would ot
 the useful pre-change backups out within hours.
 """
 
+from collections.abc import Callable
+
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -16,11 +18,16 @@ from ..services.topology import discover_links
 from .configs.apply import apply_config
 from .configs.base import ParsedConfig
 from .configs.oxidized import OxidizedClient, sync_oxidized
-from .configs.rancid import open_from_settings, sync_rancid
+from .configs.rancid import FileSystem, open_from_settings, sync_rancid
 from .observium.client import ObserviumClient
 from .observium.sync import sync_observium
 
 CHANGES_INVENTORY = {"inventory", "neighbours"}
+Progress = Callable[[str], None]
+
+
+def _noop(_phase: str) -> None:
+    pass
 
 
 class JobError(RuntimeError):
@@ -46,31 +53,51 @@ def backup_before(db: Session, reason: str) -> dict:
     return {"status": "ok", **info.as_dict()}
 
 
-def run_observium(db: Session, parts: set[str], discover: bool = True, client: ObserviumClient | None = None) -> dict:
+def run_observium(
+    db: Session,
+    parts: set[str],
+    discover: bool = True,
+    client: ObserviumClient | None = None,
+    progress: Progress = _noop,
+) -> dict:
     own_client = client is None
     client = client or ObserviumClient()  # fails on missing credentials before a backup slot is used
     try:
-        backup = backup_before(db, "observium") if parts & CHANGES_INVENTORY else {"status": "skipped", "detail": "utilization only"}
-        report = sync_observium(db, client, parts, discover).as_dict()
+        if parts & CHANGES_INVENTORY:
+            progress("backup")
+            backup = backup_before(db, "observium")
+        else:
+            backup = {"status": "skipped", "detail": "utilization only"}
+        report = sync_observium(db, client, parts, discover, progress).as_dict()
     finally:
         if own_client:
             client.close()
     return {"backup": backup, **report}
 
 
-def run_rancid(db: Session, discover: bool = True) -> dict:
-    fs, base, source = open_from_settings()  # fail on configuration before taking a backup
+def run_rancid(
+    db: Session,
+    discover: bool = True,
+    opened: tuple[FileSystem, str, str] | None = None,
+    progress: Progress = _noop,
+) -> dict:
+    fs, base, source = opened or open_from_settings()  # fail on configuration before taking a backup
     try:
+        progress("backup")
         backup = backup_before(db, "rancid")
+        progress("configs")
         return {"backup": backup, **sync_rancid(db, fs, base, source, discover)}
     finally:
         fs.close()
 
 
-def run_oxidized(db: Session, discover: bool = True) -> dict:
-    client = OxidizedClient()
+def run_oxidized(db: Session, discover: bool = True, client: OxidizedClient | None = None,
+                 progress: Progress = _noop) -> dict:
+    client = client or OxidizedClient()
     try:
+        progress("backup")
         backup = backup_before(db, "oxidized")
+        progress("configs")
         return {"backup": backup, **sync_oxidized(db, client, discover)}
     finally:
         client.close()

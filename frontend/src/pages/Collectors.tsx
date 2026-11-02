@@ -9,6 +9,29 @@ interface BackupList {
   backups: { name: string; size_bytes: number; created_at: string; reason: string }[]
 }
 
+interface SyncJob {
+  id?: string
+  kind: string
+  status: 'running' | 'ok' | 'failed' | 'idle'
+  phase: string
+  started_at: string
+  finished_at: string | null
+  report: unknown
+  error: string | null
+}
+
+const PHASES: Record<string, string> = {
+  starting: 'memulai',
+  backup: 'backup database',
+  devices: 'mengambil device',
+  ports: 'mengambil port (paling lama)',
+  addresses: 'mengambil IP address',
+  neighbours: 'mengambil LLDP neighbour',
+  discovery: 'membangun topologi',
+  utilization: 'menyimpan utilisasi',
+  configs: 'membaca config',
+}
+
 interface CollectorStatus {
   observium: { url: string; configured: boolean; auth: string | null; last_sync_at: string | null; last_status: string | null }
   rancid: { source: string | null; configured: boolean }
@@ -42,12 +65,60 @@ export default function Collectors() {
 
   const [backups, setBackups] = useState<BackupList | null>(null)
 
+  const [job, setJob] = useState<SyncJob | null>(null)
+  const [now, setNow] = useState(Date.now())
+
   const loadStatus = useCallback(() => {
     api.get<CollectorStatus>('/collectors/status').then(setStatus).catch((e: Error) => setError(e.message))
     api.get<BackupList>('/backups').then(setBackups).catch(() => setBackups(null))
   }, [])
 
   useEffect(loadStatus, [loadStatus])
+
+  // Long syncs run as background jobs on the server; poll until the current one finishes.
+  const pollJob = useCallback(async () => {
+    while (true) {
+      const current = await api.get<SyncJob>('/collectors/jobs/current')
+      setJob(current)
+      if (current.status !== 'running') {
+        if (current.status === 'ok') setResult(current.report)
+        if (current.status === 'failed') setError(current.error)
+        loadStatus()
+        return
+      }
+      await new Promise((r) => setTimeout(r, 3000))
+    }
+  }, [loadStatus])
+
+  useEffect(() => {
+    api
+      .get<SyncJob>('/collectors/jobs/current')
+      .then((current) => {
+        setJob(current)
+        if (current.status === 'running') pollJob().catch((e: Error) => setError(e.message))
+      })
+      .catch(() => undefined)
+  }, [pollJob])
+
+  useEffect(() => {
+    if (job?.status !== 'running') return
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [job?.status])
+
+  async function startJob(path: string) {
+    setError(null)
+    setResult(null)
+    try {
+      setJob(await api.post<SyncJob>(path))
+      await pollJob()
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  const jobRunning = job?.status === 'running'
+  const elapsed = job ? Math.round(((jobRunning ? now : Date.parse(job.finished_at ?? '') || now) - Date.parse(job.started_at)) / 1000) : 0
 
   async function run(label: string, action: () => Promise<unknown>) {
     setBusy(label)
@@ -74,13 +145,21 @@ export default function Collectors() {
             {status?.observium.configured ? `credentials: ${status.observium.auth}` : 'credentials belum di-set'}
           </span>
           <div className="spacer" />
-          <button disabled={!!busy} onClick={() => run('util', () => api.post('/collectors/observium/sync?parts=utilization'))}>
-            {busy === 'util' ? 'Menarik…' : 'Utilisasi saja'}
+          <button disabled={!!busy || jobRunning} onClick={() => startJob('/collectors/observium/sync?parts=utilization')}>
+            Utilisasi saja
           </button>
-          <button className="primary" disabled={!!busy} onClick={() => run('full', () => api.post('/collectors/observium/sync'))}>
-            {busy === 'full' ? 'Sync berjalan…' : 'Full sync'}
+          <button className="primary" disabled={!!busy || jobRunning} onClick={() => startJob('/collectors/observium/sync')}>
+            Full sync
           </button>
         </div>
+        {job && job.status !== 'idle' && (
+          <div className={job.status === 'failed' ? 'error' : 'notice'}>
+            {jobRunning ? '⏳ ' : job.status === 'ok' ? '✓ ' : '✗ '}
+            Sync <b>{job.kind}</b> — {jobRunning ? `tahap: ${PHASES[job.phase] ?? job.phase}` : job.status === 'ok' ? 'selesai' : 'gagal'} ·{' '}
+            {Math.floor(elapsed / 60)}m {elapsed % 60}s
+            {!jobRunning && job.finished_at && ` · ${new Date(job.finished_at).toLocaleString()}`}
+          </div>
+        )}
         <p className="hint">
           {status?.observium.url} · device, port, IPv4, LLDP neighbour, dan rate port → inventory, topologi, sampel utilisasi.
           {status?.observium.last_sync_at && ` Terakhir: ${new Date(status.observium.last_sync_at).toLocaleString()} — ${status.observium.last_status}`}
@@ -102,16 +181,16 @@ export default function Collectors() {
           {status?.oxidized.configured && <span className="pill pill-ok">Oxidized siap</span>}
           <div className="spacer" />
           {status?.oxidized.configured && (
-            <button disabled={!!busy} onClick={() => run('oxidized', () => api.post('/collectors/configs/oxidized/sync'))}>
-              {busy === 'oxidized' ? 'Menarik config…' : 'Sync dari Oxidized'}
+            <button disabled={!!busy || jobRunning} onClick={() => startJob('/collectors/configs/oxidized/sync')}>
+              Sync dari Oxidized
             </button>
           )}
           <button
             className="primary"
-            disabled={!!busy || !status?.rancid.configured}
-            onClick={() => run('rancid', () => api.post('/collectors/configs/rancid/sync'))}
+            disabled={!!busy || jobRunning || !status?.rancid.configured}
+            onClick={() => startJob('/collectors/configs/rancid/sync')}
           >
-            {busy === 'rancid' ? 'Membaca RANCID…' : 'Sync semua dari RANCID'}
+            Sync semua dari RANCID
           </button>
         </div>
         <p className="hint">

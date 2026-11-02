@@ -51,7 +51,7 @@ export const ENTITIES: Entity[] = [
     fields: [
       { name: 'hostname', label: 'Hostname', required: true },
       { name: 'pop_id', label: 'POP', type: 'ref', ref: 'pops', required: true },
-      { name: 'role', label: 'Role', type: 'select', options: ['p', 'pe', 'agg', 'access', 'dci'] },
+      { name: 'role', label: 'Role', type: 'select', options: ['p', 'pe', 'agg', 'access', 'dci', 'olt', 'bng'] },
       { name: 'vendor_id', label: 'Vendor', type: 'ref', ref: 'vendors' },
       { name: 'model_id', label: 'Model', type: 'ref', ref: 'device-models' },
       { name: 'software_id', label: 'Software', type: 'ref', ref: 'software' },

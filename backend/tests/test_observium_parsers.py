@@ -51,6 +51,14 @@ def test_port_speed_rates_and_types():
     assert parse_port({"port_id": "4", "ifName": "ge-0/0/1", "ifSpeed": "1000000000"}).speed_gbps == 1
 
 
+def test_port_values_seen_on_real_observium():
+    rec = parse_port({"port_id": "9", "device_id": "1", "ifName": "Eth-Trunk1.100", "ifMtu": "0",
+                      "ifAlias": "X" * 900, "ifHighSpeed": "0", "ifSpeed": "0"})
+    assert rec.mtu is None  # 0 on logical ports must not fail API validation later
+    assert len(rec.description) == 512 and rec.speed_gbps is None
+    assert parse_port({"port_id": "9", "ifName": "ge-0/0/1", "ifMtu": "65535"}).mtu is None
+
+
 def test_classify_port():
     assert classify_port("Bundle-Ether10", "ieee8023adLag") == "bundle"
     assert classify_port("ae30", "propVirtual") == "bundle"

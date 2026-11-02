@@ -1,15 +1,32 @@
 import json
+import os
 from pathlib import Path
 from urllib.parse import parse_qs
 
-import httpx
-import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+# Tests must never touch the developer's backend/.env targets: environment variables take
+# precedence over .env, so pin an in-memory DB and blank every external credential before the
+# app (and its settings) is imported.
+os.environ.update({
+    "NADIEN_DATABASE_URL": "sqlite://",
+    "NADIEN_OBSERVIUM_URL": "http://observium.invalid",
+    "NADIEN_OBSERVIUM_TOKEN": "",
+    "NADIEN_OBSERVIUM_USER": "",
+    "NADIEN_OBSERVIUM_PASSWORD": "",
+    "NADIEN_RANCID_PATH": "",
+    "NADIEN_RANCID_SSH_HOST": "",
+    "NADIEN_RANCID_SSH_USER": "",
+    "NADIEN_RANCID_SSH_PASSWORD": "",
+    "NADIEN_OXIDIZED_URL": "",
+})
 
-from app import models  # noqa: F401  (registers tables)
-from app.database import Base
+import httpx  # noqa: E402
+import pytest  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+from sqlalchemy.pool import StaticPool  # noqa: E402
+
+from app import models  # noqa: E402,F401  (registers tables)
+from app.database import Base  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -24,6 +41,18 @@ def db():
     finally:
         session.close()
         engine.dispose()
+
+
+@pytest.fixture
+def job_runner(db, tmp_path, monkeypatch):
+    """Background jobs run against the test session, with their state file in tmp_path."""
+    from app.collectors.runner import JobRunner
+    from app.routers import collectors
+
+    factory = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
+    runner = JobRunner(session_factory=factory, state_file=tmp_path / "last-sync-job.json")
+    monkeypatch.setattr(collectors, "runner", runner)
+    return runner
 
 
 def config_text(name: str) -> str:

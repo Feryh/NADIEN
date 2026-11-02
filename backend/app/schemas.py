@@ -82,7 +82,7 @@ class DeviceCreate(BaseModel):
     vendor_id: int | None = None
     model_id: int | None = None
     software_id: int | None = None
-    role: Literal["p", "pe", "agg", "access", "dci"] = "pe"
+    role: Literal["p", "pe", "agg", "access", "dci", "olt", "bng"] = "pe"
     mgmt_ip: str | None = None
     loopback_ipv4: str | None = None
     isis_net: str | None = None

@@ -15,8 +15,18 @@ const ROLE_COLOR: Record<string, string> = {
   agg: '#14b8a6',
   dci: '#f97316',
   access: '#64748b',
+  olt: '#a3e635',
+  bng: '#e879f9',
 }
-const ROLE_SHAPE: Record<string, string> = { p: 'ellipse', pe: 'round-rectangle', agg: 'diamond', dci: 'hexagon', access: 'triangle' }
+const ROLE_SHAPE: Record<string, string> = {
+  p: 'ellipse',
+  pe: 'round-rectangle',
+  agg: 'diamond',
+  dci: 'hexagon',
+  access: 'triangle',
+  olt: 'vee',
+  bng: 'octagon',
+}
 
 const STYLE = [
   {

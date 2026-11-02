@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -41,10 +41,11 @@ def crud_router(
     create_schema: type[BaseModel],
     read_schema: type[BaseModel],
     tag: str,
-    search_field: str = "name",
+    search_field: str | tuple[str, ...] = "name",
 ) -> APIRouter:
     update_schema = partial(create_schema, f"{create_schema.__name__.removesuffix('Create')}Update")
     columns = {c.name: c for c in model.__table__.columns}
+    search_columns = [columns[f] for f in ((search_field,) if isinstance(search_field, str) else search_field) if f in columns]
     router = APIRouter(prefix=prefix, tags=[tag])
 
     @router.get("", response_model=list[read_schema])
@@ -57,8 +58,8 @@ def crud_router(
     ):
         """List records. Any column name can be used as an exact-match filter, e.g. `?pop_id=3`."""
         stmt = select(model)
-        if q and search_field in columns:
-            stmt = stmt.where(columns[search_field].ilike(f"%{q}%"))
+        if q and search_columns:
+            stmt = stmt.where(or_(*(c.ilike(f"%{q}%") for c in search_columns)))
         for key, value in request.query_params.items():
             if key in columns and key not in _RESERVED_PARAMS:
                 stmt = stmt.where(columns[key] == _coerce(columns[key], value))

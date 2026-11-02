@@ -123,7 +123,7 @@ def test_not_configured(monkeypatch, db):
     assert resp.status_code == 400 and "NADIEN_RANCID_PATH" in resp.json()["detail"]
 
 
-def test_endpoint_with_local_path(monkeypatch, inventory, tmp_path):
+def test_endpoint_runs_in_background(monkeypatch, inventory, job_runner, tmp_path):
     build_archive(tmp_path)
     monkeypatch.setattr(settings, "rancid_path", str(tmp_path))
     app.dependency_overrides[get_db] = lambda: inventory
@@ -131,7 +131,11 @@ def test_endpoint_with_local_path(monkeypatch, inventory, tmp_path):
         client = TestClient(app)
         status = client.get("/api/collectors/status").json()
         resp = client.post("/api/collectors/configs/rancid/sync")
+        job = job_runner.wait(timeout=30)
+        polled = client.get("/api/collectors/jobs/current").json()
     finally:
         app.dependency_overrides.clear()
     assert status["rancid"]["configured"] is True
-    assert resp.status_code == 200 and resp.json()["applied"] == 3
+    assert resp.status_code == 202 and resp.json()["status"] == "running"
+    assert job["status"] == "ok" and job["report"]["applied"] == 3, job.get("error")
+    assert polled["id"] == job["id"] and polled["phase"] == "done"

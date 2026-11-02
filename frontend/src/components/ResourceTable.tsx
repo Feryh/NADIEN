@@ -5,6 +5,8 @@ import { ENTITY_BY_KEY, Entity, Field } from '../entities'
 type Row = Record<string, unknown> & { id: number }
 
 const PAGE_SIZE = 100
+// Rows loaded per request (backend cap). Larger tables (300k+ interfaces) are searched server-side.
+const FETCH_LIMIT = 10000
 
 function StatusPill({ value }: { value: string }) {
   const tone = ['up', 'active', 'true'].includes(value)
@@ -23,6 +25,7 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
   const [editing, setEditing] = useState<Row | 'new' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [serverQuery, setServerQuery] = useState('')
 
   const refKeys = useMemo(
     () => [...new Set(entity.fields.filter((f) => f.ref).map((f) => f.ref as string))],
@@ -34,9 +37,10 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
     setLoading(true)
     setError(null)
     try {
+      const search = serverQuery ? `&q=${encodeURIComponent(serverQuery)}` : ''
       const [main, ...refRows] = await Promise.all([
-        api.get<Row[]>(entity.endpoint),
-        ...refKeys.map((k) => api.get<Row[]>(ENTITY_BY_KEY[k].endpoint)),
+        api.get<Row[]>(`${entity.endpoint}?limit=${FETCH_LIMIT}${search}`),
+        ...refKeys.map((k) => api.get<Row[]>(`${ENTITY_BY_KEY[k].endpoint}?limit=${FETCH_LIMIT}`)),
       ])
       setRows(main)
       setRefs(Object.fromEntries(refKeys.map((k, i) => [k, refRows[i]])))
@@ -45,14 +49,20 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
     } finally {
       setLoading(false)
     }
-  }, [entity, refKeys])
+  }, [entity, refKeys, serverQuery])
 
   useEffect(() => {
-    setQ('')
     setPage(0)
     setEditing(null)
     load()
   }, [load])
+
+  useEffect(() => {
+    setQ('')
+    setServerQuery('')
+  }, [entity])
+
+  const truncated = rows.length >= FETCH_LIMIT
 
   const refLabel = useCallback(
     (refKey: string, id: unknown) => {
@@ -105,11 +115,14 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
         <div className="spacer" />
         <input
           className="search"
-          placeholder="Cari…"
+          placeholder={truncated || serverQuery ? 'Cari (Enter = cari di server)…' : 'Cari…'}
           value={q}
           onChange={(e) => {
             setQ(e.target.value)
             setPage(0)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') setServerQuery(q.trim())
           }}
         />
         <button onClick={load} disabled={loading}>
@@ -127,6 +140,19 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
         </p>
       )}
       {error && <div className="error">{error}</div>}
+      {truncated && (
+        <p className="hint">
+          Menampilkan {FETCH_LIMIT.toLocaleString()} baris pertama
+          {serverQuery ? ` untuk "${serverQuery}"` : ''}. Ketik kata kunci lalu tekan <b>Enter</b> untuk mencari di seluruh data
+          {entity.key === 'interfaces' ? ' (nama port atau deskripsi)' : ''}.
+        </p>
+      )}
+      {serverQuery && !truncated && (
+        <p className="hint">
+          Hasil pencarian server untuk "{serverQuery}" —{' '}
+          <a href="#" onClick={(e) => { e.preventDefault(); setQ(''); setServerQuery('') }}>tampilkan semua</a>
+        </p>
+      )}
 
       <div className="table-wrap">
         <table>

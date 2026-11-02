@@ -43,6 +43,9 @@ class ObserviumClient:
             timeout=timeout or settings.observium_timeout_s,
             transport=transport,
         )
+        # Response shape per entity (top-level keys, reported count, rows returned) — kept for
+        # diagnostics, because Observium versions differ in what some endpoints return.
+        self.meta: dict[str, dict[str, Any]] = {}
 
     def close(self) -> None:
         self._http.close()
@@ -74,8 +77,11 @@ class ObserviumClient:
         path = f"/{entity}/"
         key = "addresses" if entity == "address" else entity
         if not page_size:
-            return _rows(self._get(path, params), key)
-        rows: list[dict[str, Any]] = []
+            data = self._get(path, params)
+            rows = _rows(data, key)
+            self._remember(entity, data, rows)
+            return rows
+        rows = []
         page = 1
         while True:
             data = self._get(path, {**params, "pagesize": page_size, "pageno": page})
@@ -83,12 +89,24 @@ class ObserviumClient:
             rows.extend(batch)
             total = int(data.get("count") or 0)
             if not batch or len(rows) >= total:
+                self._remember(entity, data, rows)
                 return rows
             page += 1
 
+    def _remember(self, entity: str, data: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+        self.meta[entity] = {"response_keys": sorted(data.keys()), "count": data.get("count"), "rows": len(rows)}
+
+
+_META_KEYS = {"status", "count", "countpage", "pagesize", "pageno", "message", "debug"}
+
 
 def _rows(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
-    payload = data.get(key) or []
+    payload = data.get(key)
+    if payload is None:
+        # Some Observium versions name collections differently (e.g. "neighbors"); take the
+        # single non-metadata collection in the response instead of silently returning nothing.
+        candidates = [v for k, v in data.items() if k not in _META_KEYS and isinstance(v, (dict, list))]
+        payload = candidates[0] if len(candidates) == 1 else []
     if isinstance(payload, dict):
         return list(payload.values())
     return list(payload)

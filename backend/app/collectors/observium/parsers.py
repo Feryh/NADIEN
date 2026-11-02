@@ -21,14 +21,23 @@ OS_VENDOR: dict[str, tuple[str, str]] = {
     "sros": ("Nokia", "SR OS"),
 }
 
-# Hostname tokens -> device role. First match wins, so the more specific tokens come first.
-ROLE_PATTERNS: list[tuple[str, str]] = [
-    (r"(^|[-_.])DCI([-_.]|\d|$)", "dci"),
-    (r"(^|[-_.])AGG([-_.]|\d|$)", "agg"),
-    (r"(^|[-_.])(ACC|AC|CSG)([-_.]|\d|$)", "access"),
-    (r"(^|[-_.])PE([-_.]|\d|$)", "pe"),
-    (r"(^|[-_.])(P|CORE|CR)([-_.]|\d|$)", "p"),
-]
+# Hostname role tokens (trailing digits ignored: OLT2, PE1, ME1) -> device role.
+# Hostnames follow either POP-SITE-ROLE#-MODEL (JKT-ABW-OLT1-HW) or ROLE#-MODEL-POP-SITE
+# (OLT2-MA5800-X15-JKTS-TND); the first role token from the left wins.
+ROLE_TOKENS: dict[str, str] = {
+    "OLT": "olt",
+    "BNG": "bng", "BRAS": "bng",
+    "DCI": "dci",
+    "P": "p", "CORE": "p", "CR": "p",
+    "PE": "pe", "PEIN": "pe", "PESH": "pe", "CGW": "pe", "NNI": "pe", "BR": "pe",
+    "ME": "agg", "AGG": "agg", "DS": "agg", "CS": "agg",
+    "SW": "access", "ACC": "access", "AC": "access", "CSG": "access",
+}
+_TOKEN_SPLIT = re.compile(r"[-_.\s]+")
+
+# Column sizes in models.Interface; PostgreSQL rejects longer values instead of truncating.
+MAX_IFNAME = 128
+MAX_DESCRIPTION = 512
 
 BUNDLE_NAME = re.compile(r"^(bundle-ether|be|eth-trunk|ae|lag-?|port-channel|po)\d+$", re.IGNORECASE)
 LAG_IFTYPES = {"ieee8023adlag", "propmultiplexor"}
@@ -83,11 +92,45 @@ class DeviceRecord:
     status: str
 
 
+def _tokens(hostname: str) -> list[str]:
+    return [t for t in _TOKEN_SPLIT.split(hostname.upper()) if t]
+
+
+def _role_word(token: str) -> str | None:
+    return ROLE_TOKENS.get(token.rstrip("0123456789"))
+
+
+def is_role_word(code: str) -> bool:
+    return _role_word(code.upper()) is not None
+
+
 def guess_role(hostname: str) -> str:
-    for pattern, role in ROLE_PATTERNS:
-        if re.search(pattern, hostname, re.IGNORECASE):
+    for token in _tokens(hostname):
+        role = _role_word(token)
+        if role:
             return role
     return "pe"
+
+
+def infer_pop(hostname: str, known_codes: set[str]) -> str | None:
+    """POP for hostnames the regex missed (role-first convention, e.g. OLT2-MA5800-X15-JKTS-TND).
+
+    A token that is already a known POP code wins (left to right: the POP precedes the site);
+    otherwise the first purely alphabetic 3–4 letter token that is not a role word.
+    """
+    tokens = _tokens(hostname)
+    for token in tokens:
+        if _role_word(token):  # never a POP, even if an older sync created a POP named "OLT"
+            continue
+        if token in known_codes:
+            return token
+        base = token.rstrip("0123456789")  # JKT2 -> JKT
+        if base != token and base in known_codes:
+            return base
+    for token in tokens:
+        if token.isalpha() and 3 <= len(token) <= 4 and _role_word(token) is None:
+            return token
+    return None
 
 
 def parse_device(row: dict[str, Any], pop_regex: str) -> DeviceRecord | None:
@@ -102,6 +145,8 @@ def parse_device(row: dict[str, Any], pop_regex: str) -> DeviceRecord | None:
     match = re.search(pop_regex, hostname)
     location = (row.get("location") or "").strip() or None
     pop_code = match.group(1).upper() if match else None
+    if pop_code and _role_word(pop_code):  # "OLT-..." / "CGW-...": a role, not a POP
+        pop_code = None
 
     os_name = (row.get("os") or "").lower()
     vendor, os_family = OS_VENDOR.get(os_name, (row.get("vendor") or None, row.get("os") or None))
@@ -171,16 +216,17 @@ def parse_port(row: dict[str, Any]) -> PortRecord | None:
     speed = _num(row.get("ifSpeed"))  # bps
     speed_gbps = high_speed / 1000 if high_speed else (speed / 1e9 if speed else None)
     if_type = str(row.get("ifType") or "")
+    mtu = _int(row.get("ifMtu"))
     return PortRecord(
         observium_id=str(row.get("port_id")),
         observium_device_id=str(row.get("device_id")),
-        name=name,
+        name=name[:MAX_IFNAME],
         if_type=classify_port(name, if_type),
         speed_gbps=round(speed_gbps, 3) if speed_gbps else None,
-        mtu=_int(row.get("ifMtu")),
+        mtu=mtu if mtu and 64 <= mtu <= 16000 else None,  # SNMP reports 0 on many logical ports
         admin_status=_status(row.get("ifAdminStatus")),
         oper_status=_status(row.get("ifOperStatus")),
-        description=(row.get("ifAlias") or "").strip() or None,
+        description=(row.get("ifAlias") or "").strip()[:MAX_DESCRIPTION] or None,
         in_gbps=_rate_gbps(row, "ifInOctets_rate"),
         out_gbps=_rate_gbps(row, "ifOutOctets_rate"),
     )
@@ -198,16 +244,27 @@ class NeighbourRecord:
     protocol: str
 
 
-def parse_neighbour(row: dict[str, Any], include_cdp: bool = False) -> NeighbourRecord | None:
+def neighbour_skip_reason(row: dict[str, Any], include_cdp: bool = False) -> str | None:
     protocol = str(row.get("protocol") or "").lower()
     if protocol != "lldp" and not (include_cdp and protocol == "cdp"):
-        return None
+        return f"protocol:{protocol or 'none'}"
     if str(row.get("active", "1")) == "0":
+        return "inactive"
+    if not (row.get("remote_hostname") or "").strip():
+        return "no_remote_hostname"
+    if not (row.get("remote_port") or "").strip():
+        return "no_remote_port"
+    if not row.get("port_id"):
+        return "no_port_id"
+    return None
+
+
+def parse_neighbour(row: dict[str, Any], include_cdp: bool = False) -> NeighbourRecord | None:
+    if neighbour_skip_reason(row, include_cdp):
         return None
-    remote_host = (row.get("remote_hostname") or "").strip()
-    remote_port = (row.get("remote_port") or "").strip()
-    if not remote_host or not remote_port or not row.get("port_id"):
-        return None
+    remote_host = row["remote_hostname"].strip()[:255]
+    remote_port = row["remote_port"].strip()[:MAX_IFNAME]
+    protocol = str(row.get("protocol")).lower()
     return NeighbourRecord(
         observium_device_id=str(row.get("device_id")),
         local_port_id=str(row.get("port_id")),

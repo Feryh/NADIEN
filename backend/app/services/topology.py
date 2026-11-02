@@ -8,6 +8,7 @@ When both ends of an LLDP adjacency are bundle members, the link is recorded onc
 at bundle level with capacity = sum of member speeds.
 """
 
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -27,6 +28,14 @@ def norm_if(name: str) -> str:
     return name.strip().lower().replace(" ", "")
 
 
+_SPLIT = re.compile(r"[^a-z0-9]+")
+
+
+def host_key(name: str) -> str:
+    """'JKT_P_01.metro.net' -> 'jkt-p-01': the form used to spot hostnames inside descriptions."""
+    return "-".join(p for p in _SPLIT.split(norm_host(name)) if p)
+
+
 @dataclass
 class _Adjacency:
     a: Interface
@@ -42,6 +51,9 @@ class _Discovery:
         self.stats: Counter[str] = Counter()
         self.devices = {d.id: d for d in db.scalars(select(Device))}
         self.by_host = {norm_host(d.hostname): d for d in self.devices.values()}
+        self.by_host_key = {host_key(d.hostname): d for d in self.devices.values()}
+        self.host_first_parts = {k.split("-")[0] for k in self.by_host_key}
+        self.max_host_parts = max((k.count("-") + 1 for k in self.by_host_key), default=1)
         self.ifaces = {i.id: i for i in db.scalars(select(Interface))}
         self.if_index = {(i.device_id, norm_if(i.name)): i for i in self.ifaces.values()}
         self.adjacencies: dict[frozenset[int], _Adjacency] = {}
@@ -82,37 +94,59 @@ class _Discovery:
             self.add(self.iface(local, n.local_interface), self.iface(remote, n.remote_port_id), "lldp")
         return unresolved
 
+    def mentioned_device(self, description: str) -> Device | None:
+        """Device whose hostname appears in a description, longest match wins (PE-1 vs PE-10).
+
+        Hostnames and descriptions are both reduced to '-'-joined alphanumeric parts, so
+        "TO JKT_P_01 Hu0/0/0/1" finds JKT-P-01. Cost is linear in the description length.
+        """
+        parts = [p for p in _SPLIT.split(description.lower()) if p]
+        best: tuple[int, Device] | None = None
+        for i, first in enumerate(parts):
+            if first not in self.host_first_parts:
+                continue
+            for j in range(min(len(parts), i + self.max_host_parts), i, -1):
+                device = self.by_host_key.get("-".join(parts[i:j]))
+                if device is not None:
+                    if best is None or j - i > best[0]:
+                        best = (j - i, device)
+                    break
+        return best[1] if best else None
+
     def from_config(self) -> None:
         """Pair uncovered ports whose descriptions name each other's hostname.
 
         Only for device pairs LLDP saw no adjacency between at all: otherwise a bundle described
         "TO-X" would be paired on top of its LLDP-discovered members and counted twice.
+        Ports are grouped by device pair first, so the work is linear in the number of ports.
         """
         lldp_pairs = {frozenset((adj.a.device_id, adj.b.device_id)) for adj in self.adjacencies.values()}
-        hosts = sorted(self.by_host.items(), key=lambda kv: -len(kv[0]))  # longest first: PE-1 vs PE-10
-        candidates = [
-            i for i in self.ifaces.values()
-            if i.id not in self.covered and i.parent_id is None and i.description and i.if_type != "subinterface"
-        ]
-        for iface in candidates:
-            if iface.id in self.covered:
+        by_pair: dict[frozenset[int], dict[int, list[Interface]]] = {}
+        for iface in self.ifaces.values():
+            if iface.id in self.covered or iface.parent_id or not iface.description or iface.if_type == "subinterface":
                 continue
-            desc = iface.description.lower()
-            local = self.devices[iface.device_id]
-            remote = next((d for h, d in hosts if h in desc and d.id != local.id), None)
-            if remote is None or frozenset((local.id, remote.id)) in lldp_pairs:
+            remote = self.mentioned_device(iface.description)
+            if remote is None or remote.id == iface.device_id:
                 continue
-            local_host = norm_host(local.hostname)
-            peers = [
-                p for p in candidates
-                if p.device_id == remote.id and p.id not in self.covered
-                and local_host in (p.description or "").lower()
-            ]
-            if not peers:
+            pair = frozenset((iface.device_id, remote.id))
+            if pair in lldp_pairs:
                 continue
-            # Prefer the peer whose description also names our port.
-            peer = next((p for p in peers if norm_if(iface.name) in norm_if(p.description or "")), peers[0])
-            self.add(iface, peer, "config")
+            by_pair.setdefault(pair, {}).setdefault(iface.device_id, []).append(iface)
+
+        for sides in by_pair.values():
+            if len(sides) != 2:
+                continue  # only one end describes the other: not enough to call it a link
+            (_, ours), (_, theirs) = sides.items()
+            remaining = list(theirs)
+            for a in ours:
+                if not remaining:
+                    break
+                # Prefer the peer whose description names our port (or ours names theirs).
+                b = next((p for p in remaining if norm_if(a.name) in norm_if(p.description or "")), None) or next(
+                    (p for p in remaining if norm_if(p.name) in norm_if(a.description or "")), remaining[0]
+                )
+                remaining.remove(b)
+                self.add(a, b, "config")
 
     def capacity(self, adj: _Adjacency) -> float | None:
         speeds = []

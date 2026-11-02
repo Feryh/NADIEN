@@ -103,7 +103,7 @@ class Device(TimestampMixin, Base):
     vendor_id: Mapped[int | None] = mapped_column(ForeignKey("vendors.id"))
     model_id: Mapped[int | None] = mapped_column(ForeignKey("device_models.id"))
     software_id: Mapped[int | None] = mapped_column(ForeignKey("software_versions.id"))
-    role: Mapped[str] = mapped_column(String(32), default="pe")  # p | pe | agg | access | dci
+    role: Mapped[str] = mapped_column(String(32), default="pe")  # p | pe | agg | access | dci | olt | bng
     mgmt_ip: Mapped[str | None] = mapped_column(String(64))
     loopback_ipv4: Mapped[str | None] = mapped_column(String(64))
     isis_net: Mapped[str | None] = mapped_column(String(64))
@@ -127,14 +127,14 @@ class Interface(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
-    name: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(128))
     if_type: Mapped[str] = mapped_column(String(32), default="physical")  # physical | bundle | subinterface
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("interfaces.id"))
     speed_gbps: Mapped[float | None] = mapped_column(Float)
     mtu: Mapped[int | None] = mapped_column(Integer)
     admin_status: Mapped[str] = mapped_column(String(16), default="up")
     oper_status: Mapped[str] = mapped_column(String(16), default="down")
-    description: Mapped[str | None] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(String(512))
     ipv4_address: Mapped[str | None] = mapped_column(String(64))
     optic_type: Mapped[str | None] = mapped_column(String(64))
 
@@ -149,9 +149,9 @@ class LldpNeighbor(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
-    local_interface: Mapped[str] = mapped_column(String(64))
-    remote_system_name: Mapped[str] = mapped_column(String(128))
-    remote_port_id: Mapped[str] = mapped_column(String(64))
+    local_interface: Mapped[str] = mapped_column(String(128))
+    remote_system_name: Mapped[str] = mapped_column(String(255))
+    remote_port_id: Mapped[str] = mapped_column(String(128))
     remote_chassis_id: Mapped[str | None] = mapped_column(String(64))
     collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
