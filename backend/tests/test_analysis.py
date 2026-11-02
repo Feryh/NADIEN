@@ -25,6 +25,64 @@ def test_area_rules():
     assert area_for_pop("XYZ", None) == "Belum dipetakan"
 
 
+@pytest.mark.parametrize("hostname,area", [
+    ("OLT2-MA5800-X15-KPG-AST", "Bali & Nusa Tenggara"),  # KPG = Kupang; MA5800 is a model, not "MA" (Maluku)
+    ("OLT1-C300-PBR-BKR", "Sumatera"),
+    ("PE1-ATN910-KEBUMEN", "Jawa Tengah & DIY"),            # city name written out
+    ("DS1-S5720-SUBANG", "Jawa Barat & Banten"),
+    ("PE1-ATN910-TAMAN-SIDOARJO", "Jawa Timur"),
+    ("SW-CORE-JT-01", "Jawa Tengah & DIY"),                  # 2-letter province (SNI ISO 3166-2:ID) token
+    ("DS5-UTP-EX34NDC-BALI-PGL", "Bali & Nusa Tenggara"),
+    ("LPG-BTH-OLT1-ZTE", "Sumatera"),
+    ("PAPP0004IT01", None),
+    ("PE1-JKT-SBY-TRUNK", None),                              # two areas named: ambiguous, no guess
+])
+def test_area_from_hostname(hostname, area):
+    from app.services.areas import area_for_hostname
+
+    assert area_for_hostname(hostname) == area
+
+
+def test_pop_code_and_majority():
+    from app.services.areas import area_for_hostnames, city_label, pop_code_for_hostname
+
+    assert pop_code_for_hostname("PE1-ATN910-KEBUMEN") == "KBM" and city_label("KBM") == "Kebumen"
+    assert pop_code_for_hostname("PE1-ATN910C-NUMFOR-TIMUR") is None
+    assert pop_code_for_hostname("LLG-LLT-BNG1-M4") == "LLG"
+    assert pop_code_for_hostname("PE1-ATN910-PADANG-SIDEMPUAN") == "PSP"  # longest city name wins
+    hosts = ["LPG-A-OLT1", "LPG-B-OLT2", "LPG-C-ME1", "BR1-JKT-UPLINK"]  # one backhaul name
+    assert area_for_hostnames(hosts) is None  # 3/4 = 75% < 80%
+    assert area_for_hostnames(hosts[:3] + ["LPG-D-PE1", "X-JKT"]) == "Sumatera"  # 4/5 = 80%
+
+
+def test_unassigned_devices_move_to_their_city(db):
+    pop = m.Pop(code="UNASSIGNED", name="NDC - Jakarta")
+    db.add(pop)
+    db.flush()
+    db.add_all([
+        m.Device(hostname="PE1-ATN910-KEBUMEN", pop_id=pop.id),
+        m.Device(hostname="PE1-ATN910-SUBANG", pop_id=pop.id),
+        m.Device(hostname="PAPP0004IT01", pop_id=pop.id),
+        m.Device(hostname="DS1-S5720-SALATIGA", pop_id=pop.id),
+    ])
+    db.add(m.Pop(code="SNG", name="Jawa Barat - Subang"))
+    db.add(m.Pop(code="STG", name="Salatiga - Sidorejo"))  # same city as dictionary code SLT
+    db.commit()
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        res = TestClient(app).post("/api/areas/auto-assign").json()
+    finally:
+        app.dependency_overrides.clear()
+    assert res["devices_moved"] == 3 and res["pops_created"] == ["KBM"]  # no duplicate SLT next to STG
+    assert res["moved_to"]["STG"] == 1
+    kbm = db.query(m.Pop).filter_by(code="KBM").one()
+    assert kbm.name == "Kebumen" and kbm.region == "Jawa Tengah & DIY"
+    assert db.query(m.Pop).filter_by(code="SNG").one().region == "Jawa Barat & Banten"
+    assert db.query(m.Pop).filter_by(code="UNASSIGNED").one().region is None  # never given an area
+    left = db.query(m.Device).filter_by(pop_id=pop.id).all()
+    assert [d.hostname for d in left] == ["PAPP0004IT01"]
+
+
 def test_category_and_speed_bucket():
     assert [category_for(r) for r in ("pe", "bng", "agg", "olt", "access", None)] == [
         "router", "router", "metro", "olt", "access", "other"]

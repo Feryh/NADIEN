@@ -13,13 +13,18 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import models as m
+from ..collectors import runner as jobs_runner
 from ..database import get_db
 from ..services.areas import (
     AREA_ORDER,
     CATEGORY_LABELS,
     ROLE_TIER,
     UNMAPPED_AREA,
+    area_for_hostnames,
     area_for_pop,
+    city_label,
+    pop_code_for_hostname,
+    sibling_codes,
     area_position,
     bucket_sort_key,
     category_for,
@@ -29,6 +34,8 @@ from ..services.areas import (
 from ..services.capacity import capacity_color
 
 router = APIRouter(tags=["Analysis"])
+
+UNASSIGNED_POP = "UNASSIGNED"
 
 
 # --------------------------------------------------------------------------- shared context
@@ -56,9 +63,17 @@ def _context(db: Session) -> _Ctx:
         for r in db.execute(select(m.Device.id, m.Device.hostname, m.Device.pop_id, m.Device.role,
                                    m.Device.vendor_id, m.Device.status, m.Device.map_x, m.Device.map_y))
     }
+    area_of_pop = {pid: area_for_pop(p.code, p.region, p.name) for pid, p in pops.items()}
+    hostnames_by_pop: dict[int, list[str]] = defaultdict(list)
+    for device in devices.values():
+        hostnames_by_pop[device.pop_id].append(device.hostname)
+    for pid, area in area_of_pop.items():
+        if area == UNMAPPED_AREA and pops[pid].code.upper() != UNASSIGNED_POP:
+            area_of_pop[pid] = area_for_hostnames(hostnames_by_pop[pid]) or UNMAPPED_AREA
+
     return _Ctx(
         pops=pops,
-        area_of_pop={pid: area_for_pop(p.code, p.region, p.name) for pid, p in pops.items()},
+        area_of_pop=area_of_pop,
         devices=devices,
         vendors={v.id: v.name for v in db.scalars(select(m.Vendor))},
     )
@@ -123,19 +138,61 @@ def list_areas(db: Session = Depends(get_db)):
 
 @router.post("/areas/auto-assign")
 def auto_assign_areas(db: Session = Depends(get_db)):
-    """Fill `region` on POPs that have none, from the city-code map or city/province words in the
-    POP name. Never overwrites a region that is already set."""
+    """1. Devices parked in UNASSIGNED move to the POP their hostname names explicitly
+          (city name or city code: PE1-ATN910-KEBUMEN -> KBM); missing POPs are created.
+       2. Blank POP regions are filled from the POP code (3-letter city / 2-letter province),
+          city words in the POP name, or the location most of its device hostnames agree on.
+       Never overwrites a region that is already set."""
+    jobs_runner.ensure_idle(jobs_runner.runner)
+    pops = {p.code.upper(): p for p in db.scalars(select(m.Pop))}
+    unassigned = pops.get(UNASSIGNED_POP)
+    moved: Counter = Counter()
+    created: list[str] = []
+    if unassigned is not None:
+        for device in db.scalars(select(m.Device).where(m.Device.pop_id == unassigned.id)):
+            code = pop_code_for_hostname(device.hostname)
+            if not code:
+                continue
+            # Reuse a POP that already exists under another code for the same city (STG vs SLT).
+            code = next((c for c in sibling_codes(code) if c in pops), code)
+            pop = pops.get(code)
+            if pop is None:
+                area = area_for_pop(code, None, None)
+                pop = m.Pop(code=code, name=city_label(code) or code, status="active",
+                            region=None if area == UNMAPPED_AREA else area)
+                db.add(pop)
+                db.flush()
+                pops[code] = pop
+                created.append(code)
+            device.pop_id = pop.id
+            moved[code] += 1
+        db.flush()
+
     assigned: Counter = Counter()
-    for pop in db.scalars(select(m.Pop)):
-        if (pop.region or "").strip():
+    hostnames_by_pop: dict[int, list[str]] = defaultdict(list)
+    for device in db.scalars(select(m.Device)):
+        hostnames_by_pop[device.pop_id].append(device.hostname)
+    for pop in pops.values():
+        region = (pop.region or "").strip()
+        if (region and region != UNMAPPED_AREA) or pop.code.upper() == UNASSIGNED_POP:
             continue
         area = area_for_pop(pop.code, None, pop.name)
-        area = None if area == UNMAPPED_AREA else area
+        if area == UNMAPPED_AREA:
+            area = area_for_hostnames(hostnames_by_pop[pop.id])
         if area:
             pop.region = area
             assigned[area] += 1
     db.commit()
-    return {"assigned": sum(assigned.values()), "by_area": dict(assigned)}
+    still = [p.code for p in pops.values()
+             if not (p.region or "").strip() and p.code.upper() != UNASSIGNED_POP]
+    return {
+        "assigned": sum(assigned.values()),
+        "by_area": dict(assigned),
+        "devices_moved": sum(moved.values()),
+        "moved_to": dict(moved),
+        "pops_created": created,
+        "still_unmapped": sorted(still),
+    }
 
 
 # --------------------------------------------------------------------------- drill-down topology

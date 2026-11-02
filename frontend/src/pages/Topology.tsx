@@ -421,11 +421,14 @@ export default function Topology() {
 
   async function autoAssign() {
     try {
-      const r = await api.post<{ assigned: number }>('/areas/auto-assign')
+      const r = await api.post<{ assigned: number; devices_moved: number; pops_created: string[] }>('/areas/auto-assign')
       const left = await api.get<{ unmapped_pops: string[] }>('/areas')
       setMessage({
         text:
-          `${r.assigned} POP diberi area. ${left.unmapped_pops.length} POP belum dipetakan` +
+          `${r.assigned} POP diberi area` +
+          (r.devices_moved ? `, ${r.devices_moved} perangkat dipindah dari UNASSIGNED ke POP kotanya` : '') +
+          (r.pops_created.length ? ` (POP baru: ${r.pops_created.join(', ')})` : '') +
+          `. ${left.unmapped_pops.length} POP belum dipetakan` +
           (left.unmapped_pops.length ? ` (isi kolom Area di Inventory → Metro POP): ${left.unmapped_pops.slice(0, 15).join(', ')}${left.unmapped_pops.length > 15 ? ', …' : ''}` : ''),
       })
       await load()
