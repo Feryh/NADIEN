@@ -95,6 +95,8 @@ tr.clickable:hover, tr.selected { background: var(--panel-2); }
 .pill-ok { background: #22c55e22; color: #86efac; }
 .pill-bad { background: #ef444422; color: #fca5a5; }
 .pill-muted { background: #64748b33; color: var(--muted); }
+td.trend-up { color: #fbbf24; }
+td.trend-down { color: #86efac; }
 .badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; font-weight: 600; white-space: nowrap; }
 
 /* ------------------------------------------------------------------ inventory */

@@ -92,6 +92,7 @@ class DeviceRecord:
     role: str
     mgmt_ip: str | None
     status: str
+    observium_hostname: str = ""  # Observium's own hostname: the RRD directory name
 
 
 def _tokens(hostname: str) -> list[str]:
@@ -170,6 +171,7 @@ def parse_device(row: dict[str, Any], pop_regex: str) -> DeviceRecord | None:
         role=guess_role(hostname),
         mgmt_ip=row.get("ip") or None,
         status="decommissioned" if disabled else ("active" if up else "maintenance"),
+        observium_hostname=(row.get("hostname") or "").strip(),
     )
 
 
@@ -189,6 +191,7 @@ class PortRecord:
     description: str | None
     in_gbps: float | None
     out_gbps: float | None
+    if_index: int | None = None  # RRD file is port-<ifIndex>.rrd
 
 
 def classify_port(name: str, if_type: str) -> str:
@@ -231,6 +234,7 @@ def parse_port(row: dict[str, Any]) -> PortRecord | None:
         description=(row.get("ifAlias") or "").strip()[:MAX_DESCRIPTION] or None,
         in_gbps=_rate_gbps(row, "ifInOctets_rate"),
         out_gbps=_rate_gbps(row, "ifOutOctets_rate"),
+        if_index=_int(row.get("ifIndex")),
     )
 
 

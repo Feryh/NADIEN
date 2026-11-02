@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import models as m
@@ -9,6 +9,8 @@ from ..collectors.configs import parse_config
 from ..collectors.configs.oxidized import OxidizedClient, os_hint
 from ..collectors.configs.rancid import RancidError, open_from_settings
 from ..collectors.observium.client import ObserviumClient, ObserviumError
+from ..collectors.observium.rrd import RrdError
+from ..collectors.observium.rrd import open_runner as open_rrd_runner
 from ..collectors.runner import JobBusy, ensure_idle, runner
 from ..collectors.observium.sync import ALL_PARTS, SOURCE_NAME
 from ..config import settings
@@ -39,6 +41,12 @@ def status(db: Session = Depends(get_db)):
             "configured": bool(settings.rancid_path or (settings.rancid_ssh_host and settings.rancid_ssh_user)),
         },
         "oxidized": {"url": settings.oxidized_url, "configured": bool(settings.oxidized_url)},
+        "rrd": {
+            "mode": "local" if settings.observium_rrd_local else "ssh",
+            "path": settings.observium_rrd_path,
+            "configured": bool(settings.observium_rrd_local or settings.observium_ssh_user),
+            "mapped_ports": db.scalar(select(func.count()).select_from(m.ObserviumPort)) or 0,
+        },
         "parts": sorted(ALL_PARTS),
     }
 
@@ -80,6 +88,24 @@ def observium_sync(
 
     kind = "observium-utilization" if selected == {"utilization"} else "observium"
     return _start(kind, job)
+
+
+@router.post("/observium/rrd", status_code=202)
+def observium_rrd(days: int = Query(90, ge=7, le=365)):
+    """Start a background job: daily peak in/out for every link from Observium's RRD files over the
+    last `days` days (replaces the link's samples in that window). Poll /collectors/jobs/current."""
+    try:
+        runner_ = open_rrd_runner()  # SSH / local access checked now
+    except RrdError as exc:
+        raise HTTPException(400 if "not configured" in str(exc) else 502, str(exc)) from exc
+
+    def job(db: Session, progress) -> dict:
+        try:
+            return jobs.run_rrd(db, days, runner=runner_, progress=progress)
+        finally:
+            runner_.close()
+
+    return _start("observium-rrd", job)
 
 
 async def _read_text(request: Request) -> str:

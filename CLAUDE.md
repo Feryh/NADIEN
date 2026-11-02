@@ -23,6 +23,7 @@ Phase 1–3 (inventory, topology, capacity) sudah MVP. Lihat README.md untuk det
 - `cd frontend && npm run typecheck` — cek TypeScript
 - `cd backend && python -m pytest -q` — test backend (butuh `requirements-dev.txt`)
 - `cd backend && python -m app.collectors.run observium` — sync dari Observium (kredensial via env)
+- `cd backend && python -m app.collectors.run rrd --days 90` — histori utilisasi dari RRD Observium
 
 ## Architecture
 
@@ -38,6 +39,9 @@ Phase 1–3 (inventory, topology, capacity) sudah MVP. Lihat README.md untuk det
 - `backend/app/collectors/jobs.py` — satu-satunya pintu untuk menjalankan sync: backup DB dulu
   (`app/backup.py`, retensi 15), baru sync. Router dan CLI wajib lewat sini, jangan panggil
   `sync_*` langsung dari endpoint baru.
+- `backend/app/collectors/observium/rrd.py` — histori utilisasi (peak harian) dari file RRD Observium
+  via `rrdtool xport` lewat SSH (atau lokal). Butuh mapping `ObserviumPort` (ifIndex) dari Full sync.
+  Batas DS port Observium 100 Gbps: nilai di atasnya jadi NaN dan harinya terlewat.
 
 ## Coding Conventions
 

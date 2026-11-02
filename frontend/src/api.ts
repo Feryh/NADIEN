@@ -55,6 +55,9 @@ export interface LinkCapacity extends CapacityResult {
   b_device: string
   a_pop: string | null
   b_pop: string | null
+  /** Growth G/bulan per trend window ("7", "30", "90" hari), null when the window has too few samples. */
+  growth_trends: Record<string, number | null>
+  samples_days: number
 }
 
 export interface LinkCapacityDetail extends LinkCapacity {

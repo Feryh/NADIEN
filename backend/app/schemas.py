@@ -366,6 +366,9 @@ class LinkCapacity(CapacityResult):
     b_device: str
     a_pop: str | None
     b_pop: str | None
+    # Least-squares growth (Gbps/month) over the last 7 / 30 / 90 days of samples.
+    growth_trends: dict[str, float | None] = {}
+    samples_days: int = 0
 
 
 class LinkCapacityDetail(LinkCapacity):

@@ -7,19 +7,37 @@ from sqlalchemy.orm import Session
 
 from .. import models as m
 from .. import schemas as s
+from ..config import settings
 from ..database import get_db
 from ..services.capacity import calculate, forecast_series, trend_gbps_per_month
 
 router = APIRouter(prefix="/capacity", tags=["Capacity Planning"])
 
-TREND_WINDOW_DAYS = 90
+TREND_WINDOWS = (7, 30, 90)
+
+
+def _window(samples, days: int):
+    """Samples of the last `days` days, measured back from the newest sample (no clock/tz mixing)."""
+    if not samples:
+        return []
+    newest = max(s.ts.timestamp() for s in samples)
+    return [s for s in samples if s.ts.timestamp() >= newest - days * 86400]
+
+
+def growth_trends(samples) -> dict[str, float | None]:
+    out = {}
+    for days in TREND_WINDOWS:
+        g = trend_gbps_per_month(_window(samples, days))
+        out[str(days)] = round(g, 3) if g is not None else None
+    return out
 
 
 def _link_capacity(link: m.Link, samples, devices, pops) -> s.LinkCapacity:
+    trends = growth_trends(samples)
     if link.growth_gbps_per_month is not None:
         growth, source = link.growth_gbps_per_month, "manual"
     else:
-        growth, source = trend_gbps_per_month(samples), "trend"
+        growth, source = trend_gbps_per_month(_window(samples, settings.trend_window_days)), "trend"
     result = calculate(
         link.capacity_gbps, link.current_gbps, link.reserved_gbps, growth_abs=growth, growth_source=source
     )
@@ -34,7 +52,16 @@ def _link_capacity(link: m.Link, samples, devices, pops) -> s.LinkCapacity:
         b_device=b.hostname if b else "?",
         a_pop=pops.get(a.pop_id) if a else None,
         b_pop=pops.get(b.pop_id) if b else None,
+        growth_trends=trends,
+        samples_days=_span_days(samples),
     )
+
+
+def _span_days(samples) -> int:
+    if len(samples) < 2:
+        return 0
+    stamps = [s.ts.timestamp() for s in samples]
+    return round((max(stamps) - min(stamps)) / 86400)
 
 
 def _context(db: Session):
@@ -44,7 +71,7 @@ def _context(db: Session):
 
 
 def _samples_by_link(db: Session, link_id: int | None = None) -> dict[int, list[m.UtilizationSample]]:
-    since = datetime.now(timezone.utc) - timedelta(days=TREND_WINDOW_DAYS)
+    since = datetime.now(timezone.utc) - timedelta(days=max(max(TREND_WINDOWS), settings.trend_window_days) + 1)
     stmt = select(m.UtilizationSample).where(m.UtilizationSample.ts >= since).order_by(m.UtilizationSample.ts)
     if link_id is not None:
         stmt = stmt.where(m.UtilizationSample.link_id == link_id)

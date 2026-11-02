@@ -274,6 +274,17 @@ class Link(TimestampMixin, Base):
     wavelength_id: Mapped[int | None] = mapped_column(ForeignKey("dwdm_wavelengths.id"))
 
 
+class ObserviumPort(Base):
+    """Where an interface's history lives in Observium: <rrd_dir>/<observium_hostname>/port-<if_index>.rrd."""
+
+    __tablename__ = "observium_ports"
+
+    interface_id: Mapped[int] = mapped_column(ForeignKey("interfaces.id", ondelete="CASCADE"), primary_key=True)
+    observium_port_id: Mapped[int] = mapped_column(Integer)
+    if_index: Mapped[int | None] = mapped_column(Integer)
+    observium_hostname: Mapped[str] = mapped_column(String(255))
+
+
 class UtilizationSample(Base):
     __tablename__ = "utilization_samples"
     __table_args__ = (Index("ix_util_link_ts", "link_id", "ts"),)

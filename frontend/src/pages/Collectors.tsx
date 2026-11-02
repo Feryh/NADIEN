@@ -36,6 +36,7 @@ interface CollectorStatus {
   observium: { url: string; configured: boolean; auth: string | null; last_sync_at: string | null; last_status: string | null }
   rancid: { source: string | null; configured: boolean }
   oxidized: { url: string | null; configured: boolean }
+  rrd: { mode: 'local' | 'ssh'; path: string; configured: boolean; mapped_ports: number }
   parts: string[]
 }
 
@@ -135,6 +136,8 @@ export default function Collectors() {
   }
 
   const query = vendor ? `?vendor=${vendor}` : ''
+  const [rrdDays, setRrdDays] = useState('90')
+  const rrdReady = !!status?.rrd.configured && (status?.rrd.mapped_ports ?? 0) > 0
 
   return (
     <div className="capacity">
@@ -170,6 +173,51 @@ export default function Collectors() {
             <code>NADIEN_OBSERVIUM_USER</code> + <code>NADIEN_OBSERVIUM_PASSWORD</code>, lalu restart backend.
           </p>
         )}
+      </div>
+
+      <div className="card">
+        <div className="toolbar">
+          <h2>Histori utilisasi (RRD Observium)</h2>
+          <span className={`pill ${status?.rrd.configured ? 'pill-ok' : 'pill-bad'}`}>
+            {status?.rrd.configured ? `akses ${status.rrd.mode}` : 'akses SSH belum di-set'}
+          </span>
+          <span className={`pill ${status?.rrd.mapped_ports ? 'pill-ok' : 'pill-muted'}`}>
+            {status?.rrd.mapped_ports ?? 0} port ter-mapping
+          </span>
+          <div className="spacer" />
+          <select value={rrdDays} onChange={(e) => setRrdDays(e.target.value)} disabled={jobRunning}>
+            <option value="7">7 hari</option>
+            <option value="30">30 hari</option>
+            <option value="90">90 hari</option>
+          </select>
+          <button
+            className="primary"
+            disabled={!!busy || jobRunning || !rrdReady}
+            onClick={() => startJob(`/collectors/observium/rrd?days=${rrdDays}`)}
+          >
+            Ambil histori RRD
+          </button>
+        </div>
+        <p className="hint">
+          Peak harian (RRA MAX) in/out tiap link dibaca langsung dari file RRD Observium (<code>{status?.rrd.path}</code>) dengan{' '}
+          <code>rrdtool xport</code>, menggantikan sampel di rentang itu. Hasilnya dipakai untuk tren 7 / 30 / 90 hari di halaman
+          Capacity. Tidak dibuat backup (hanya menulis sampel utilisasi).
+        </p>
+        {!status?.rrd.configured && (
+          <p className="hint">
+            Set di <code>backend/.env</code>: <code>NADIEN_OBSERVIUM_SSH_USER</code> + <code>NADIEN_OBSERVIUM_SSH_KEY_FILE</code>{' '}
+            (atau <code>_PASSWORD</code>) — akun read-only ke server Observium yang bisa membaca{' '}
+            <code>/opt/observium/rrd</code> dan menjalankan <code>rrdtool</code>. Host key server harus sudah ada di{' '}
+            <code>known_hosts</code>. Lalu restart backend.
+          </p>
+        )}
+        {status?.rrd.configured && !status.rrd.mapped_ports && (
+          <p className="hint">Belum ada mapping port → file RRD (ifIndex). Jalankan Full sync Observium dulu.</p>
+        )}
+        <p className="hint">
+          Catatan: RRD port Observium punya batas DS 100 Gbps; trafik di atas itu (link 400G) tersimpan sebagai NaN dan hari itu
+          terlewat. Link yang kemungkinan terpotong dilaporkan di <code>possibly_clipped</code>.
+        </p>
       </div>
 
       <div className="card">

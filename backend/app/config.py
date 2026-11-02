@@ -34,6 +34,19 @@ class Settings(BaseSettings):
     # When both report the same local port, LLDP wins. MNDP/ISDP are never used.
     observium_include_cdp: bool = True
 
+    # Observium RRD history (daily peaks per port) for utilization trends.
+    # Read over SSH on the Observium server (rrdtool xport), or locally when NADIEN runs there.
+    observium_rrd_path: str = "/opt/observium/rrd"
+    observium_rrd_local: bool = False
+    observium_ssh_host: str | None = None  # default: the host of NADIEN_OBSERVIUM_URL
+    observium_ssh_port: int = 22
+    observium_ssh_user: str | None = None
+    observium_ssh_key_file: str | None = None
+    observium_ssh_password: str | None = None
+    observium_ssh_known_hosts: str | None = None
+    # Growth used for exhaustion forecasts: least-squares trend over this many days of samples.
+    trend_window_days: int = 90
+
     # RANCID config archive used by Observium (Observium's API does not expose configs).
     # Either a local/mounted path, or SFTP to the Observium server with a read-only SSH account.
     rancid_path: str | None = None

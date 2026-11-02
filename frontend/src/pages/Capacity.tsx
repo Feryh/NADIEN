@@ -13,7 +13,29 @@ import {
 import { api, CapacityColor, CapacityResult, LinkCapacity, LinkCapacityDetail } from '../api'
 import { CAPACITY_HEX, ColorBadge, fmtG, fmtMonths, UtilBar } from '../components/ui'
 
-const GROWTH_SOURCE_LABEL = { manual: 'manual', trend: 'tren 90 hari', input: 'input', none: '—' }
+const GROWTH_SOURCE_LABEL = { manual: 'manual', trend: 'tren', input: 'input', none: '—' }
+const TREND_WINDOWS = ['7', '30', '90']
+
+function fmtTrend(v: number | null | undefined) {
+  if (v == null) return '—'
+  return `${v > 0 ? '+' : ''}${v.toFixed(1)}G`
+}
+
+/** Growth per month seen over the last 7 / 30 / 90 days of daily peaks. */
+function TrendCells({ link }: { link: LinkCapacity }) {
+  return (
+    <>
+      {TREND_WINDOWS.map((w) => {
+        const v = link.growth_trends?.[w]
+        return (
+          <td key={w} className={`num ${v != null && v > 0 ? 'trend-up' : v != null && v < 0 ? 'trend-down' : ''}`}>
+            {fmtTrend(v)}
+          </td>
+        )
+      })}
+    </>
+  )
+}
 
 export default function Capacity() {
   const [params, setParams] = useSearchParams()
@@ -61,7 +83,10 @@ export default function Capacity() {
                 <th className="num">Reserved</th>
                 <th className="num">Available</th>
                 <th className="num">Util</th>
-                <th className="num">Growth/bln</th>
+                <th className="num" title="Growth per bulan dari tren 7 hari terakhir">Tren 7h</th>
+                <th className="num" title="Growth per bulan dari tren 30 hari terakhir">Tren 30h</th>
+                <th className="num" title="Growth per bulan dari tren 90 hari terakhir">Tren 90h</th>
+                <th className="num">Growth/bln dipakai</th>
                 <th className="num">Ke 80%</th>
                 <th className="num">Penuh</th>
                 <th>Tgl penuh</th>
@@ -88,6 +113,7 @@ export default function Capacity() {
                   <td className="num">{fmtG(l.reserved_gbps)}</td>
                   <td className="num">{fmtG(l.available_gbps)}</td>
                   <td className="num">{l.utilization_pct.toFixed(1)}%</td>
+                  <TrendCells link={l} />
                   <td className="num">
                     {l.growth_gbps_per_month != null ? `${l.growth_gbps_per_month.toFixed(1)}G` : '—'}
                     <div className="muted small">{GROWTH_SOURCE_LABEL[l.growth_source]}</div>
@@ -239,6 +265,11 @@ function LinkDetail({ linkId, onClose }: { linkId: number; onClose: () => void }
               {detail.growth_gbps_per_month != null ? `${detail.growth_gbps_per_month.toFixed(2)}G/bln` : '—'} (
               {GROWTH_SOURCE_LABEL[detail.growth_source]})
             </div>
+            <div>
+              <span className="muted">Tren 7/30/90 hari</span>{' '}
+              {TREND_WINDOWS.map((w) => fmtTrend(detail.growth_trends?.[w])).join(' · ')} per bln
+            </div>
+            <div><span className="muted">Histori</span> {detail.samples_days} hari</div>
             <div><span className="muted">Ke 80%</span> {fmtMonths(detail.months_to_threshold)}</div>
             <div><span className="muted">Penuh</span> {fmtMonths(detail.months_to_full)} {detail.exhaustion_date && `(${detail.exhaustion_date})`}</div>
           </div>
