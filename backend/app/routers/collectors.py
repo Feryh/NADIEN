@@ -3,15 +3,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models as m
+from ..backup import BackupError, backup_dir, create_backup, is_backupable, list_backups
+from ..collectors import jobs
 from ..collectors.configs import parse_config
-from ..collectors.configs.apply import apply_config
-from ..collectors.configs.oxidized import OxidizedClient, os_hint, sync_oxidized
-from ..collectors.configs.rancid import RancidError, open_from_settings, sync_rancid
-from ..collectors.observium.client import ObserviumClient, ObserviumError
-from ..collectors.observium.sync import ALL_PARTS, SOURCE_NAME, sync_observium
+from ..collectors.configs.oxidized import os_hint
+from ..collectors.configs.rancid import RancidError
+from ..collectors.observium.client import ObserviumError
+from ..collectors.observium.sync import ALL_PARTS, SOURCE_NAME
 from ..config import settings
 from ..database import get_db
-from ..services.topology import discover_links, norm_host
+from ..services.topology import norm_host
 
 router = APIRouter(prefix="/collectors", tags=["Collectors"])
 
@@ -47,13 +48,14 @@ def observium_sync(
     discover: bool = True,
     db: Session = Depends(get_db),
 ):
-    """Pull devices/ports/addresses (inventory), LLDP (neighbours) and port rates (utilization) from Observium."""
+    """Back up the DB, then pull devices/ports/addresses (inventory), LLDP (neighbours) and port rates (utilization)."""
     unknown = set(parts) - ALL_PARTS
     if unknown:
         raise HTTPException(422, f"Unknown parts: {', '.join(sorted(unknown))}")
     try:
-        with ObserviumClient() as client:
-            return sync_observium(db, client, set(parts), discover).as_dict()
+        return jobs.run_observium(db, set(parts), discover)
+    except jobs.JobError as exc:
+        raise HTTPException(500, str(exc)) from exc
     except ObserviumError as exc:
         raise HTTPException(502, str(exc)) from exc
 
@@ -79,30 +81,24 @@ async def parse_preview(request: Request, vendor: str | None = None):
 
 @router.post("/configs/rancid/sync")
 def rancid_sync(discover: bool = True, db: Session = Depends(get_db)):
-    """Read every config in Observium's RANCID archive (local path or SFTP) and merge it into the inventory."""
+    """Back up the DB, then read every config in Observium's RANCID archive (local path or SFTP)."""
     try:
-        fs, base, source = open_from_settings()
+        return jobs.run_rancid(db, discover)
+    except jobs.JobError as exc:
+        raise HTTPException(500, str(exc)) from exc
     except RancidError as exc:
         raise HTTPException(400 if "not configured" in str(exc) else 502, str(exc)) from exc
-    try:
-        return sync_rancid(db, fs, base, source, discover)
-    except RancidError as exc:
-        raise HTTPException(502, str(exc)) from exc
-    finally:
-        fs.close()
 
 
 @router.post("/configs/oxidized/sync")
 def oxidized_sync(discover: bool = True, db: Session = Depends(get_db)):
-    """Fetch every device config from Oxidized and merge it into the inventory."""
+    """Back up the DB, then fetch every device config from Oxidized."""
     try:
-        client = OxidizedClient()
+        return jobs.run_oxidized(db, discover)
+    except jobs.JobError as exc:
+        raise HTTPException(500, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(400, str(exc)) from exc
-    try:
-        return sync_oxidized(db, client, discover)
-    finally:
-        client.close()
 
 
 @router.post("/configs/{hostname}")
@@ -113,7 +109,7 @@ async def import_config(
     discover: bool = Query(True, description="Re-run topology discovery so config-described links appear"),
     db: Session = Depends(get_db),
 ):
-    """Upload one device's config (raw text body) and merge it into the inventory."""
+    """Back up the DB, then merge one device's config (raw text body) into the inventory."""
     text = await _read_text(request)
     device = next((d for d in db.scalars(select(m.Device)) if norm_host(d.hostname) == norm_host(hostname)), None)
     if device is None:
@@ -123,7 +119,34 @@ async def import_config(
         cfg = parse_config(text, vendor or os_hint(device, vendors))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    result = apply_config(db, device, cfg)
-    if discover:
-        result["discovery"] = discover_links(db).model_dump()
-    return result
+    try:
+        return jobs.run_config_import(db, device, cfg, discover)
+    except jobs.JobError as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+
+# --------------------------------------------------------------------------- backups
+
+backups = APIRouter(prefix="/backups", tags=["Backups"])
+
+
+@backups.get("")
+def get_backups(db: Session = Depends(get_db)):
+    engine = jobs._engine(db)
+    return {
+        "directory": str(backup_dir(engine)),
+        "keep": settings.backup_keep,
+        "enabled": settings.backup_before_sync,
+        "supported": is_backupable(engine),
+        "backups": [b.as_dict() for b in list_backups(engine)] if is_backupable(engine) else [],
+    }
+
+
+@backups.post("", status_code=201)
+def create_manual_backup(db: Session = Depends(get_db)):
+    """Take a backup now. Restore is CLI-only on purpose: `python -m app.backup restore <name>`."""
+    try:
+        db.commit()
+        return create_backup(jobs._engine(db), "manual").as_dict()
+    except BackupError as exc:
+        raise HTTPException(400, str(exc)) from exc

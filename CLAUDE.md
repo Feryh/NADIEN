@@ -35,6 +35,9 @@ Phase 1–3 (inventory, topology, capacity) sudah MVP. Lihat README.md untuk det
 - `backend/app/collectors/` — Observium (inventory, LLDP, utilisasi) dan parser config 4 vendor.
   Parser bersifat murni (tanpa DB) dan diuji dengan fixture di `backend/tests/fixtures/`.
   Kredensial Observium/Oxidized hanya lewat env; jangan pernah ditulis ke file yang di-commit.
+- `backend/app/collectors/jobs.py` — satu-satunya pintu untuk menjalankan sync: backup DB dulu
+  (`app/backup.py`, retensi 15), baru sync. Router dan CLI wajib lewat sini, jangan panggil
+  `sync_*` langsung dari endpoint baru.
 
 ## Coding Conventions
 

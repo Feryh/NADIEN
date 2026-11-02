@@ -5,6 +5,10 @@ CLAUDE.local.md
 .env
 .env.*
 
+# Database backups (python -m app.backup)
+backups/
+nadien-backups/
+
 # Python
 .venv/
 __pycache__/

@@ -121,6 +121,26 @@ Catatan:
 - API Observium tidak menyediakan konfigurasi device, sehingga config dibaca langsung dari arsip RANCID yang ditampilkan Observium. Semua folder `configs` di bawah base path (`var/<group>/configs/<host>`) dibaca. Nama file dicocokkan ke device lewat hostname, FQDN, atau IP management. Tipe parser diambil dari header `RANCID-CONTENT-TYPE`.
 - Akses SFTP bersifat read-only dan **host key yang belum dikenal ditolak**. Daftarkan dulu host key server Observium di `known_hosts`.
 
+### Backup database
+
+Setiap kali data inventory atau config diambil, database **di-backup lebih dulu**. Yang disimpan hanya **15 backup terakhir** (`NADIEN_BACKUP_KEEP`).
+
+- **Pemicu backup:** Full sync Observium (inventory/neighbours), sync config RANCID/Oxidized, dan import config manual.
+- **Tidak di-backup:** sync *utilisasi saja*. Sync ini hanya menambah sampel dan berjalan tiap beberapa menit; kalau ikut di-backup, 15 slot akan habis dalam hitungan jam.
+- **Kalau backup gagal, sync tidak dijalankan.**
+- **Format:**
+  - SQLite: salinan online lewat sqlite3 backup API.
+  - PostgreSQL: `pg_dump --format=custom`. Image Docker sudah memasang `postgresql-client-16`.
+- **Lokasi:** `NADIEN_BACKUP_DIR`. Default-nya `nadien-backups/` di samping file SQLite, atau `./backups` di Docker.
+
+```bash
+python -m app.backup list
+python -m app.backup create [alasan]
+python -m app.backup restore nadien-20261102-075137-observium.db   # kondisi saat ini di-backup dulu (pre-restore)
+```
+
+Restore sengaja hanya tersedia lewat CLI, tidak lewat UI. Untuk PostgreSQL, hentikan API sebelum restore.
+
 ### Data eksternal (DWDM, ODF, Patch Panel, Fiber, Wavelength)
 
 Tabelnya sudah tersedia sebagai "wadah", dengan kolom `source_system` + `external_id` + `attributes` (JSON). Cara mengisi:

@@ -29,7 +29,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for r in (inventory.router, integrations.router, collectors.router, topology.router, capacity.router, dashboard.router):
+for r in (
+    inventory.router,
+    integrations.router,
+    collectors.router,
+    collectors.backups,
+    topology.router,
+    capacity.router,
+    dashboard.router,
+):
     app.include_router(r, prefix="/api")
 
 

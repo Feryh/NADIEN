@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
 
+interface BackupList {
+  directory: string
+  keep: number
+  enabled: boolean
+  supported: boolean
+  backups: { name: string; size_bytes: number; created_at: string; reason: string }[]
+}
+
 interface CollectorStatus {
   observium: { url: string; configured: boolean; auth: string | null; last_sync_at: string | null; last_status: string | null }
   rancid: { source: string | null; configured: boolean }
@@ -32,8 +40,11 @@ export default function Collectors() {
   const [vendor, setVendor] = useState('')
   const [configText, setConfigText] = useState('')
 
+  const [backups, setBackups] = useState<BackupList | null>(null)
+
   const loadStatus = useCallback(() => {
     api.get<CollectorStatus>('/collectors/status').then(setStatus).catch((e: Error) => setError(e.message))
+    api.get<BackupList>('/backups').then(setBackups).catch(() => setBackups(null))
   }, [])
 
   useEffect(loadStatus, [loadStatus])
@@ -149,6 +160,55 @@ export default function Collectors() {
           onChange={(e) => setConfigText(e.target.value)}
           placeholder="Tempel running-config / current-configuration / show configuration / admin display-config di sini"
         />
+      </div>
+
+      <div className="card">
+        <div className="toolbar">
+          <h2>Backup database</h2>
+          <span className={`pill ${backups?.enabled && backups.supported ? 'pill-ok' : 'pill-bad'}`}>
+            {backups?.enabled ? `otomatis sebelum sync · simpan ${backups.keep} terakhir` : 'backup otomatis nonaktif'}
+          </span>
+          <div className="spacer" />
+          <button disabled={!!busy || !backups?.supported} onClick={() => run('backup', () => api.post('/backups'))}>
+            {busy === 'backup' ? 'Membuat backup…' : 'Backup sekarang'}
+          </button>
+        </div>
+        <p className="hint">
+          Dibuat sebelum setiap Full sync Observium, sync config RANCID/Oxidized, dan import config (sync utilisasi saja tidak
+          di-backup). Lokasi: <code>{backups?.directory}</code>. Restore lewat terminal:{' '}
+          <code>python -m app.backup restore &lt;nama file&gt;</code> (kondisi saat itu otomatis di-backup dulu sebagai pre-restore).
+        </p>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>Waktu</th>
+                <th>Alasan</th>
+                <th className="num">Ukuran</th>
+              </tr>
+            </thead>
+            <tbody>
+              {backups?.backups.map((b) => (
+                <tr key={b.name}>
+                  <td>
+                    <code>{b.name}</code>
+                  </td>
+                  <td>{new Date(b.created_at).toLocaleString()}</td>
+                  <td>{b.reason}</td>
+                  <td className="num">{(b.size_bytes / 1024).toFixed(0)} KB</td>
+                </tr>
+              ))}
+              {!backups?.backups.length && (
+                <tr>
+                  <td colSpan={4} className="empty">
+                    Belum ada backup
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {error && <div className="error">{error}</div>}

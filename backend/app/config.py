@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     # Utilization at which a link is considered "needs upgrade" for planning.
     planning_threshold_pct: float = 80.0
 
+    # Database backup taken before every collector run that changes inventory/config data.
+    # Default directory: `nadien-backups/` next to a SQLite file, `./backups` for PostgreSQL.
+    backup_dir: str | None = None
+    backup_keep: int = 15
+    backup_before_sync: bool = True
+
     # Observium (devices, ports, LLDP neighbours, addresses, port rates).
     # Credentials come only from the environment / .env — never commit them.
     # Prefer a read-only API token restricted to this server's IP over a user password.

@@ -18,6 +18,12 @@ services:
     build: ./backend
     environment:
       NADIEN_DATABASE_URL: postgresql+psycopg://nadien:nadien@db:5432/nadien
+      NADIEN_BACKUP_DIR: /backups
+    env_file:
+      - path: ./backend/.env
+        required: false
+    volumes:
+      - ./backups:/backups
     ports:
       - "8000:8000"
     depends_on:
