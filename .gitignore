@@ -5,6 +5,9 @@ CLAUDE.local.md
 .env
 .env.*
 
+# Exported work lists with real network data (python -m app.area_mapping)
+data/
+
 # Database backups (python -m app.backup)
 backups/
 nadien-backups/
