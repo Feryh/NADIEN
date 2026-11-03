@@ -4,11 +4,14 @@ Everything is aggregated per request from devices/links/interfaces (thousands of
 hundreds of thousands of ports); interfaces are grouped in SQL first.
 """
 
+import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import zipfile
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -29,6 +32,7 @@ from ..services.areas import (
     UNMAPPED_AREA,
     area_for_hostnames,
     area_for_pop,
+    city_center_for_code,
     city_label,
     csr_parts,
     first_city_code,
@@ -42,6 +46,7 @@ from ..services.areas import (
     speed_bucket,
 )
 from ..services.capacity import capacity_color, occupancy_pct
+from ..services.geo import KmlError, Placemark, match_pops, read_placemarks
 
 router = APIRouter(tags=["Analysis"])
 
@@ -292,6 +297,77 @@ def _all_cell_sites(db: Session, code: str) -> bool:
     return all(csr_parts(h) for h in hostnames)
 
 
+MAX_KML_UPLOAD = 30_000_000
+
+
+@router.post("/geo/placemarks")
+async def parse_placemarks(request: Request, filename: str = ""):
+    """Read point placemarks from a KML / KMZ / zip body (nothing is stored)."""
+    body = await request.body()
+    if len(body) > MAX_KML_UPLOAD:
+        raise HTTPException(413, "File terlalu besar")
+    try:
+        placemarks = read_placemarks(body, filename or "upload")
+    except (KmlError, zipfile.BadZipFile) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"source": filename, "placemarks": [p.__dict__ for p in placemarks]}
+
+
+class PlacemarkIn(BaseModel):
+    name: str = Field(max_length=255)
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+    folder: str | None = None
+    source: str | None = None
+
+
+class CoordinateMatchIn(BaseModel):
+    placemarks: list[PlacemarkIn] = Field(max_length=50_000)
+    only_missing: bool = True
+
+
+@router.post("/pops/coordinates/match")
+def match_pop_coordinates(payload: CoordinateMatchIn, db: Session = Depends(get_db)):
+    """Proposed lat/lon per POP from placemarks (by city, inside the POP's area). Nothing is written."""
+    ctx = _context(db)
+    pops = [{"id": p.id, "code": p.code, "name": p.name, "city": p.city, "area": ctx.area_of_pop[p.id],
+             "latitude": p.latitude, "longitude": p.longitude}
+            for p in ctx.pops.values()
+            if p.code.upper() != UNASSIGNED_POP and not (payload.only_missing and p.latitude is not None and p.longitude is not None)]
+    proposals = match_pops(pops, [Placemark(**p.model_dump()) for p in payload.placemarks])
+    matched = {p["pop_id"] for p in proposals}
+    return {
+        "pops_considered": len(pops),
+        "proposals": sorted(proposals, key=lambda p: ({"high": 0, "medium": 1, "low": 2}[p["confidence"]], p["code"])),
+        "unmatched": sorted(p["code"] for p in pops if p["id"] not in matched),
+    }
+
+
+class CoordinateIn(BaseModel):
+    pop_id: int
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+
+
+@router.put("/pops/coordinates")
+def set_pop_coordinates(rows: list[CoordinateIn], db: Session = Depends(get_db)):
+    """Write chosen coordinates (backup first)."""
+    jobs_runner.ensure_idle(jobs_runner.runner)
+    try:
+        backup = backup_before(db, "pop-coordinates")
+    except JobError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    updated = 0
+    for row in rows:
+        pop = db.get(m.Pop, row.pop_id)
+        if pop is None:
+            raise HTTPException(404, f"POP {row.pop_id} not found")
+        pop.latitude, pop.longitude = row.latitude, row.longitude
+        updated += 1
+    db.commit()
+    return {"updated": updated, "backup": backup}
+
+
 # --------------------------------------------------------------------------- drill-down topology
 
 
@@ -375,6 +451,57 @@ def _neighbor_level(ctx: _Ctx, links, device_id: int, depth: int) -> dict:
             "nodes": nodes, "edges": _edges(edges)}
 
 
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def _area_centers(ctx: _Ctx) -> dict[str, tuple[float, float]]:
+    """(lat, lon) per area: median of its POPs that have coordinates, else the area's default spot."""
+    points: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    for pid, pop in ctx.pops.items():
+        if pop.latitude is not None and pop.longitude is not None:
+            points[ctx.area_of_pop[pid]].append((pop.latitude, pop.longitude))
+    centers = {}
+    for area in set(ctx.area_of_pop.values()) | set(AREAS):
+        if points.get(area):
+            centers[area] = (_median([p[0] for p in points[area]]), _median([p[1] for p in points[area]]))
+        elif (pos := area_position(area)) is not None:
+            centers[area] = (pos[1], pos[0])
+    return centers
+
+
+def _estimate_positions(known: dict[str, tuple[float, float]], neighbours: dict[str, set[str]],
+                        missing: list[str], fallback: tuple[float, float] | None) -> dict[str, tuple[float, float]]:
+    """Display-only spot for nodes without coordinates: the mean of their already placed neighbours
+    (spread out a little so several do not stack), repeated so chains get placed too; the rest
+    around `fallback` on a ring. Never stored."""
+    placed = dict(known)
+    estimated: dict[str, tuple[float, float]] = {}
+    for _ in range(6):
+        progress = False
+        for node in missing:
+            if node in placed:
+                continue
+            around = [placed[n] for n in neighbours.get(node, ()) if n in placed]
+            if around:
+                offset = (sum(map(ord, node)) % 12) / 12 * 6.283
+                lat = sum(p[0] for p in around) / len(around) + 0.08 * math.sin(offset)
+                lon = sum(p[1] for p in around) / len(around) + 0.08 * math.cos(offset)
+                placed[node] = estimated[node] = (lat, lon)
+                progress = True
+        if not progress:
+            break
+    rest = [n for n in missing if n not in placed]
+    if fallback:
+        for i, node in enumerate(rest):
+            angle = i / max(len(rest), 1) * 6.283
+            radius = 0.35 + 0.1 * (i // 24)
+            estimated[node] = (fallback[0] + radius * math.sin(angle), fallback[1] + radius * math.cos(angle))
+    return estimated
+
+
 def _area_level(ctx: _Ctx, links) -> dict:
     inner: dict[str, _Agg] = defaultdict(_Agg)
     trunks: dict[tuple[str, str], _Agg] = defaultdict(_Agg)
@@ -389,13 +516,15 @@ def _area_level(ctx: _Ctx, links) -> dict:
     pops_per_area: Counter = Counter(ctx.area_of_pop.values())
     devices_per_area: Counter = Counter(ctx.area_of_device(d) for d in ctx.devices)
     names = [a for a in AREA_ORDER if pops_per_area[a]] + sorted(set(pops_per_area) - set(AREA_ORDER))
+    centers = _area_centers(ctx)
+    located = Counter(ctx.area_of_pop[pid] for pid, p in ctx.pops.items() if p.latitude is not None)
     nodes = []
     for name in names:
-        pos = area_position(name)
+        lat, lon = centers.get(name, (None, None))
         nodes.append({
             "id": f"area:{name}", "kind": "area", "label": name, "pops": pops_per_area[name],
             "devices": devices_per_area[name], "internal": inner[name].as_dict(),
-            "lon": pos[0] if pos else None, "lat": pos[1] if pos else None,
+            "lon": lon, "lat": lat, "pops_located": located[name],
         })
     return {"level": "area", "nodes": nodes, "edges": _edges(trunks)}
 
@@ -442,9 +571,32 @@ def _pop_level(ctx: _Ctx, links, area: str) -> dict:
             "tier": min((ROLE_TIER.get(d.role, 4) for d in devs), default=4),
             "internal": inner[pid].as_dict(), "lat": p.latitude, "lon": p.longitude,
         })
+    centers = _area_centers(ctx)
     for remote_area, count in external.items():
-        nodes.append({"id": f"area:{remote_area}", "kind": "external_area", "label": remote_area, "links": count})
+        lat, lon = centers.get(remote_area, (None, None))
+        nodes.append({"id": f"area:{remote_area}", "kind": "external_area", "label": remote_area, "links": count,
+                      "lat": lat, "lon": lon})
+    _place_pops(nodes, edges, centers.get(area))
     return {"level": "pop", "area": area, "nodes": nodes, "edges": _edges(edges)}
+
+
+def _place_pops(nodes: list[dict], edges: dict, center: tuple[float, float] | None) -> None:
+    """Fill lat/lon of POPs without coordinates with a display estimate, flagged `estimated`: the
+    centre of the city its code names, else near its linked POPs, else around the area centre."""
+    for node in nodes:
+        if node["kind"] == "pop" and node.get("lat") is None and (spot := city_center_for_code(node["label"])):
+            node["lat"], node["lon"], node["estimated"] = spot[0], spot[1], True
+    known = {n["id"]: (n["lat"], n["lon"]) for n in nodes if n.get("lat") is not None and n.get("lon") is not None}
+    neighbours: dict[str, set[str]] = defaultdict(set)
+    for a, b in edges:
+        neighbours[a].add(b)
+        neighbours[b].add(a)
+    missing = [n["id"] for n in nodes if n["kind"] == "pop" and n["id"] not in known]
+    estimated = _estimate_positions(known, neighbours, missing, center)
+    for node in nodes:
+        node["estimated"] = node.get("estimated", False) or node["id"] in estimated
+        if node["id"] in estimated:
+            node["lat"], node["lon"] = estimated[node["id"]]
 
 
 def _device_level(ctx: _Ctx, links, pop_code: str) -> dict:

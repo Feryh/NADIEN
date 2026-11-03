@@ -2,6 +2,7 @@ import cytoscape, { Core, ElementDefinition } from 'cytoscape'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link as RouterLink, useSearchParams } from 'react-router-dom'
 import { api, CapacityColor, DiscoveryResult } from '../api'
+import { BasemapShape, Box, declutter, loadBasemap, project } from '../components/basemap'
 import { PopAreaEditor, SearchHit, TopologySearchBox } from '../components/TopologyTools'
 import { CAPACITY_HEX, fmtG } from '../components/ui'
 
@@ -52,6 +53,8 @@ interface NodeData {
   y?: number | null
   pop_id?: number
   region?: string | null
+  estimated?: boolean  // POP without coordinates: position estimated for the map, never stored
+  pops_located?: number
 }
 
 interface View {
@@ -70,6 +73,16 @@ interface View {
 }
 
 type Pos = { x: number; y: number }
+
+const MAP_KEY = 'nadien.topology.map'
+
+function storedMapOn(): boolean {
+  try {
+    return localStorage.getItem(MAP_KEY) !== '0'  // map on by default
+  } catch {
+    return true
+  }
+}
 
 const ROLE_COLOR: Record<string, string> = {
   p: '#6366f1', dci: '#f97316', pe: '#0ea5e9', bng: '#e879f9', agg: '#14b8a6', csr: '#fb7185', access: '#64748b', olt: '#a3e635',
@@ -154,6 +167,7 @@ const STYLE = [
       'text-wrap': 'ellipsis',
     },
   },
+  { selector: 'node[?estimated]', style: { 'border-style': 'dashed', 'border-color': '#e2e8f0', 'border-width': 2 } },
   { selector: 'node[?center]', style: { width: 40, height: 40, 'border-color': '#facc15', 'border-width': 4, 'font-weight': 'bold' } },
   { selector: 'node[status="maintenance"], node[status="decommissioned"]', style: { opacity: 0.5 } },
   {
@@ -308,7 +322,82 @@ function buildElements(view: View): ElementDefinition[] {
   return [...nodes, ...edges]
 }
 
-function runLayout(cy: Core, view: View) {
+// Map layout: pixels per degree, the on-screen size of nodes relative to their normal size (they stay
+// that size at any zoom, like map markers), and the on-screen gap kept between overlapping nodes.
+const MAP_SCALE: Partial<Record<Level, { pxPerDegree: number; markerScale: number; minScreenGap: number }>> = {
+  area: { pxPerDegree: 60, markerScale: 0.9, minScreenGap: 10 },
+  pop: { pxPerDegree: 200, markerScale: 0.9, minScreenGap: 6 },
+}
+
+// Spacing never moves a node more than this many node heights from its place on the map.
+const MAX_SHIFT_HEIGHTS = 3
+
+/** Normal (zoom 1) size of a node, before the map's marker scale. */
+function nodeSize(n: { kind: string; w?: number }): { width: number; height: number } {
+  if (n.kind === 'area') return { width: 150, height: 56 }
+  if (n.kind === 'pop') return { width: n.w ?? 80, height: 34 }
+  if (n.kind.startsWith('external')) return { width: n.w ?? 120, height: 30 }
+  return { width: 26, height: 26 }
+}
+
+/** On the map, keep nodes, labels and lines a constant size on screen whatever the zoom. */
+function applyMarkerScale(cy: Core, level: Level) {
+  const scale = MAP_SCALE[level]!.markerScale / cy.zoom()
+  cy.batch(() => {
+    cy.nodes().forEach((n) => {
+      const kind = n.data('kind') as string
+      const { width, height } = nodeSize({ kind, w: n.data('w') as number })
+      n.style({
+        width: width * scale,
+        height: height * scale,
+        'font-size': (kind === 'area' ? 13 : 12) * scale,
+        'border-width': 2 * scale,
+        'text-max-width': `${(kind === 'area' ? 150 : 160) * scale}px`,
+      })
+    })
+    cy.edges().forEach((e) => {
+      e.style({ width: (e.data('width') as number) * scale, 'font-size': 10 * scale })
+    })
+  })
+}
+
+function mapLayout(cy: Core, view: View) {
+  const { pxPerDegree, markerScale, minScreenGap } = MAP_SCALE[view.level]!
+  const home = new Map<string, Pos>()
+  let parked = 0
+  for (const n of view.nodes) {
+    // Nodes without any position (the unmapped area) wait in a row south-west of the map.
+    home.set(n.id, n.lat != null && n.lon != null ? project(n.lat, n.lon, pxPerDegree) : project(-12.5, 96 + 7 * parked++, pxPerDegree))
+  }
+  const elements = buildElements(view)
+  const widthOf = new Map(elements.filter((e) => !e.data.source).map((e) => [e.data.id as string, e.data.w as number]))
+  // Nodes keep a fixed size on screen, so how much they overlap depends on the zoom the view fits at,
+  // and that zoom depends on how far they were pushed apart: settle it in a few rounds.
+  let boxes = new Map<string, Box>()
+  for (let round = 0; round < 4; round++) {
+    const source = round === 0 ? home : new Map([...boxes].map(([id, b]) => [id, { x: b.x, y: b.y }]))
+    const xs = [...source.values()].map((p) => p.x)
+    const ys = [...source.values()].map((p) => p.y)
+    const zoom = Math.max(0.01, Math.min(cy.width() / (Math.max(...xs) - Math.min(...xs) + 1),
+                                         cy.height() / (Math.max(...ys) - Math.min(...ys) + 1)) * 0.8)
+    const toModel = markerScale / zoom
+    boxes = new Map()
+    for (const n of view.nodes) {
+      const { width, height } = nodeSize({ kind: n.kind, w: widthOf.get(n.id) })
+      const start = home.get(n.id)!
+      boxes.set(n.id, { x: start.x, y: start.y, hw: (width * toModel) / 2, hh: (height * toModel + 16 * toModel) / 2 })
+    }
+    declutter(boxes, minScreenGap * toModel, MAX_SHIFT_HEIGHTS * 34 * toModel)
+  }
+  cy.layout({
+    name: 'preset',
+    padding: 40,
+    positions: (n: cytoscape.NodeSingular) => boxes.get(n.id()) ?? { x: 0, y: 0 },
+  } as cytoscape.LayoutOptions).run()
+}
+
+function runLayout(cy: Core, view: View, onMap: boolean) {
+  if (onMap) return mapLayout(cy, view)
   if (view.level === 'area') {
     const pos = areaLayout(view)
     cy.layout({ name: 'preset', padding: 50, positions: (n: cytoscape.NodeSingular) => pos[n.id()] } as cytoscape.LayoutOptions).run()
@@ -336,7 +425,11 @@ export default function Topology() {
   const focus = params.get('focus') ?? undefined
 
   const container = useRef<HTMLDivElement>(null)
+  const mapLayer = useRef<SVGGElement>(null)
   const cyRef = useRef<Core | null>(null)
+  const [mapOn, setMapOn] = useState(storedMapOn)
+  const [basemap, setBasemap] = useState<BasemapShape[]>([])
+  const onMap = mapOn && (level === 'area' || level === 'pop')
   const [view, setView] = useState<View | null>(null)
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<{ node?: NodeData; edge?: EdgeData } | null>(null)
@@ -405,6 +498,19 @@ export default function Topology() {
   }, [])
 
   useEffect(() => {
+    if (onMap && !basemap.length) loadBasemap().then(setBasemap).catch(() => setMessage({ text: 'Peta dasar gagal dimuat', error: true }))
+  }, [onMap, basemap.length])
+
+  function toggleMap(on: boolean) {
+    setMapOn(on)
+    try {
+      localStorage.setItem(MAP_KEY, on ? '1' : '0')
+    } catch {
+      /* storage blocked: the choice just isn't remembered */
+    }
+  }
+
+  useEffect(() => {
     if (!view || !container.current) return
     const cy = cytoscape({
       container: container.current,
@@ -444,8 +550,27 @@ export default function Topology() {
     })
     cy.on('dragfree', 'node[kind="device"]', () => setDirty(true))
     cyRef.current = cy
-    runLayout(cy, view)
+    // The basemap is drawn in degrees; keep it under the graph through every pan and zoom.
+    let lastZoom = 0
+    const syncMap = () => {
+      if (!onMap) return
+      const { x, y } = cy.pan()
+      mapLayer.current?.setAttribute('transform', `translate(${x},${y}) scale(${cy.zoom() * MAP_SCALE[view.level]!.pxPerDegree})`)
+      if (cy.zoom() !== lastZoom) {
+        lastZoom = cy.zoom()
+        applyMarkerScale(cy, view.level)
+      }
+    }
+    cy.on('viewport', syncMap)
+    runLayout(cy, view, onMap)
     cy.fit(undefined, 40)
+    if (onMap) {
+      // Marker sizes follow the zoom and the fit follows the sizes: settle both, then draw the map.
+      applyMarkerScale(cy, view.level)
+      cy.fit(undefined, 50)
+      lastZoom = 0
+    }
+    syncMap()
     if (focus) {
       const hit = cy.nodes().filter((n) => (n.data('label') as string)?.toUpperCase() === focus.toUpperCase())
       if (hit.nonempty()) {
@@ -456,7 +581,7 @@ export default function Topology() {
       }
     }
     return () => cy.destroy()
-  }, [view, go, focus])
+  }, [view, go, focus, onMap])
 
   useEffect(() => {
     const cy = cyRef.current
@@ -594,6 +719,11 @@ export default function Topology() {
         <label className="check">
           <input type="checkbox" checked={edgeLabels} onChange={(e) => setEdgeLabels(e.target.checked)} /> Label link
         </label>
+        {(level === 'area' || level === 'pop') && (
+          <label className="check" title="Area dan POP di atas peta Indonesia sesuai koordinatnya">
+            <input type="checkbox" checked={mapOn} onChange={(e) => toggleMap(e.target.checked)} /> Peta
+          </label>
+        )}
         <div className="spacer" />
         {level === 'area' && view?.nodes.some((n) => n.label === 'Belum dipetakan') && (
           <button onClick={autoAssign} title="Isi area POP yang masih kosong dari kode kota (tidak menimpa yang sudah diisi)">
@@ -624,41 +754,28 @@ export default function Topology() {
 
       <div className="topology-body">
         <div className="graph card">
+          {onMap && (
+            <svg className="map-layer" aria-hidden="true">
+              <g ref={mapLayer}>
+                {basemap.map((shape, i) => (
+                  // Natural Earth reuses some ids (Australia's territories): the index keeps keys unique.
+                  <path key={`${shape.id}-${i}`} d={shape.d} className={shape.indonesia ? 'land indonesia' : 'land'} />
+                ))}
+              </g>
+            </svg>
+          )}
           <div className="graph-canvas" ref={container} />
           {loading && <div className="graph-loading">Memuat…</div>}
-        </div>
-        <aside className="side card">
-          <div className="small muted">
-            {level === 'area' && 'Area disusun dari barat ke timur. Klik untuk menyorot jalurnya, klik dua kali untuk masuk ke POP area itu.'}
-            {level === 'pop' && 'Baris atas ke bawah: area lain (uplink, putus-putus) → POP core (P/DCI) → POP PE/BNG → POP Metro → POP OLT/Access. Klik untuk menyorot, klik dua kali POP untuk melihat perangkatnya.'}
-            {(level === 'device' || level === 'neighbors') &&
-              'Baris atas ke bawah: POP lain (uplink) → Core → PE/BNG → Metro → OLT/Access. Klik untuk menyorot tetangga, klik dua kali perangkat untuk melihat tetangganya.'}
+          <div className="graph-status small muted">
+            {stats.groups} jalur · {stats.links} link
+            {stats.red ? ` · ${stats.red} merah` : ''}
+            {onMap && level === 'pop' && view ? ` · ${view.nodes.filter((n) => n.estimated).length} POP tanpa koordinat (posisi perkiraan, garis putus-putus)` : ''}
           </div>
-          <hr />
-          <div className="legend">
-            <div><span className="swatch" style={{ background: CAPACITY_HEX.green }} /> &lt; 60% ({stats.green})</div>
-            <div><span className="swatch" style={{ background: CAPACITY_HEX.yellow }} /> 60–80% ({stats.yellow})</div>
-            <div><span className="swatch" style={{ background: CAPACITY_HEX.red }} /> ≥ 80% ({stats.red})</div>
-            <div><span className="swatch dashed" /> semua link di jalur ini down</div>
-            <div className="muted small">
-              {stats.groups} jalur · {stats.links} link. Label: jumlah link · kapasitas · committed %.
-            </div>
-            {level === 'pop' && (
-              <div className="role-legend">
-                {TIER_LABEL.slice(0, 4).map((t, i) => (
-                  <span key={t}><span className="dot" style={{ background: TIER_COLOR[i] }} /> POP {t}</span>
-                ))}
-              </div>
-            )}
-            {(level === 'device' || level === 'neighbors') && (
-              <div className="role-legend">
-                {Object.entries(ROLE_COLOR).map(([role, color]) => (
-                  <span key={role}><span className="dot" style={{ background: color }} /> {role.toUpperCase()}</span>
-                ))}
-              </div>
-            )}
-          </div>
-          <hr />
+          {(node || edge || (level === 'device' && view?.pop_id != null)) && (
+            <aside className="detail-panel card">
+              {(node || edge) && (
+                <button className="panel-close" onClick={() => setSelected(null)} aria-label="Tutup">×</button>
+              )}
           {level === 'device' && view?.pop_id != null && !node && !edge && (
             <div className="detail">
               <h3>POP {view.pop}</h3>
@@ -737,7 +854,9 @@ export default function Topology() {
               {(level === 'device' || level === 'neighbors') && <RouterLink to="/capacity">Detail kapasitas & forecast →</RouterLink>}
             </div>
           )}
-        </aside>
+            </aside>
+          )}
+        </div>
       </div>
     </div>
   )
