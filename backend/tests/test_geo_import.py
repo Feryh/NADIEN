@@ -93,6 +93,67 @@ def test_should_mark_low_confidence_when_city_word_follows_another_word():
     assert proposal["confidence"] == "low"
 
 
+@pytest.mark.parametrize("token,place,score", [
+    ("LVU", "lippo village utara", 5),
+    ("SKL", "syiah kuala", 4),
+    ("KKD", "kepanjenkidul", 3),
+    ("GDO", "gadingrejo", 1),
+    ("TLP", "bukit tinggi", 0),
+    ("NDC", "ntt indonesia nexcenter", 0),  # function word: letters in order are not enough
+    ("NIX", "nix surabaya", 5),
+])
+def test_should_score_site_abbreviation_by_how_letters_map_to_the_name(token, place, score):
+    from app.services.geo import site_score
+
+    assert site_score(token, place) == score
+
+
+def device(hostname: str, site: str, anchor=(-2.95, 104.73)) -> dict:
+    return {"id": hash(hostname) % 1000, "hostname": hostname, "pop": hostname[:3], "site": site, "anchor": anchor}
+
+
+def test_should_match_device_site_to_nearby_placemark():
+    from app.services.geo import match_devices
+
+    pms = [Placemark("ODC Alang-Alang Lebar", -2.93, 104.70), Placemark("ODC Alang-Alang Lebar", 3.5, 98.6)]
+    [proposal], ambiguous = match_devices([device("PLG-AAL-OLT1-FH", "AAL")], pms)
+    assert (proposal["latitude"], proposal["confidence"], ambiguous) == (-2.93, "high", 0)
+
+
+def test_should_lower_confidence_when_matching_site_is_far_from_the_pop():
+    from app.services.geo import match_devices
+
+    # KMN fits "Kedamean" letter by letter, but Kedamean (Gresik) is ~70 km from Malang.
+    [proposal], _ = match_devices([device("MLG-KMN-OLT1-FH", "KMN", (-7.98, 112.63))],
+                                  [Placemark("ODC Kedamean", -7.32, 112.55)])
+    assert proposal["confidence"] == "low" and proposal["distance_km"] > 60
+
+
+def test_should_ignore_facility_words_when_matching_site():
+    from app.services.geo import match_devices
+
+    # "Server Room Branch Ngawi" is not an abbreviation source for SRN (Sragen).
+    proposals, _ = match_devices([device("SGN-SRN-BNG1-M4", "SRN", (-7.43, 111.02))],
+                                 [Placemark("Server Room Branch Ngawi", -7.40, 111.45)])
+    assert proposals == []
+
+
+def test_should_skip_device_when_several_distant_places_fit_the_abbreviation():
+    from app.services.geo import match_devices
+
+    pms = [Placemark("ODC Tanjungpura", -6.30, 107.30), Placemark("ODC Tanjung Priok", -6.11, 106.88)]
+    proposals, ambiguous = match_devices([device("KRW-TJP-BNG1-M4", "TJP", (-6.30, 107.30))], pms)
+    assert proposals == [] and ambiguous == 1
+
+
+def test_should_take_one_site_when_matching_names_are_the_same_place():
+    from app.services.geo import match_devices
+
+    pms = [Placemark("ODC Kramat Jati", -6.270, 106.868), Placemark("Kramat Jati", -6.272, 106.870)]
+    [proposal], ambiguous = match_devices([device("JKT-KJA-OLT1-FH", "KJA", (-6.2, 106.85))], pms)
+    assert ambiguous == 0 and proposal["placemark"] == "ODC Kramat Jati"
+
+
 @pytest.fixture
 def client(db):
     app.dependency_overrides[get_db] = lambda: db

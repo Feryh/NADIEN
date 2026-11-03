@@ -56,6 +56,21 @@ def test_should_ring_unlinked_unlocated_pop_around_area_center(client, network):
     assert xqb["estimated"] is True and xqb["lat"] is not None
 
 
+def test_should_place_device_at_its_own_site_and_others_around_their_pop(client, network, db):
+    from sqlalchemy import select
+
+    plg_device = db.scalar(select(m.Device).where(m.Device.hostname == "PLG-NDC-ME1"))
+    db.add(m.Device(hostname="PLG-AAL-OLT1-FH", pop_id=plg_device.pop_id, role="olt"))
+    db.add(m.DeviceLocation(device_id=plg_device.id, latitude=-2.93, longitude=104.70, placemark="ODC Alang-Alang Lebar"))
+    db.commit()
+    nodes = {n["label"]: n for n in client.get("/api/topology/view?level=device&pop=PLG").json()["nodes"]}
+    own, ringed = nodes["PLG-NDC-ME1"], nodes["PLG-AAL-OLT1-FH"]
+    assert (own["lat"], own["lon"], own["located"], own["estimated"]) == (-2.93, 104.70, True, False)
+    assert ringed["located"] is False and ringed["estimated"] is True
+    assert abs(ringed["lat"] - -2.95) < 0.02 and abs(ringed["lon"] - 104.73) < 0.02  # near the POP point
+    assert nodes["XQA"]["kind"] == "external_pop" and nodes["XQA"].get("lat") is None  # no coordinates, no city
+
+
 def test_should_have_every_city_centre_inside_its_own_area():
     from app.services.areas import CITIES, CITY_CENTERS, in_area
 

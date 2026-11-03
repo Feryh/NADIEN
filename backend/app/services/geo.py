@@ -8,13 +8,14 @@ Centre), then the one named exactly after the city.
 """
 
 import io
+import math
 import re
 import zipfile
 from dataclasses import dataclass
 from typing import Any
 from xml.etree import ElementTree as ET
 
-from .areas import CITIES, CITY_ALIASES, in_area
+from .areas import CITIES, CITY_ALIASES, FUNCTION_TOKENS, in_area
 
 MAX_ARCHIVE_BYTES = 50_000_000  # uncompressed total: KMZ exports of POP lists are a few MB at most
 MAX_NESTING = 3
@@ -196,6 +197,110 @@ def _pop_city(pop: dict[str, Any]) -> tuple[str | None, str | None]:
         if direction is None:
             return None, None  # BGRK, JKTL: part of the city we cannot place
     return city, direction
+
+
+# --------------------------------------------------------------------------- devices (site level)
+
+SITE_RADIUS_KM = 80  # a site placemark must lie this close to the device's POP (or its city centre)
+SAME_SITE_KM = 2  # candidates this close together are one site under different names
+# Words that name a building or facility, not the place an abbreviation is made from.
+_FACILITY_WORDS = re.compile(
+    r"^(olt|odc|mti|ndc|branch|pop|sto|bbu|data centre|data center|server room|hrb|shelter|kantor|office|the)\s+")
+# Beyond these distances from the device's POP a matching name is more likely another place.
+SITE_SURE_KM = 30
+SITE_DOUBTFUL_KM = 60
+# Site tokens that are facility names in hostnames (besides the POP function words): matched literally.
+_LITERAL_SITES = {"IDC", "IIX", "CSF", "GR9", "DCI", "NOC"}
+
+
+def km_between(a: tuple[float, float], b: tuple[float, float]) -> float:
+    dlat = math.radians(b[0] - a[0])
+    dlon = math.radians(b[1] - a[1]) * math.cos(math.radians((a[0] + b[0]) / 2))
+    return 6371 * math.hypot(dlat, dlon)
+
+
+def _site_key(name: str) -> str:
+    key = re.sub(r"\([^)]*\)", " ", name.lower())  # "(Bukit Raya)" notes
+    key = " ".join(re.sub(r"[^a-z ]+", " ", key).split())
+    for _ in range(3):
+        key = _FACILITY_WORDS.sub("", key)
+    return key
+
+
+def site_score(token: str, place: str) -> int:
+    """How well a 3–4 letter hostname site token abbreviates a place name; 0 = it does not.
+    5: one letter per word (LVU = Lippo Village Utara) · 3–4: letters taken in order from the
+    consonants (SKL = Syiah Kuala, KKD = Kepanjenkidul) · 1–2: only in order somewhere in the name."""
+    token = token.lower()
+    words = place.split()
+    if not words or not token.isalpha() or len(token) < 3:
+        return 0
+    if token.upper() in FUNCTION_TOKENS or token.upper() in _LITERAL_SITES:
+        # NDC, NIX, IDC name a facility, not letters of a place: only the word itself counts.
+        return 5 if token in words else 0
+    initials = "".join(w[0] for w in words)
+    if len(words) >= len(token) and initials.startswith(token):
+        return 5
+    joined = "".join(words)
+    if joined[0] != token[0]:
+        return 0
+    letters = iter(joined)
+    if not all(ch in letters for ch in token):
+        return 0
+    consonants = iter(re.sub(r"[aeiou]", "", joined))
+    score = 3 if all(ch in consonants for ch in token[1:]) else 1
+    if len(words) > 1 and token[1] == words[1][0]:
+        score += 1  # the second letter opens the second word
+    return score
+
+
+_FACILITY = re.compile(r"^(olt|odc|sto|bbu)\b")
+
+
+def _site_rank(pm: Placemark) -> tuple:
+    """Among names for one site, a physical facility (NDC/MTI/Branch, then OLT/ODC/STO) beats a bare area name."""
+    words = _words(pm.name)
+    return (0 if _MAIN_SITE.match(words) else 1 if _FACILITY.match(words) else 2, pm.name)
+
+
+def _site_confidence(score: int, distance_km: float) -> str:
+    """Letter fit first, then distance: a good abbreviation 50 km out of town is only 'medium'."""
+    level = 0 if score >= 3 else 1
+    if distance_km > SITE_DOUBTFUL_KM:
+        level = 2
+    elif distance_km > SITE_SURE_KM:
+        level = max(level, 1)
+    return ("high", "medium", "low")[level]
+
+
+def match_devices(devices: list[dict[str, Any]], placemarks: list[Placemark]) -> tuple[list[dict[str, Any]], int]:
+    """Proposals for devices from site placemarks. Each device dict: id, hostname, pop, site, anchor
+    ((lat, lon) of its POP or city centre, or None). Returns (proposals, ambiguous count)."""
+    keyed = [(pm, _site_key(pm.name)) for pm in placemarks]
+    proposals, ambiguous = [], 0
+    for device in devices:
+        site, anchor = device["site"], device["anchor"]
+        if anchor is None or not site or not site.isalpha():
+            continue
+        scored = [(site_score(site, key), pm) for pm, key in keyed
+                  if key and km_between(anchor, (pm.lat, pm.lon)) <= SITE_RADIUS_KM]
+        scored = [(s, pm) for s, pm in scored if s]
+        if not scored:
+            continue
+        best = max(s for s, _ in scored)
+        top = sorted((pm for s, pm in scored if s == best), key=_site_rank)
+        if any(km_between((top[0].lat, top[0].lon), (pm.lat, pm.lon)) > SAME_SITE_KM for pm in top[1:]):
+            ambiguous += 1  # several different places fit the abbreviation: leave it to the user
+            continue
+        chosen = top[0]
+        distance = km_between(anchor, (chosen.lat, chosen.lon))
+        proposals.append({
+            "device_id": device["id"], "hostname": device["hostname"], "pop": device["pop"], "site": site,
+            "current_latitude": device.get("latitude"), "current_longitude": device.get("longitude"),
+            "latitude": chosen.lat, "longitude": chosen.lon, "placemark": chosen.name, "source": chosen.source,
+            "confidence": _site_confidence(best, distance), "score": best, "distance_km": round(distance, 1),
+        })
+    return proposals, ambiguous
 
 
 def match_pops(pops: list[dict[str, Any]], placemarks: list[Placemark]) -> list[dict[str, Any]]:

@@ -3,26 +3,34 @@ import { api } from '../api'
 
 interface Placemark { name: string; lat: number; lon: number; folder: string | null; source: string | null }
 
-interface Proposal {
-  pop_id: number
-  code: string
-  name: string
+type Confidence = 'high' | 'medium' | 'low'
+type Target = 'pops' | 'devices'
+
+/** One proposed coordinate, POP or device, in the shape the preview table needs. */
+interface Row {
+  id: number
+  title: string
+  subtitle: string
   area: string
-  city: string
-  current_latitude: number | null
-  current_longitude: number | null
+  placemark: string
+  detail: string
+  source: string | null
   latitude: number
   longitude: number
-  placemark: string
-  source: string | null
-  confidence: 'high' | 'medium' | 'low'
-  candidates: number
-  rejected_outside_area: number
+  confidence: Confidence
 }
 
-interface MatchResult { pops_considered: number; proposals: Proposal[]; unmatched: string[] }
+interface PopProposal {
+  pop_id: number; code: string; name: string; area: string; city: string; latitude: number; longitude: number
+  placemark: string; source: string | null; confidence: Confidence; candidates: number; rejected_outside_area: number
+}
+interface DeviceProposal {
+  device_id: number; hostname: string; pop: string; site: string; latitude: number; longitude: number
+  placemark: string; source: string | null; confidence: Confidence; distance_km: number
+}
 
-const CONFIDENCE_LABEL = { high: 'tinggi', medium: 'sedang', low: 'rendah' }
+const CONFIDENCE_LABEL: Record<Confidence, string> = { high: 'tinggi', medium: 'sedang', low: 'rendah' }
+const LEVEL_CLASS: Record<Confidence, string> = { high: 'normal', medium: 'warning', low: 'critical' }
 
 async function readPlacemarks(file: File): Promise<Placemark[]> {
   const res = await fetch(`/api/geo/placemarks?filename=${encodeURIComponent(file.name)}`, {
@@ -35,11 +43,38 @@ async function readPlacemarks(file: File): Promise<Placemark[]> {
   return data.placemarks
 }
 
-/** Fill POP lat/lon from KMZ/KML placemarks: preview per POP (by city, inside its area), then apply. */
+async function match(target: Target, placemarks: Placemark[], onlyMissing: boolean): Promise<{ rows: Row[]; summary: string }> {
+  if (target === 'pops') {
+    const r = await api.post<{ pops_considered: number; proposals: PopProposal[]; unmatched: string[] }>(
+      '/pops/coordinates/match', { placemarks, only_missing: onlyMissing })
+    return {
+      rows: r.proposals.map((p) => ({
+        id: p.pop_id, title: p.code, subtitle: p.name !== p.code ? p.name : '', area: p.area, placemark: p.placemark,
+        detail: `kota: ${p.city}${p.candidates > 1 ? ` · ${p.candidates} kandidat` : ''}${p.rejected_outside_area ? ` · ${p.rejected_outside_area} di luar area ditolak` : ''}`,
+        source: p.source, latitude: p.latitude, longitude: p.longitude, confidence: p.confidence,
+      })),
+      summary: `${r.pops_considered} POP diperiksa · ${r.unmatched.length} tanpa placemark kota`,
+    }
+  }
+  const r = await api.post<{ devices_considered: number; ambiguous: number; proposals: DeviceProposal[] }>(
+    '/devices/coordinates/match', { placemarks, only_missing: onlyMissing })
+  return {
+    rows: r.proposals.map((p) => ({
+      id: p.device_id, title: p.hostname, subtitle: `site ${p.site}`, area: p.pop, placemark: p.placemark,
+      detail: `${p.distance_km} km dari POP`, source: p.source, latitude: p.latitude, longitude: p.longitude,
+      confidence: p.confidence,
+    })),
+    summary: `${r.devices_considered} perangkat diperiksa · ${r.ambiguous} dilewati karena singkatan site cocok ke beberapa tempat`,
+  }
+}
+
+/** Fill POP or device coordinates from KMZ/KML placemarks: preview, choose rows, then apply (backup first). */
 export default function PopCoordinateImport({ onApplied }: { onApplied: () => void }) {
+  const [target, setTarget] = useState<Target>('pops')
   const [files, setFiles] = useState<string[]>([])
   const [placemarkCount, setPlacemarkCount] = useState(0)
-  const [result, setResult] = useState<MatchResult | null>(null)
+  const [rows, setRows] = useState<Row[] | null>(null)
+  const [summary, setSummary] = useState('')
   const [chosen, setChosen] = useState<Set<number>>(new Set())
   const [onlyMissing, setOnlyMissing] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -50,15 +85,16 @@ export default function PopCoordinateImport({ onApplied }: { onApplied: () => vo
     if (!list.length) return
     setBusy(true)
     setMessage(null)
-    setResult(null)
+    setRows(null)
     try {
       const placemarks = (await Promise.all(list.map(readPlacemarks))).flat()
       setFiles(list.map((f) => f.name))
       setPlacemarkCount(placemarks.length)
-      const r = await api.post<MatchResult>('/pops/coordinates/match', { placemarks, only_missing: onlyMissing })
-      setResult(r)
-      // Low-confidence matches (city word after another word, e.g. "Gunung Pati") start unticked.
-      setChosen(new Set(r.proposals.filter((p) => p.confidence !== 'low').map((p) => p.pop_id)))
+      const r = await match(target, placemarks, onlyMissing)
+      setRows(r.rows)
+      setSummary(r.summary)
+      // POPs: everything but "low". Devices: only "high" — a site abbreviation is easier to misread than a city.
+      setChosen(new Set(r.rows.filter((row) => (target === 'pops' ? row.confidence !== 'low' : row.confidence === 'high')).map((row) => row.id)))
     } catch (err) {
       setMessage({ text: (err as Error).message, error: true })
     } finally {
@@ -68,14 +104,19 @@ export default function PopCoordinateImport({ onApplied }: { onApplied: () => vo
   }
 
   async function apply() {
-    if (!result) return
-    const rows = result.proposals.filter((p) => chosen.has(p.pop_id)).map((p) => ({ pop_id: p.pop_id, latitude: p.latitude, longitude: p.longitude }))
-    if (!confirm(`Simpan koordinat ${rows.length} POP? Database di-backup dulu.`)) return
+    if (!rows) return
+    const selected = rows.filter((row) => chosen.has(row.id))
+    const label = target === 'pops' ? 'POP' : 'perangkat'
+    if (!confirm(`Simpan koordinat ${selected.length} ${label}? Database di-backup dulu.`)) return
     setBusy(true)
     try {
-      const r = await api.put<{ updated: number; backup: { name?: string } }>('/pops/coordinates', rows)
-      setMessage({ text: `Koordinat ${r.updated} POP disimpan${r.backup?.name ? ` (backup ${r.backup.name})` : ''}.` })
-      setResult(null)
+      const r = target === 'pops'
+        ? await api.put<{ updated: number; backup: { name?: string } }>('/pops/coordinates',
+            selected.map((row) => ({ pop_id: row.id, latitude: row.latitude, longitude: row.longitude })))
+        : await api.put<{ updated: number; backup: { name?: string } }>('/devices/coordinates',
+            selected.map((row) => ({ device_id: row.id, latitude: row.latitude, longitude: row.longitude, placemark: row.placemark, source: row.source })))
+      setMessage({ text: `Koordinat ${r.updated} ${label} disimpan${r.backup?.name ? ` (backup ${r.backup.name})` : ''}.` })
+      setRows(null)
       onApplied()
     } catch (err) {
       setMessage({ text: (err as Error).message, error: true })
@@ -93,62 +134,66 @@ export default function PopCoordinateImport({ onApplied }: { onApplied: () => vo
     })
 
   const counts = useMemo(() => {
-    const out = { high: 0, medium: 0, low: 0 }
-    result?.proposals.forEach((p) => (out[p.confidence] += 1))
+    const out: Record<Confidence, number> = { high: 0, medium: 0, low: 0 }
+    rows?.forEach((row) => (out[row.confidence] += 1))
     return out
-  }, [result])
+  }, [rows])
 
   return (
     <div className="card">
       <div className="toolbar">
-        <h2>Import koordinat POP (KMZ/KML)</h2>
+        <h2>Import koordinat (KMZ/KML)</h2>
+        <div className="segmented">
+          {(['pops', 'devices'] as Target[]).map((t) => (
+            <button key={t} className={target === t ? 'active' : ''} disabled={busy}
+                    onClick={() => { setTarget(t); setRows(null); setMessage(null) }}>
+              {t === 'pops' ? 'POP' : 'Perangkat (site)'}
+            </button>
+          ))}
+        </div>
         <div className="spacer" />
         <label className="check">
-          <input type="checkbox" checked={onlyMissing} onChange={(e) => setOnlyMissing(e.target.checked)} /> Hanya POP yang belum punya koordinat
+          <input type="checkbox" checked={onlyMissing} onChange={(e) => setOnlyMissing(e.target.checked)} /> Hanya yang belum punya koordinat
         </label>
         <label className="button-like">
           {busy ? 'Memproses…' : 'Pilih file KMZ/KML'}
           <input type="file" accept=".kmz,.kml,.zip" multiple hidden onChange={pick} disabled={busy} />
         </label>
-        {result && result.proposals.length > 0 && (
-          <button className="primary" onClick={apply} disabled={busy || !chosen.size}>Simpan {chosen.size} POP</button>
+        {rows && rows.length > 0 && (
+          <button className="primary" onClick={apply} disabled={busy || !chosen.size}>Simpan {chosen.size}</button>
         )}
       </div>
       <p className="hint">
-        Nama placemark berupa nama lokasi ("NDC Palembang", "MTI Kisaran"), jadi POP dicocokkan lewat kotanya: kota dari kode
-        POP atau dari nama/lokasi POP. Titiknya harus berada di dalam area POP itu, dan situs utama (NDC/MTI/Branch/Data
-        Centre) didahulukan. Kecocokan "rendah" (kata kota setelah kata lain, mis. "Gunung Pati") tidak dicentang otomatis.
+        {target === 'pops'
+          ? 'Placemark berupa nama lokasi ("NDC Palembang"), jadi POP dicocokkan lewat kotanya: kota dari kode POP atau nama/lokasinya. Titiknya harus di dalam area POP, dan situs utama (NDC/MTI/Branch/Data Centre) didahulukan.'
+          : 'Token site di hostname (JMB-TLP-OLT1 → TLP) dicocokkan dengan nama placemark OLT/ODC dalam radius 80 km dari POP-nya: huruf per kata (LVU = Lippo Village Utara) paling kuat, lalu huruf mati berurutan (SKL = Syiah Kuala). Singkatan yang cocok ke beberapa tempat dilewati. Perangkat tanpa koordinat sendiri tetap tampil di lokasi POP-nya.'}
       </p>
       {message && <div className={message.error ? 'error' : 'notice'}>{message.text}</div>}
-      {result && (
+      {rows && (
         <>
           <div className="notice">
-            {files.join(', ')}: {placemarkCount} placemark · {result.pops_considered} POP diperiksa · {result.proposals.length} cocok
-            (tinggi {counts.high}, sedang {counts.medium}, rendah {counts.low}) · {result.unmatched.length} tanpa placemark kota.
+            {files.join(', ')}: {placemarkCount} placemark · {summary} · {rows.length} cocok (tinggi {counts.high}, sedang {counts.medium}, rendah {counts.low}).
           </div>
-          {result.proposals.length > 0 && (
+          {rows.length > 0 && (
             <div className="table-wrap">
               <table>
                 <thead>
-                  <tr><th /><th>POP</th><th>Area</th><th>Placemark</th><th className="num">Lat, Lon</th><th>Kecocokan</th></tr>
+                  <tr><th /><th>{target === 'pops' ? 'POP' : 'Perangkat'}</th><th>{target === 'pops' ? 'Area' : 'POP'}</th><th>Placemark</th><th className="num">Lat, Lon</th><th>Kecocokan</th></tr>
                 </thead>
                 <tbody>
-                  {result.proposals.map((p) => (
-                    <tr key={p.pop_id} className="clickable" onClick={() => toggle(p.pop_id)}>
-                      <td><input type="checkbox" checked={chosen.has(p.pop_id)} readOnly /></td>
-                      <td>{p.code}<div className="muted small">{p.name !== p.code ? p.name : ''}</div></td>
-                      <td className="small">{p.area}</td>
-                      <td>{p.placemark}<div className="muted small">kota: {p.city}{p.candidates > 1 ? ` · ${p.candidates} kandidat` : ''}{p.rejected_outside_area ? ` · ${p.rejected_outside_area} di luar area ditolak` : ''}</div></td>
-                      <td className="num small">{p.latitude.toFixed(5)}, {p.longitude.toFixed(5)}</td>
-                      <td><span className={`level level-${p.confidence === 'high' ? 'normal' : p.confidence === 'medium' ? 'warning' : 'critical'}`}>{CONFIDENCE_LABEL[p.confidence]}</span></td>
+                  {rows.map((row) => (
+                    <tr key={row.id} className="clickable" onClick={() => toggle(row.id)}>
+                      <td><input type="checkbox" checked={chosen.has(row.id)} readOnly /></td>
+                      <td>{row.title}<div className="muted small">{row.subtitle}</div></td>
+                      <td className="small">{row.area}</td>
+                      <td>{row.placemark}<div className="muted small">{row.detail}</div></td>
+                      <td className="num small">{row.latitude.toFixed(5)}, {row.longitude.toFixed(5)}</td>
+                      <td><span className={`level level-${LEVEL_CLASS[row.confidence]}`}>{CONFIDENCE_LABEL[row.confidence]}</span></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          )}
-          {result.unmatched.length > 0 && (
-            <p className="hint">Tanpa placemark untuk kotanya: {result.unmatched.slice(0, 60).join(', ')}{result.unmatched.length > 60 ? ', …' : ''}</p>
           )}
         </>
       )}

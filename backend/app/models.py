@@ -119,6 +119,20 @@ class Device(TimestampMixin, Base):
     )
 
 
+class DeviceLocation(Base):
+    """A device's own site coordinates (e.g. an OLT's site from a KMZ). Devices without one are
+    shown at their POP. A separate table so existing databases need no column migration."""
+
+    __tablename__ = "device_locations"
+
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True)
+    latitude: Mapped[float] = mapped_column(Float)
+    longitude: Mapped[float] = mapped_column(Float)
+    source: Mapped[str | None] = mapped_column(String(128))  # file the coordinates came from
+    placemark: Mapped[str | None] = mapped_column(String(255))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class Interface(TimestampMixin, Base):
     """Physical port, bundle (LAG) or sub-interface. Bundle members point to their bundle via parent_id."""
 

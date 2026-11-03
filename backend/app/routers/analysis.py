@@ -46,7 +46,7 @@ from ..services.areas import (
     speed_bucket,
 )
 from ..services.capacity import capacity_color, occupancy_pct
-from ..services.geo import KmlError, Placemark, match_pops, read_placemarks
+from ..services.geo import KmlError, Placemark, match_devices, match_pops, read_placemarks
 
 router = APIRouter(tags=["Analysis"])
 
@@ -62,6 +62,16 @@ class _Ctx:
     area_of_pop: dict[int, str]
     devices: dict[int, Any]  # rows: id, hostname, pop_id, role, vendor_id, status
     vendors: dict[int, str]
+    locations: dict[int, tuple[float, float]] = field(default_factory=dict)  # device's own site (lat, lon)
+
+    def pop_spot(self, pop_id: int) -> tuple[float, float] | None:
+        """POP coordinates, else the centre of the city its code names (estimate)."""
+        pop = self.pops.get(pop_id)
+        if pop is None:
+            return None
+        if pop.latitude is not None and pop.longitude is not None:
+            return pop.latitude, pop.longitude
+        return city_center_for_code(pop.code)
 
     def area_of_device(self, device_id: int) -> str:
         return self.area_of_pop.get(self.devices[device_id].pop_id, UNMAPPED_AREA)
@@ -91,7 +101,39 @@ def _context(db: Session) -> _Ctx:
         area_of_pop=area_of_pop,
         devices=devices,
         vendors={v.id: v.name for v in db.scalars(select(m.Vendor))},
+        locations={r.device_id: (r.latitude, r.longitude) for r in
+                   db.execute(select(m.DeviceLocation.device_id, m.DeviceLocation.latitude, m.DeviceLocation.longitude))},
     )
+
+
+DEVICE_RING_DEGREES = 0.004  # ~400 m: devices without their own site circle their POP on the map
+
+
+def _place_devices(ctx: _Ctx, nodes: list[dict]) -> None:
+    """lat/lon for device and external-POP nodes: a device's own site, else a small ring around its POP
+    (estimated, drawn dashed); other POPs at their coordinates or city centre."""
+    ring: dict[int, int] = defaultdict(int)
+    for node in nodes:
+        if node["kind"] == "device":
+            own = ctx.locations.get(node["device_id"])
+            if own:
+                node["lat"], node["lon"], node["estimated"], node["located"] = own[0], own[1], False, True
+                continue
+            pop_id = ctx.devices[node["device_id"]].pop_id
+            spot = ctx.pop_spot(pop_id)
+            node["located"] = False
+            node["estimated"] = True
+            if spot:
+                i = ring[pop_id]
+                ring[pop_id] += 1
+                angle = i * 2.39996  # golden angle: an even spiral however many devices
+                radius = DEVICE_RING_DEGREES * math.sqrt(i + 1)
+                node["lat"], node["lon"] = spot[0] + radius * math.sin(angle), spot[1] + radius * math.cos(angle)
+        elif node["kind"] == "external_pop":
+            pop = next((p for p in ctx.pops.values() if p.code == node["label"]), None)
+            spot = ctx.pop_spot(pop.id) if pop else None
+            if spot:
+                node["lat"], node["lon"] = spot
 
 
 @dataclass
@@ -368,6 +410,57 @@ def set_pop_coordinates(rows: list[CoordinateIn], db: Session = Depends(get_db))
     return {"updated": updated, "backup": backup}
 
 
+@router.post("/devices/coordinates/match")
+def match_device_coordinates(payload: CoordinateMatchIn, db: Session = Depends(get_db)):
+    """Proposed site coordinates per device: the hostname's site token (JMB-TLP-OLT1 -> TLP) against
+    OLT/ODC placemark names within reach of its POP. Ambiguous abbreviations are skipped. Nothing is written."""
+    ctx = _context(db)
+    located = set(db.scalars(select(m.DeviceLocation.device_id)))
+    devices = []
+    for d in ctx.devices.values():
+        if payload.only_missing and d.id in located:
+            continue
+        pop = ctx.pops.get(d.pop_id)
+        if pop is None or pop.code.upper() == UNASSIGNED_POP:
+            continue
+        anchor = (pop.latitude, pop.longitude) if pop.latitude is not None else city_center_for_code(pop.code)
+        devices.append({"id": d.id, "hostname": d.hostname, "pop": pop.code, "site": site_for(d.hostname, pop.code),
+                        "anchor": anchor})
+    proposals, ambiguous = match_devices(devices, [Placemark(**p.model_dump()) for p in payload.placemarks])
+    return {
+        "devices_considered": len(devices),
+        "ambiguous": ambiguous,
+        "proposals": sorted(proposals, key=lambda p: (-p["score"], p["pop"], p["hostname"])),
+    }
+
+
+class DeviceCoordinateIn(BaseModel):
+    device_id: int
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    placemark: str | None = Field(default=None, max_length=255)
+    source: str | None = Field(default=None, max_length=128)
+
+
+@router.put("/devices/coordinates")
+def set_device_coordinates(rows: list[DeviceCoordinateIn], db: Session = Depends(get_db)):
+    """Write chosen device site coordinates (backup first)."""
+    jobs_runner.ensure_idle(jobs_runner.runner)
+    try:
+        backup = backup_before(db, "device-coordinates")
+    except JobError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    for row in rows:
+        if db.get(m.Device, row.device_id) is None:
+            raise HTTPException(404, f"Device {row.device_id} not found")
+        location = db.get(m.DeviceLocation, row.device_id) or m.DeviceLocation(device_id=row.device_id)
+        location.latitude, location.longitude = row.latitude, row.longitude
+        location.placemark, location.source = row.placemark, row.source
+        db.add(location)
+    db.commit()
+    return {"updated": len(rows), "backup": backup}
+
+
 # --------------------------------------------------------------------------- drill-down topology
 
 
@@ -446,6 +539,7 @@ def _neighbor_level(ctx: _Ctx, links, device_id: int, depth: int) -> dict:
     center = ctx.devices[device_id]
     nodes = [_device_node(ctx, ctx.devices[i], i == device_id)
              for i in sorted(included, key=lambda i: (ROLE_TIER.get(ctx.devices[i].role, 4), ctx.devices[i].hostname))]
+    _place_devices(ctx, nodes)
     return {"level": "neighbors", "device": center.hostname, "device_id": device_id, "depth": depth,
             "pop": ctx.pop_code(device_id), "area": ctx.area_of_device(device_id), "truncated": truncated,
             "nodes": nodes, "edges": _edges(edges)}
@@ -627,6 +721,7 @@ def _device_level(ctx: _Ctx, links, pop_code: str) -> dict:
             "area": ctx.area_of_pop.get(rp.id, UNMAPPED_AREA) if rp else UNMAPPED_AREA,
             "devices": len(remote_devices),
         })
+    _place_devices(ctx, nodes)
     return {"level": "device", "pop": pop.code, "pop_name": pop.name, "pop_id": pop.id, "region": pop.region,
             "area": ctx.area_of_pop.get(pop.id, UNMAPPED_AREA), "nodes": nodes, "edges": _edges(edges)}
 

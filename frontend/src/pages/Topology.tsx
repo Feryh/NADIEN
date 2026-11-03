@@ -55,6 +55,7 @@ interface NodeData {
   region?: string | null
   estimated?: boolean  // POP without coordinates: position estimated for the map, never stored
   pops_located?: number
+  located?: boolean  // device with its own site coordinates
 }
 
 interface View {
@@ -327,6 +328,8 @@ function buildElements(view: View): ElementDefinition[] {
 const MAP_SCALE: Partial<Record<Level, { pxPerDegree: number; markerScale: number; minScreenGap: number }>> = {
   area: { pxPerDegree: 60, markerScale: 0.9, minScreenGap: 10 },
   pop: { pxPerDegree: 200, markerScale: 0.9, minScreenGap: 6 },
+  device: { pxPerDegree: 3000, markerScale: 1, minScreenGap: 4 },  // one city: ~30 px per km
+  neighbors: { pxPerDegree: 1500, markerScale: 1, minScreenGap: 4 },
 }
 
 // Spacing never moves a node more than this many node heights from its place on the map.
@@ -361,6 +364,25 @@ function applyMarkerScale(cy: Core, level: Level) {
   })
 }
 
+/**
+ * At device level the other POPs are tens or hundreds of km away: drawn at their real spot they would
+ * shrink the local site map to a dot. They keep only their direction, on a ring just outside the devices.
+ */
+function ringExternal(view: View, home: Map<string, Pos>) {
+  const local = view.nodes.filter((n) => n.kind === 'device').map((n) => home.get(n.id)!)
+  if (!local.length) return
+  const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]
+  const center = { x: median(local.map((p) => p.x)), y: median(local.map((p) => p.y)) }
+  const distances = local.map((p) => Math.hypot(p.x - center.x, p.y - center.y)).sort((a, b) => a - b)
+  const radius = Math.max(300, distances[Math.floor(distances.length * 0.9)] ?? 0) * 1.35
+  for (const n of view.nodes) {
+    if (n.kind !== 'external_pop') continue
+    const spot = home.get(n.id)!
+    const angle = Math.atan2(spot.y - center.y, spot.x - center.x) || 0
+    home.set(n.id, { x: center.x + radius * Math.cos(angle), y: center.y + radius * Math.sin(angle) })
+  }
+}
+
 function mapLayout(cy: Core, view: View) {
   const { pxPerDegree, markerScale, minScreenGap } = MAP_SCALE[view.level]!
   const home = new Map<string, Pos>()
@@ -369,6 +391,7 @@ function mapLayout(cy: Core, view: View) {
     // Nodes without any position (the unmapped area) wait in a row south-west of the map.
     home.set(n.id, n.lat != null && n.lon != null ? project(n.lat, n.lon, pxPerDegree) : project(-12.5, 96 + 7 * parked++, pxPerDegree))
   }
+  if (view.level === 'device' || view.level === 'neighbors') ringExternal(view, home)
   const elements = buildElements(view)
   const widthOf = new Map(elements.filter((e) => !e.data.source).map((e) => [e.data.id as string, e.data.w as number]))
   // Nodes keep a fixed size on screen, so how much they overlap depends on the zoom the view fits at,
@@ -385,7 +408,9 @@ function mapLayout(cy: Core, view: View) {
     for (const n of view.nodes) {
       const { width, height } = nodeSize({ kind: n.kind, w: widthOf.get(n.id) })
       const start = home.get(n.id)!
-      boxes.set(n.id, { x: start.x, y: start.y, hw: (width * toModel) / 2, hh: (height * toModel + 16 * toModel) / 2 })
+      // A device is a small dot with its hostname written underneath: space it by the label.
+      const boxWidth = n.kind === 'device' ? 110 : width
+      boxes.set(n.id, { x: start.x, y: start.y, hw: (boxWidth * toModel) / 2, hh: (height * toModel + 16 * toModel) / 2 })
     }
     declutter(boxes, minScreenGap * toModel, MAX_SHIFT_HEIGHTS * 34 * toModel)
   }
@@ -429,8 +454,11 @@ export default function Topology() {
   const cyRef = useRef<Core | null>(null)
   const [mapOn, setMapOn] = useState(storedMapOn)
   const [basemap, setBasemap] = useState<BasemapShape[]>([])
-  const onMap = mapOn && (level === 'area' || level === 'pop')
   const [view, setView] = useState<View | null>(null)
+  // Devices go on the map only where at least one has its own site coordinates.
+  const devicesLocated = view?.nodes.filter((n) => n.kind === 'device' && n.located).length ?? 0
+  const mapAvailable = level === 'area' || level === 'pop' || devicesLocated > 0
+  const onMap = mapOn && mapAvailable && view?.level === level
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<{ node?: NodeData; edge?: EdgeData } | null>(null)
   const [message, setMessage] = useState<{ text: string; error?: boolean } | null>(null)
@@ -719,8 +747,8 @@ export default function Topology() {
         <label className="check">
           <input type="checkbox" checked={edgeLabels} onChange={(e) => setEdgeLabels(e.target.checked)} /> Label link
         </label>
-        {(level === 'area' || level === 'pop') && (
-          <label className="check" title="Area dan POP di atas peta Indonesia sesuai koordinatnya">
+        {mapAvailable && (
+          <label className="check" title="Tampilkan di atas peta sesuai koordinat (POP, atau site perangkat bila ada)">
             <input type="checkbox" checked={mapOn} onChange={(e) => toggleMap(e.target.checked)} /> Peta
           </label>
         )}
@@ -730,7 +758,7 @@ export default function Topology() {
             Isi area otomatis
           </button>
         )}
-        {level === 'device' && (
+        {level === 'device' && !onMap && (
           <button onClick={savePositions} disabled={!dirty}>
             Simpan posisi
           </button>
@@ -770,6 +798,9 @@ export default function Topology() {
             {stats.groups} jalur · {stats.links} link
             {stats.red ? ` · ${stats.red} merah` : ''}
             {onMap && level === 'pop' && view ? ` · ${view.nodes.filter((n) => n.estimated).length} POP tanpa koordinat (posisi perkiraan, garis putus-putus)` : ''}
+            {onMap && (level === 'device' || level === 'neighbors') && view
+              ? ` · ${devicesLocated} perangkat dengan koordinat site, ${view.nodes.filter((n) => n.kind === 'device' && !n.located).length} di sekitar POP (garis putus-putus)`
+              : ''}
           </div>
           {(node || edge || (level === 'device' && view?.pop_id != null)) && (
             <aside className="detail-panel card">
