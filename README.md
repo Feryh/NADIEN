@@ -11,7 +11,8 @@
 | 3 | Capacity planning engine (forecast & prediksi exhaustion) | ✅ MVP |
 | 4 | Customer path engineering (jalur primary/backup, reservasi bandwidth) | ✅ MVP |
 | 5 | Service validation (kapasitas & redundansi, MTU & port, VLAN/VRF/RD/RT, kesiapan perangkat) | ✅ MVP |
-| 6–10 | MoP (PDF), config generator (VRP, ZTE, IOS-XR, FiberHome), dashboard lanjutan, AI, digital twin | ⏳ Belum |
+| 6 | MoP generator (PDF: pre-check, eksekusi, verifikasi, rollback per vendor) | ✅ MVP |
+| 7–10 | Config generator (VRP, ZTE, IOS-XR, FiberHome), dashboard lanjutan, AI, digital twin | ⏳ Belum |
 
 ### Service validation (Phase 5)
 
@@ -25,6 +26,21 @@ gagal, atau info:
 | MTU & port | Port akses ada, admin up, bukan uplink; MTU jalur ≥ kebutuhan layanan (L2VPN/IPLC 1600, L3VPN/Internet 1530), anjuran jumbo 9000 |
 | VLAN / VRF / RD / RT | VLAN wajib untuk L2VPN/IPLC dan tidak bentrok di port yang sama; L3VPN wajib VRF/RD/RT, format ASN:NN, RD tidak dipakai VRF lain |
 | Kesiapan perangkat | Status aktif, loopback, IS-IS NET, SRv6 locator (info), versi software rekomendasi |
+
+### MoP generator (Phase 6)
+
+Menu **MoP Generator** menyusun Method of Procedure untuk satu layanan, dengan pratinjau di layar dan unduhan PDF
+(`GET /api/mop/services/{id}/pdf`, versi JSON di `/api/mop/services/{id}`). Nomor MoP, nomor change, window, dan
+nama pelaksana/reviewer/approver diisi di halaman itu lalu dikirim sebagai query parameter.
+
+Isinya: tujuan, ringkasan layanan, jalur primary/backup dengan utilisasi, hasil validasi Phase 5, risiko & dampak,
+persiapan (backup config), pre-check, eksekusi, verifikasi, rollback, dan tabel pelaksana & eskalasi. Bila validasi
+masih **gagal**, dokumen ditandai **DRAFT**.
+
+Perintah CLI ditulis per perangkat sesuai dialek vendornya (`app/services/vendors.py`): Huawei VRP, ZTE, Cisco
+IOS-XR, dan FiberHome. Dialek dibaca dari vendor/OS di inventory; bila kosong, dari pola hostname. Perangkat yang
+dialeknya tidak dikenali diberi catatan supaya perintahnya ditulis manual. Bagian eksekusi dan rollback belum memuat
+konfigurasi layanannya, karena itu akan diisi Config Generator (Phase 7).
 
 ## Menjalankan
 

@@ -4,6 +4,7 @@ import CollectorSettings from './pages/CollectorSettings'
 import Collectors from './pages/Collectors'
 import Dashboard from './pages/Dashboard'
 import Inventory from './pages/Inventory'
+import MopGenerator from './pages/MopGenerator'
 import Paths from './pages/Paths'
 import Ports from './pages/Ports'
 import ServiceValidation from './pages/ServiceValidation'
@@ -17,13 +18,13 @@ const NAV = [
   { to: '/capacity', label: 'Capacity Planning', phase: 3 },
   { to: '/paths', label: 'Customer Path', phase: 4 },
   { to: '/validation', label: 'Service Validation', phase: 5 },
+  { to: '/mop', label: 'MoP Generator', phase: 6 },
   { to: '/collectors', label: 'Collectors', phase: 1 },
   { to: '/settings', label: 'Pengaturan Collector', phase: 1 },
 ]
 
 // Shown in the sidebar so the roadmap stays visible; enabled as each sprint lands.
 const ROADMAP = [
-  { label: 'MoP Generator', phase: 6 },
   { label: 'Config Generator', phase: 7 },
   { label: 'AI Assistant', phase: 9 },
   { label: 'Digital Twin', phase: 10 },
@@ -68,6 +69,7 @@ export default function App() {
           <Route path="/ports" element={<Ports />} />
           <Route path="/paths" element={<Paths />} />
           <Route path="/validation" element={<ServiceValidation />} />
+          <Route path="/mop" element={<MopGenerator />} />
           <Route path="/capacity" element={<Capacity />} />
           <Route path="/collectors" element={<Collectors />} />
           <Route path="/settings" element={<CollectorSettings />} />

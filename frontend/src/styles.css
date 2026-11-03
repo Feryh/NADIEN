@@ -242,6 +242,23 @@ a.summary-card.active { border-color: var(--accent); background: #0ea5e914; }
 .validation-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
 .validation-group { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
 .validation-group h3 { margin: 0 0 8px; text-transform: none; letter-spacing: 0; }
+
+a.button { display: inline-block; text-decoration: none; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
+a.button.primary { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; }
+.mop-services { max-height: 320px; overflow: auto; }
+.mop-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin-bottom: 14px; }
+.mop-meta label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.mop-doc { max-width: 980px; }
+.mop-doc section { margin-bottom: 14px; }
+.mop-doc h3 { margin: 12px 0 6px; text-transform: none; letter-spacing: 0; color: var(--accent); }
+.mop-doc p { margin: 4px 0; line-height: 1.5; }
+.mop-subtitle { color: var(--muted); margin-bottom: 8px; }
+.mop-caption { font-weight: 600; margin: 6px 0 4px; }
+.mop-step { margin: 8px 0; }
+.mop-step-title { font-weight: 600; margin-bottom: 4px; }
+.mop-step pre { margin: 0; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+  font-size: 12px; overflow-x: auto; white-space: pre; }
 .vcheck { padding: 6px 0; border-top: 1px solid var(--border); }
 .vcheck:first-of-type { border-top: 0; }
 .vcheck-title { font-size: 13px; }
