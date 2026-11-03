@@ -13,7 +13,8 @@
 | 5 | Service validation (kapasitas & redundansi, MTU & port, VLAN/VRF/RD/RT, kesiapan perangkat) | ✅ MVP |
 | 6 | MoP generator (PDF: pre-check, eksekusi, verifikasi, rollback per vendor) | ✅ MVP |
 | 7 | Config generator (Huawei VRP, ZTE, Cisco IOS-XR, FiberHome; config + rollback) | ✅ MVP |
-| 8–10 | Dashboard lanjutan, AI, digital twin | ⏳ Belum |
+| 8 | Dashboard lanjutan (tren & forecast per area, layanan & validasi, kesehatan data, peta hotspot) | ✅ MVP |
+| 9–10 | AI assistant, digital twin | ⏳ Belum |
 
 ### Service validation (Phase 5)
 
@@ -27,6 +28,23 @@ gagal, atau info:
 | MTU & port | Port akses ada, admin up, bukan uplink; MTU jalur ≥ kebutuhan layanan (L2VPN/IPLC 1600, L3VPN/Internet 1530), anjuran jumbo 9000 |
 | VLAN / VRF / RD / RT | VLAN wajib untuk L2VPN/IPLC dan tidak bentrok di port yang sama; L3VPN wajib VRF/RD/RT, format ASN:NN, RD tidak dipakai VRF lain |
 | Kesiapan perangkat | Status aktif, loopback, IS-IS NET, SRv6 locator (info), versi software rekomendasi |
+
+### Dashboard lanjutan (Phase 8)
+
+Dashboard punya lima tab (`?tab=`), semuanya dibaca dari engine yang sudah ada dan di-cache:
+
+| Tab | API | Isi |
+|---|---|---|
+| Ringkasan | `/api/dashboard/summary` | KPI, kesehatan kapasitas link, utilisasi POP |
+| Tren & forecast | `/api/dashboard/trends` | Puncak harian seluruh jaringan dan per area, forecast ke ambang/penuh per area |
+| Layanan & validasi | `/api/dashboard/services` | Layanan per tipe/status, hasil validasi, MoP yang masih DRAFT, temuan terbanyak |
+| Kesehatan data | `/api/dashboard/data-health` | POP tanpa koordinat/area, router tanpa loopback/IS-IS, link tanpa LLDP/kapasitas, data utilisasi janggal, histori utilisasi, umur sync per collector |
+| Peta hotspot | `/api/dashboard/areas` | Peta Indonesia: lingkaran per area (ukuran = kapasitas, warna = link terburuk ≥ 70% / ≥ 90%) dan titik per POP |
+
+Posisi area adalah titik tengah POP-POP yang berkoordinat. Area tanpa POP berkoordinat memakai titik perkiraan
+(lingkaran putus-putus), dan POP yang belum masuk area tidak digambar di peta. Grafik tren dan forecast butuh
+histori harian dari RRD Observium; selama histori masih kurang dari 30 hari, tab Kesehatan data menampilkan
+peringatan.
 
 ### MoP generator (Phase 6)
 

@@ -298,3 +298,13 @@ a.button.primary { background: var(--accent-strong); border-color: var(--accent-
   .topology { height: auto; }
   .graph { height: 60vh; }
 }
+
+.area-map { width: 100%; height: auto; max-height: 520px; background: #0b1220; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; }
+.area-map .land { fill: #1e293b; stroke: #334155; stroke-width: 0.03; }
+.area-map .land.indonesia { fill: #16324a; stroke: #2f6f99; }
+.area-map .area-bubble { cursor: pointer; }
+.area-map .area-bubble circle { stroke-width: 0.06; }
+.area-map text { font-size: 0.42px; fill: #e2e8f0; font-weight: 600; pointer-events: none; paint-order: stroke; stroke: #0b1220; stroke-width: 0.08px; }
+.area-map text.sub { font-size: 0.34px; font-weight: 400; fill: #cbd5e1; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; vertical-align: middle; }
+.area-map .leader { stroke: #94a3b8; stroke-width: 0.03; opacity: 0.6; }
