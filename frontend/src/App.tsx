@@ -1,4 +1,5 @@
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
+import AiAssistant from './pages/AiAssistant'
 import Capacity from './pages/Capacity'
 import CollectorSettings from './pages/CollectorSettings'
 import Collectors from './pages/Collectors'
@@ -21,13 +22,13 @@ const NAV = [
   { to: '/validation', label: 'Service Validation', phase: 5 },
   { to: '/mop', label: 'MoP Generator', phase: 6 },
   { to: '/configs', label: 'Config Generator', phase: 7 },
+  { to: '/ai', label: 'AI Assistant', phase: 9 },
   { to: '/collectors', label: 'Collectors', phase: 1 },
   { to: '/settings', label: 'Pengaturan Collector', phase: 1 },
 ]
 
 // Shown in the sidebar so the roadmap stays visible; enabled as each sprint lands.
 const ROADMAP = [
-  { label: 'AI Assistant', phase: 9 },
   { label: 'Digital Twin', phase: 10 },
 ]
 
@@ -72,6 +73,7 @@ export default function App() {
           <Route path="/validation" element={<ServiceValidation />} />
           <Route path="/mop" element={<MopGenerator />} />
           <Route path="/configs" element={<ConfigGenerator />} />
+          <Route path="/ai" element={<AiAssistant />} />
           <Route path="/capacity" element={<Capacity />} />
           <Route path="/collectors" element={<Collectors />} />
           <Route path="/settings" element={<CollectorSettings />} />

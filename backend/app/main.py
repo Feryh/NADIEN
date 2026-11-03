@@ -9,8 +9,8 @@ from .collectors.runner import runner
 from .collectors.scheduler import Scheduler
 from .config import settings
 from .database import init_schema
-from .routers import (analysis, capacity, collectors, configs, dashboard, insights, integrations, inventory, mop, paths,
-                      topology, validation)
+from .routers import (ai, analysis, capacity, collectors, configs, dashboard, insights, integrations, inventory, mop,
+                      paths, topology, validation)
 from .services import cache, collector_settings
 
 
@@ -65,6 +65,7 @@ for r in (
     validation.router,
     mop.router,
     configs.router,
+    ai.router,
 ):
     app.include_router(r, prefix="/api")
 

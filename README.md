@@ -14,7 +14,8 @@
 | 6 | MoP generator (PDF: pre-check, eksekusi, verifikasi, rollback per vendor) | ✅ MVP |
 | 7 | Config generator (Huawei VRP, ZTE, Cisco IOS-XR, FiberHome; config + rollback) | ✅ MVP |
 | 8 | Dashboard lanjutan (tren & forecast per area, layanan & validasi, kesehatan data, peta hotspot) | ✅ MVP |
-| 9–10 | AI assistant, digital twin | ⏳ Belum |
+| 9 | AI assistant (model lokal Ollama/vLLM, plus Claude, OpenAI, Azure OpenAI, Gemini, OpenAI-compatible) | ✅ MVP |
+| 10 | Digital twin | ⏳ Belum |
 
 ### Service validation (Phase 5)
 
@@ -28,6 +29,30 @@ gagal, atau info:
 | MTU & port | Port akses ada, admin up, bukan uplink; MTU jalur ≥ kebutuhan layanan (L2VPN/IPLC 1600, L3VPN/Internet 1530), anjuran jumbo 9000 |
 | VLAN / VRF / RD / RT | VLAN wajib untuk L2VPN/IPLC dan tidak bentrok di port yang sama; L3VPN wajib VRF/RD/RT, format ASN:NN, RD tidak dipakai VRF lain |
 | Kesiapan perangkat | Status aktif, loopback, IS-IS NET, SRv6 locator (info), versi software rekomendasi |
+
+### AI Assistant (Phase 9)
+
+Menu **AI Assistant** menjawab pertanyaan tentang jaringan dengan model yang dipilih (`POST /api/ai/chat`).
+Pada start pertama dibuat provider **Ollama lokal** sebagai default (`NADIEN_AI_OLLAMA_URL`,
+`NADIEN_AI_DEFAULT_MODEL`, default `llama3.1:8b`), jadi data jaringan tidak keluar dari jaringan internal. Provider
+lain ditambahkan dari tab **Provider AI** (`/api/ai/providers`):
+
+| Jenis | Untuk |
+|---|---|
+| `ollama` | Ollama lokal |
+| `openai` | Endpoint OpenAI-compatible: vLLM, LM Studio, OpenAI (ChatGPT), Gemini, OpenRouter, Groq, DeepSeek, GitHub Models, … |
+| `azure_openai` | Azure OpenAI (jalur Microsoft / Copilot): endpoint resource, nama deployment, `api-version` |
+| `anthropic` | Claude lewat SDK resmi `anthropic` (default `claude-opus-5-5`, fallback server-side bila permintaan ditolak) |
+
+API key disimpan terenkripsi dengan kunci yang sama seperti secret collector dan tidak pernah dikembalikan oleh API.
+Provider yang alamatnya di luar jaringan internal ditandai **eksternal**, dan halaman chat memperingatkan bahwa
+ringkasan data jaringan ikut terkirim. Tombol **Tes** mengirim satu prompt pendek tanpa data jaringan.
+
+Setiap pertanyaan dilampiri data yang relevan (`app/services/ai/context.py`): ringkasan jaringan, device/POP/
+circuit/area yang disebut, serta bagian topik (hotspot, forecast, kesehatan data, layanan & validasi) bila
+pertanyaannya menyinggung topik itu. Batas ukurannya `NADIEN_AI_CONTEXT_CHARS` (12.000 karakter). Cara ini tidak
+memakai tool calling, jadi bekerja dengan model lokal yang kecil sekalipun. Data hanya dilampirkan ke pertanyaan
+terakhir; riwayat percakapan (maksimal 12 pesan) dikirim apa adanya.
 
 ### Dashboard lanjutan (Phase 8)
 

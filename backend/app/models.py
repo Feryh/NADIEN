@@ -432,3 +432,27 @@ class ServicePath(TimestampMixin, Base):
     latency_estimated: Mapped[bool] = mapped_column(Boolean, default=True)
     reserved_gbps: Mapped[float] = mapped_column(Float, default=0)  # 0 when not reserved (1:1 backup)
     released: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+# --------------------------------------------------------------------------- AI assistant (Phase 9)
+
+
+class AiProvider(TimestampMixin, Base):
+    """An LLM endpoint the AI assistant can use: a local model (Ollama, vLLM) or a hosted one added by hand.
+    The API key is stored encrypted with the collector-settings key and never returned by the API."""
+
+    __tablename__ = "ai_providers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    kind: Mapped[str] = mapped_column(String(32))  # ollama | openai | azure_openai | anthropic
+    base_url: Mapped[str | None] = mapped_column(String(255))
+    model: Mapped[str] = mapped_column(String(128))
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text)
+    api_version: Mapped[str | None] = mapped_column(String(32))  # Azure OpenAI only
+    extra_headers: Mapped[dict | None] = mapped_column(JSONType)  # e.g. OpenRouter's HTTP-Referer
+    temperature: Mapped[float | None] = mapped_column(Float)
+    max_tokens: Mapped[int | None] = mapped_column(Integer)
+    timeout_s: Mapped[int] = mapped_column(Integer, default=120)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)

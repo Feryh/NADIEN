@@ -96,6 +96,24 @@ def _fernet(db: Session, create: bool = False) -> Fernet | None:
     return Fernet(path.read_bytes().strip())
 
 
+def encrypt_secret(db: Session, value: str) -> str:
+    """Encrypt with the same key as the collector secrets (other features store their API keys this way)."""
+    fernet = _fernet(db, create=True)
+    assert fernet is not None
+    return fernet.encrypt(value.encode()).decode()
+
+
+def decrypt_secret(db: Session, token: str) -> str | None:
+    """None when no key is available or the value was encrypted with another key."""
+    fernet = _fernet(db)
+    if fernet is None:
+        return None
+    try:
+        return fernet.decrypt(token.encode()).decode()
+    except InvalidToken:
+        return None
+
+
 # --------------------------------------------------------------------------- conversion
 
 

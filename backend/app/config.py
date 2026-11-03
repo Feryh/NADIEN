@@ -96,6 +96,13 @@ class Settings(BaseSettings):
     # next to the backups; with several replicas set the same key everywhere (see docs/LAUNCH.md).
     secret_key: str | None = None
 
+    # AI assistant (Phase 9). A local Ollama provider is created on first start when none exists;
+    # hosted providers (Claude, OpenAI, Azure OpenAI, ...) are added from the AI Assistant page.
+    ai_seed_local: bool = True
+    ai_ollama_url: str = "http://localhost:11434"
+    ai_default_model: str = "llama3.1:8b"
+    ai_context_chars: int = 12000  # network data sent with each question (local models have small contexts)
+
     # Read-model cache for heavy views (topology, capacity, dashboard); cleared on every write.
     cache_ttl_s: float = 60.0
     db_pool_size: int = 10
