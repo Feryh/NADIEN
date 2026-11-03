@@ -5,6 +5,7 @@ import CollectorSettings from './pages/CollectorSettings'
 import Collectors from './pages/Collectors'
 import ConfigGenerator from './pages/ConfigGenerator'
 import Dashboard from './pages/Dashboard'
+import DigitalTwin from './pages/DigitalTwin'
 import Inventory from './pages/Inventory'
 import MopGenerator from './pages/MopGenerator'
 import Paths from './pages/Paths'
@@ -23,13 +24,9 @@ const NAV = [
   { to: '/mop', label: 'MoP Generator', phase: 6 },
   { to: '/configs', label: 'Config Generator', phase: 7 },
   { to: '/ai', label: 'AI Assistant', phase: 9 },
+  { to: '/twin', label: 'Digital Twin', phase: 10 },
   { to: '/collectors', label: 'Collectors', phase: 1 },
   { to: '/settings', label: 'Pengaturan Collector', phase: 1 },
-]
-
-// Shown in the sidebar so the roadmap stays visible; enabled as each sprint lands.
-const ROADMAP = [
-  { label: 'Digital Twin', phase: 10 },
 ]
 
 export default function App() {
@@ -50,13 +47,6 @@ export default function App() {
               <span className="phase">P{n.phase}</span>
             </NavLink>
           ))}
-          <div className="nav-section">Roadmap</div>
-          {ROADMAP.map((r) => (
-            <span key={r.label} className="nav-disabled" title="Belum diimplementasi">
-              <span>{r.label}</span>
-              <span className="phase">P{r.phase}</span>
-            </span>
-          ))}
         </nav>
         <a className="api-link" href="/docs" target="_blank" rel="noreferrer">
           API docs ↗
@@ -74,6 +64,7 @@ export default function App() {
           <Route path="/mop" element={<MopGenerator />} />
           <Route path="/configs" element={<ConfigGenerator />} />
           <Route path="/ai" element={<AiAssistant />} />
+          <Route path="/twin" element={<DigitalTwin />} />
           <Route path="/capacity" element={<Capacity />} />
           <Route path="/collectors" element={<Collectors />} />
           <Route path="/settings" element={<CollectorSettings />} />

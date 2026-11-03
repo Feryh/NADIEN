@@ -15,7 +15,7 @@
 | 7 | Config generator (Huawei VRP, ZTE, Cisco IOS-XR, FiberHome; config + rollback) | ✅ MVP |
 | 8 | Dashboard lanjutan (tren & forecast per area, layanan & validasi, kesehatan data, peta hotspot) | ✅ MVP |
 | 9 | AI assistant (model lokal Ollama/vLLM, plus Claude, OpenAI, Azure OpenAI, Gemini, OpenAI-compatible) | ✅ MVP |
-| 10 | Digital twin | ⏳ Belum |
+| 10 | Digital twin (skenario failure/what-if kapasitas, kesiapan migrasi IS-IS/SRv6) | ✅ MVP |
 
 ### Service validation (Phase 5)
 
@@ -29,6 +29,41 @@ gagal, atau info:
 | MTU & port | Port akses ada, admin up, bukan uplink; MTU jalur ≥ kebutuhan layanan (L2VPN/IPLC 1600, L3VPN/Internet 1530), anjuran jumbo 9000 |
 | VLAN / VRF / RD / RT | VLAN wajib untuk L2VPN/IPLC dan tidak bentrok di port yang sama; L3VPN wajib VRF/RD/RT, format ASN:NN, RD tidak dipakai VRF lain |
 | Kesiapan perangkat | Status aktif, loopback, IS-IS NET, SRv6 locator (info), versi software rekomendasi |
+
+### Digital Twin (Phase 10)
+
+Menu **Digital Twin** mensimulasikan perubahan pada salinan jaringan. Data produksi tidak pernah diubah.
+
+**Skenario what-if** (`/api/twin/scenarios`, dijalankan dengan `POST …/{id}/run`, atau `POST /api/twin/simulate`
+tanpa disimpan). Satu skenario berisi daftar perubahan:
+
+| Perubahan | Arti |
+|---|---|
+| `fail_link` / `fail_device` / `fail_pop` / `fail_fiber` | Link, device, POP, atau fiber (SRLG: semua link di fiber itu) mati |
+| `growth` | Trafik naik/turun N% di seluruh jaringan atau di link yang menyentuh satu area |
+| `upgrade_link` | Kapasitas baru untuk link yang ada |
+| `add_link` | Link virtual antara dua device |
+
+Hasilnya mencakup:
+- trafik yang dirutekan ulang dan yang hilang;
+- jumlah link warning/kritis sebelum vs sesudah, dan link yang bebannya berubah;
+- ringkasan per area;
+- device yang terisolasi dari jaringan utama;
+- dampak ke layanan lewat jalur engineered-nya: putus, pindah ke backup, atau kehilangan proteksi.
+
+Model reroute adalah perkiraan, karena matriks trafik end-to-end tidak diketahui. Trafik link yang mati dipindah ke
+jalur terpendek pengganti antar kedua ujungnya, dengan prioritas link yang paling lega. Trafik link yang menyentuh
+device mati dianggap berakhir di device itu. Hasil terakhir disimpan bersama skenario, dan dihapus bila daftar
+perubahannya diubah.
+
+**Migrasi IS-IS/SRv6** (`/api/twin/migration/srv6`). Status kesiapan per router P/PE/agg/BNG/DCI:
+- **siap**: loopback, IS-IS NET, dan SRv6 locator lengkap;
+- **perlu konfigurasi**: belum ada locator;
+- **terblokir**: tanpa loopback atau IS-IS NET.
+
+Software yang bukan versi rekomendasi juga dihitung sebagai penghambat, tetapi hanya bila vendornya sudah punya
+versi rekomendasi. Area diurutkan per wave, mulai dari area dengan router terblokir dan layanan paling sedikit. Di
+dalam satu area, core (P/agg) dimigrasi sebelum edge. Layanan tetap di LDP sampai kedua PE-nya siap SRv6.
 
 ### AI Assistant (Phase 9)
 

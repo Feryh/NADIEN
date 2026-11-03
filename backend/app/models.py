@@ -456,3 +456,20 @@ class AiProvider(TimestampMixin, Base):
     timeout_s: Mapped[int] = mapped_column(Integer, default=120)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+# --------------------------------------------------------------------------- Digital twin (Phase 10)
+
+
+class TwinScenario(TimestampMixin, Base):
+    """A saved what-if: a list of changes (failures, growth, upgrades, virtual links) and its last result.
+    Running a scenario never touches the production tables."""
+
+    __tablename__ = "twin_scenarios"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    description: Mapped[str | None] = mapped_column(Text)
+    changes: Mapped[list] = mapped_column(JSONType)
+    result: Mapped[dict | None] = mapped_column(JSONType)
+    run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

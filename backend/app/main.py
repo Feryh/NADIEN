@@ -10,7 +10,7 @@ from .collectors.scheduler import Scheduler
 from .config import settings
 from .database import init_schema
 from .routers import (ai, analysis, capacity, collectors, configs, dashboard, insights, integrations, inventory, mop,
-                      paths, topology, validation)
+                      paths, topology, twin, validation)
 from .services import cache, collector_settings
 
 
@@ -66,6 +66,7 @@ for r in (
     mop.router,
     configs.router,
     ai.router,
+    twin.router,
 ):
     app.include_router(r, prefix="/api")
 
