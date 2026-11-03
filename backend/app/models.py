@@ -321,6 +321,18 @@ class CollectorJob(Base):
     error: Mapped[str | None] = mapped_column(Text)
 
 
+class CollectorSetting(Base):
+    """Collector connection settings entered in the UI; they override the NADIEN_* environment.
+    Secret values (tokens, passwords) are stored encrypted (services/collector_settings.py)."""
+
+    __tablename__ = "collector_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    secret: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class AppState(Base):
     """Small shared counters, e.g. the read-model cache version every API process watches."""
 

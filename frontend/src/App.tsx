@@ -1,5 +1,6 @@
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import Capacity from './pages/Capacity'
+import CollectorSettings from './pages/CollectorSettings'
 import Collectors from './pages/Collectors'
 import Dashboard from './pages/Dashboard'
 import Inventory from './pages/Inventory'
@@ -15,6 +16,7 @@ const NAV = [
   { to: '/capacity', label: 'Capacity Planning', phase: 3 },
   { to: '/paths', label: 'Customer Path', phase: 4 },
   { to: '/collectors', label: 'Collectors', phase: 1 },
+  { to: '/settings', label: 'Pengaturan Collector', phase: 1 },
 ]
 
 // Shown in the sidebar so the roadmap stays visible; enabled as each sprint lands.
@@ -66,6 +68,7 @@ export default function App() {
           <Route path="/paths" element={<Paths />} />
           <Route path="/capacity" element={<Capacity />} />
           <Route path="/collectors" element={<Collectors />} />
+          <Route path="/settings" element={<CollectorSettings />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

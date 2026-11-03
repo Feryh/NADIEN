@@ -89,6 +89,13 @@ class Settings(BaseSettings):
     hotspot_critical_pct: float = 90.0
     hotspot_suspect_pct: float = 150.0  # above this the link capacity is treated as wrong data
 
+    # Collector settings page (Pengaturan Collector). Values saved there override this environment.
+    # NADIEN has no login yet: set false in production to keep credentials env-only.
+    settings_ui_enabled: bool = True
+    # Key for the secrets saved from that page (Fernet, urlsafe base64). Without it a key file is created
+    # next to the backups; with several replicas set the same key everywhere (see docs/LAUNCH.md).
+    secret_key: str | None = None
+
     # Read-model cache for heavy views (topology, capacity, dashboard); cleared on every write.
     cache_ttl_s: float = 60.0
     db_pool_size: int = 10

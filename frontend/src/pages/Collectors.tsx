@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api'
 
 interface BackupList {
@@ -159,6 +160,7 @@ export default function Collectors() {
           <span className={`pill ${status?.observium.configured ? 'pill-ok' : 'pill-bad'}`}>
             {status?.observium.configured ? `credentials: ${status.observium.auth}` : 'credentials belum di-set'}
           </span>
+          <Link to="/settings" className="small">Pengaturan →</Link>
           <div className="spacer" />
           <button disabled={!!busy || jobRunning} onClick={() => startJob('/collectors/observium/sync?parts=utilization')}>
             Utilisasi saja
@@ -181,8 +183,9 @@ export default function Collectors() {
         </p>
         {!status?.observium.configured && (
           <p className="hint">
-            Set di <code>backend/.env</code>: <code>NADIEN_OBSERVIUM_TOKEN=…</code> (disarankan: token read-only, dibatasi IP) atau{' '}
-            <code>NADIEN_OBSERVIUM_USER</code> + <code>NADIEN_OBSERVIUM_PASSWORD</code>, lalu restart backend.
+            Isi URL dan token/login Observium di <Link to="/settings">Pengaturan Collector</Link> (tanpa restart), atau di{' '}
+            <code>backend/.env</code>: <code>NADIEN_OBSERVIUM_TOKEN=…</code> atau <code>NADIEN_OBSERVIUM_USER</code> +{' '}
+            <code>NADIEN_OBSERVIUM_PASSWORD</code>.
           </p>
         )}
       </div>
@@ -284,8 +287,8 @@ export default function Collectors() {
         </p>
         {!status?.gitweb.configured && (
           <p className="hint">
-            Set di <code>backend/.env</code>: <code>NADIEN_GITWEB_URL=http://172.17.12.232/gitweb/</code> (opsional{' '}
-            <code>NADIEN_GITWEB_USER</code>/<code>_PASSWORD</code>, jadwal <code>NADIEN_GITWEB_DAILY_AT=02:30</code>), lalu restart backend.
+            Isi URL gitweb (mis. <code>http://172.17.12.232/gitweb/</code>) dan jadwal harian di{' '}
+            <Link to="/settings">Pengaturan Collector</Link>, atau <code>NADIEN_GITWEB_URL</code> di <code>backend/.env</code>.
           </p>
         )}
       </div>

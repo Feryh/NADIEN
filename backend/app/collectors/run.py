@@ -21,6 +21,7 @@ from sqlalchemy import select
 
 from .. import models as m
 from ..database import Base, SessionLocal, engine
+from ..services import collector_settings
 from ..services.topology import norm_host
 from . import jobs
 from .configs import parse_config
@@ -53,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
 
     Base.metadata.create_all(engine)
     with SessionLocal() as db:
+        collector_settings.apply(db)  # settings saved in the UI apply to the CLI too
         try:
             if args.cmd == "observium":
                 report = jobs.run_observium(db, set(args.parts.split(",")), not args.no_discover)

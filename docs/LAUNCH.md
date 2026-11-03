@@ -116,7 +116,11 @@ Ini setup yang dipakai di PC development saat ini.
 
 ### Menghubungkan ke Observium dari lokal
 
-Isi `NADIEN_OBSERVIUM_URL` dan `NADIEN_OBSERVIUM_TOKEN` di `backend/.env`. Pakai token **read-only**. Setelah itu:
+Cara paling mudah: buka menu **Pengaturan Collector** di sidebar. Isi URL dan token Observium (pakai token
+**read-only**), URL gitweb dan jadwal harian, lalu klik **Tes koneksi**. Nilainya langsung berlaku tanpa restart dan
+menimpa `backend/.env`. Token dan password disimpan terenkripsi dan tidak pernah ditampilkan lagi.
+
+Cara lain, isi `NADIEN_OBSERVIUM_URL` dan `NADIEN_OBSERVIUM_TOKEN` di `backend/.env`. Setelah itu:
 
 ```bash
 python -m app.collectors.run observium          # Full sync: device, port, LLDP, mapping port_id
@@ -413,6 +417,10 @@ kubectl -n nadien exec deploy/nadien-worker -- python -m app.collectors.run obse
 
 `backend/.env` untuk secret `nadien-env` cukup berisi `NADIEN_OBSERVIUM_*`, `NADIEN_GITWEB_*` dan sejenisnya.
 `NADIEN_DATABASE_URL` diisi oleh manifest.
+
+**Wajib di Kubernetes:** tambahkan `NADIEN_SECRET_KEY=<kunci Fernet>` ke `nadien-env`. Semua replica harus memakai
+kunci yang sama, supaya token yang disimpan dari menu Pengaturan Collector bisa dibaca semua pod. Kalau kredensial
+mau dikelola lewat secret saja, isi `NADIEN_SETTINGS_UI_ENABLED=false`.
 
 ---
 

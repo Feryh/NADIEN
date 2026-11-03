@@ -10,13 +10,14 @@ from .collectors.scheduler import Scheduler
 from .config import settings
 from .database import init_schema
 from .routers import analysis, capacity, collectors, dashboard, integrations, inventory, paths, topology
-from .services import cache
+from .services import cache, collector_settings
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # MVP: create tables on startup. Switch to Alembic migrations before production data lands.
     init_schema()
+    collector_settings.refresh()  # values saved in Pengaturan Collector override backend/.env
     scheduler = Scheduler(runner) if settings.scheduler_enabled else None
     if scheduler:
         scheduler.start()

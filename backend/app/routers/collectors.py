@@ -1,4 +1,7 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -16,9 +19,15 @@ from ..collectors.runner import JobBusy, ensure_idle, runner
 from ..collectors.observium.sync import ALL_PARTS, SOURCE_NAME
 from ..config import settings
 from ..database import get_db
+from ..services import collector_settings
 from ..services.topology import norm_host
 
-router = APIRouter(prefix="/collectors", tags=["Collectors"])
+def _current_settings() -> None:
+    # Values saved in Pengaturan Collector may have been changed by another worker/replica.
+    collector_settings.refresh()
+
+
+router = APIRouter(prefix="/collectors", tags=["Collectors"], dependencies=[Depends(_current_settings)])
 
 MAX_CONFIG_BYTES = 5_000_000
 
@@ -67,6 +76,45 @@ def status(db: Session = Depends(get_db)):
         },
         "parts": sorted(ALL_PARTS),
     }
+
+
+class SettingsIn(BaseModel):
+    values: dict[str, Any] = Field(default_factory=dict, description="Key -> new value; '' on a secret keeps it")
+    clear: list[str] = Field(default_factory=list, description="Keys to remove (back to backend/.env)")
+
+
+@router.get("/settings")
+def get_settings(db: Session = Depends(get_db)):
+    """Connection settings with their source (ui / env / default). Secrets are never returned."""
+    return collector_settings.describe(db)
+
+
+@router.put("/settings")
+def put_settings(payload: SettingsIn, db: Session = Depends(get_db)):
+    try:
+        collector_settings.update(db, payload.values, payload.clear)
+    except collector_settings.SettingsError as exc:
+        code = 403 if "dimatikan" in str(exc) else 422
+        raise HTTPException(code, str(exc)) from exc
+    return collector_settings.describe(db)
+
+
+@router.post("/settings/test")
+def test_connection(target: str = Query(..., pattern="^(observium|gitweb)$")):
+    """Try the saved settings: one Observium API call / the gitweb repository list. Read-only."""
+    try:
+        if target == "observium":
+            with ObserviumClient() as client:
+                data = client._get("/devices/", {"pagesize": 1, "pageno": 1})
+            return {"ok": True, "detail": f"Terhubung ke {settings.observium_url}: {data.get('count', '?')} perangkat"}
+        client = GitwebClient()
+        try:
+            repos = client.repos()
+        finally:
+            client.close()
+        return {"ok": True, "detail": f"Terhubung ke {settings.gitweb_url}: {len(repos)} repo RANCID"}
+    except (ObserviumError, GitwebError) as exc:
+        return {"ok": False, "detail": str(exc)}
 
 
 def _start(kind: str, fn) -> dict:

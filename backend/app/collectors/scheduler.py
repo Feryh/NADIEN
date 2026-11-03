@@ -59,6 +59,10 @@ def _record(session_factory: sessionmaker, job: str, run_date: str, job_id: str)
 def tick(runner: JobRunner, session_factory: sessionmaker = SessionLocal, now: datetime | None = None,
          start_job: Callable | None = None) -> str | None:
     """One scheduler check. Returns the started job id, or None when nothing was due/possible."""
+    if start_job is None:  # real runs: pick up schedule/URL changes saved from the UI by any process
+        from ..services import collector_settings
+
+        collector_settings.refresh()
     at = (settings.gitweb_daily_at or "").strip()
     if not at or not settings.gitweb_url:
         return None

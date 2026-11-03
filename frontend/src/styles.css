@@ -214,6 +214,14 @@ a.summary-card.active { border-color: var(--accent); background: #0ea5e914; }
 .area-edit { display: flex; gap: 6px; align-items: center; margin: 4px 0 10px; }
 .area-edit select { flex: 1; min-width: 0; }
 
+/* ------------------------------------------------------------------ collector settings */
+.settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px 20px; }
+.setting-row { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.setting-label { display: flex; gap: 8px; align-items: center; color: var(--text); }
+.setting-row input[type='text'], .setting-row input[type='password'], .setting-row input[type='number'], .setting-row select { width: 100%; }
+.setting-row input[type='checkbox'] { width: 18px; height: 18px; }
+.inline-check { margin-left: 8px; }
+
 /* ------------------------------------------------------------------ hotspots / forecast */
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
 .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 8px 12px; color: var(--muted); }
