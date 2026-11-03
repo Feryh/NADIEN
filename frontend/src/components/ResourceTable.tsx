@@ -300,10 +300,28 @@ function FormModal(props: {
   )
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  // POP code already taken by another POP: offer to merge this POP into it instead of renaming.
+  const [mergeTarget, setMergeTarget] = useState<string | null>(null)
+
+  async function merge() {
+    if (!row || !mergeTarget) return
+    if (!confirm(`Gabungkan POP ${row.code} ke ${mergeTarget}? Semua perangkat & referensi pindah ke ${mergeTarget}, ` +
+                 `lalu POP ${row.code} dihapus. Data ${mergeTarget} yang sudah terisi tidak ditimpa.`)) return
+    setSaving(true)
+    try {
+      await api.post(`/pops/${row.id}/merge`, { target_code: mergeTarget })
+      onSaved()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault()
     setError(null)
+    setMergeTarget(null)
     let payload: Record<string, unknown>
     try {
       payload = Object.fromEntries(editable.map((f) => [f.name, fromInput(f, values[f.name])]))
@@ -317,7 +335,10 @@ function FormModal(props: {
       else await api.post(entity.endpoint, payload)
       onSaved()
     } catch (err) {
-      setError((err as Error).message)
+      const message = (err as Error).message
+      setError(message)
+      const newCode = String(payload.code ?? '')
+      if (entity.key === 'pops' && row && message.startsWith('409') && newCode && newCode !== row.code) setMergeTarget(newCode)
     } finally {
       setSaving(false)
     }
@@ -389,6 +410,12 @@ function FormModal(props: {
           })}
         </div>
         {error && <div className="error">{error}</div>}
+        {mergeTarget && row && (
+          <div className="notice">
+            POP {mergeTarget} sudah ada. Kalau {String(row.code)} sebenarnya POP yang sama,{' '}
+            <button type="button" onClick={merge} disabled={saving}>Gabungkan {String(row.code)} ke {mergeTarget}</button>
+          </div>
+        )}
         <div className="modal-actions">
           <button type="button" onClick={onClose}>
             Batal
