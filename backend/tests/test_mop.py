@@ -60,10 +60,10 @@ def test_should_mark_draft_when_validation_fails(db, net):  # noqa: F811
     assert build_mop(db, bare, MopMeta())["draft"] is True
 
 
-def test_should_put_generated_config_before_save_when_config_is_given(db, service):
+def test_should_put_generated_config_before_commit_when_config_is_given(db, service):
     doc = build_mop(db, service, MopMeta(), configs={"A": {"config": ["interface ge-0/0/1.300"], "rollback": []}})
     first = _section(doc, "8.")["steps"][0]["commands"]
-    assert first[0] == "interface ge-0/0/1.300" and first[-1] == "save"
+    assert first[0] == "interface ge-0/0/1.300" and first[-2:] == ["commit", "return"]
 
 
 def test_should_warn_about_shared_port_only_when_another_service_uses_it(db, service):

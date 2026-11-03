@@ -249,6 +249,7 @@ a.button.primary { background: var(--accent-strong); border-color: var(--accent-
 .mop-services { max-height: 320px; overflow: auto; }
 .mop-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin-bottom: 14px; }
 .mop-meta label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.mop-meta label.check { flex-direction: row; align-items: center; gap: 6px; align-self: end; padding-bottom: 8px; }
 .mop-doc { max-width: 980px; }
 .mop-doc section { margin-bottom: 14px; }
 .mop-doc h3 { margin: 12px 0 6px; text-transform: none; letter-spacing: 0; color: var(--accent); }
@@ -257,6 +258,8 @@ a.button.primary { background: var(--accent-strong); border-color: var(--accent-
 .mop-caption { font-weight: 600; margin: 6px 0 4px; }
 .mop-step { margin: 8px 0; }
 .mop-step-title { font-weight: 600; margin-bottom: 4px; }
+.config-endpoint { margin-bottom: 18px; }
+.config-endpoint h3 { margin: 8px 0 6px; text-transform: none; letter-spacing: 0; }
 .mop-step pre { margin: 0; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
   font-size: 12px; overflow-x: auto; white-space: pre; }
 .vcheck { padding: 6px 0; border-top: 1px solid var(--border); }

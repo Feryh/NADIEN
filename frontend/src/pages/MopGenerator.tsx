@@ -47,6 +47,11 @@ const META_FIELDS = [
   { key: 'executor', label: 'Pelaksana', placeholder: '' },
   { key: 'reviewer', label: 'Reviewer', placeholder: '' },
   { key: 'approver', label: 'Approver', placeholder: '' },
+  { key: 'a_ip', label: 'IP PE site A (CIDR)', placeholder: '10.10.10.1/30' },
+  { key: 'b_ip', label: 'IP PE site B (CIDR)', placeholder: '10.10.10.5/30' },
+  { key: 'vlans', label: 'VLAN VPLS (multi)', placeholder: 'mis. 1480-1485,1489' },
+  { key: 'vc_id', label: 'VC / PW id', placeholder: 'default = VLAN' },
+  { key: 'bgp_asn', label: 'ASN BGP (L3VPN)', placeholder: 'default dari RD' },
 ] as const
 
 type Meta = Record<(typeof META_FIELDS)[number]['key'], string>
@@ -57,6 +62,7 @@ export default function MopGenerator() {
   const selected = params.get('service') ? Number(params.get('service')) : null
   const [services, setServices] = useState<ServiceRow[] | null>(null)
   const [meta, setMeta] = useState<Meta>(EMPTY_META)
+  const [policer, setPolicer] = useState(false)
   const [mop, setMop] = useState<Mop | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -69,12 +75,14 @@ export default function MopGenerator() {
   const query = useMemo(() => {
     const q = new URLSearchParams()
     for (const [k, v] of Object.entries(meta)) if (v.trim()) q.set(k, v.trim())
+    if (policer) q.set('policer', 'true')
     const s = q.toString()
     return s ? `?${s}` : ''
-  }, [meta])
+  }, [meta, policer])
 
   useEffect(() => {
     setMop(null)
+    setError(null)
     if (selected == null) return
     // Debounced so typing in the header fields does not rebuild the preview on every key.
     const timer = window.setTimeout(() => {
@@ -132,10 +140,14 @@ export default function MopGenerator() {
             {META_FIELDS.map((f) => (
               <label key={f.key}>
                 <span>{f.label}</span>
-                <input value={meta[f.key]} placeholder={f.placeholder} maxLength={f.key.startsWith('window') ? 32 : 64}
+                <input value={meta[f.key]} placeholder={f.placeholder} maxLength={f.key === 'vlans' ? 256 : f.key.startsWith('window') ? 32 : 64}
                        onChange={(e) => setMeta({ ...meta, [f.key]: e.target.value })} />
               </label>
             ))}
+            <label className="check">
+              <input type="checkbox" checked={policer} onChange={(e) => setPolicer(e.target.checked)} />
+              <span>Policer sesuai bandwidth</span>
+            </label>
           </div>
           {mop ? <MopPreview mop={mop} /> : <div className="muted">Menyusun MoP…</div>}
         </div>

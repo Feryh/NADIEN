@@ -3,7 +3,7 @@
 Sections follow a usual change document: purpose, service summary, paths, validation result (Phase 5),
 risk & impact, preparation, pre-check, execution, verification, rollback, contacts. CLI commands are
 written per device in its own dialect (Huawei VRP, ZTE, Cisco IOS-XR, FiberHome). Execution and
-rollback take the service configuration from the config generator (Phase 7) when one is given.
+rollback carry the service configuration from the config generator (Phase 7).
 """
 
 import re
@@ -12,41 +12,42 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from .. import models as m
+from .configgen import Addressing, fiberhome_name, generate, instance_name
 from .validation import GROUPS, design_for_service, validate
 from .vendors import DIALECT_LABELS, dialect_for
 
 # Command templates per dialect. Placeholders: {port} {sub} (port.vlan) {vlan} {vrf} {lo} {peer_lo} {circuit},
-# {circuit_tag} (circuit id safe for file names and commit labels).
+# {circuit_tag} (circuit id safe for file names and commit labels), {instance} (L2 VSI/VPLS/VFI name).
 COMMANDS: dict[str, dict[str, list[str]]] = {
     "vrp": {
-        "backup": ["display current-configuration", "save"],
+        "backup": ["display current-configuration"],
         "port": ["display interface {port}", "display current-configuration interface {port}"],
         "sub": ["display current-configuration interface {sub}"],
         "core": ["display isis peer", "display mpls ldp session"],
         "vrf": ["display ip vpn-instance {vrf}"],
         "ping": ["ping -a {lo} {peer_lo}"],
-        "commit": ["commit", "save"],
-        "verify_l2": ["display interface {sub}", "display mpls l2vc interface {sub}"],
+        "commit": ["commit", "return"],
+        "verify_l2": ["display interface {sub}", "display vsi name {instance} verbose"],
         "verify_l3": ["display interface {sub}", "display ip routing-table vpn-instance {vrf}",
                       "display bgp vpnv4 vpn-instance {vrf} peer"],
         "verify_inet": ["display interface {sub}", "display ip routing-table | include {sub}"],
         "rollback": ["display configuration commit list", "rollback configuration to commit-id <commit-id sebelum perubahan>"],
     },
     "zte": {
-        "backup": ["show running-config", "write"],
+        "backup": ["show running-config"],
         "port": ["show interface {port}", "show running-config interface {port}"],
         "sub": ["show running-config interface {sub}"],
         "core": ["show isis adjacency", "show mpls ldp neighbor"],
         "vrf": ["show ip vrf {vrf}"],
         "ping": ["ping {peer_lo} source {lo}"],
-        "commit": ["write"],
+        "commit": ["commit", "end"],
         "verify_l2": ["show interface {sub}", "show mpls l2transport vc detail"],
         "verify_l3": ["show interface {sub}", "show ip route vrf {vrf}", "show bgp vpnv4 unicast vrf {vrf} summary"],
         "verify_inet": ["show interface {sub}", "show ip route | include {sub}"],
-        "rollback": ["(jalankan konfigurasi rollback di bawah)", "write"],
+        "rollback": ["(pulihkan dari backup konfigurasi bagian 6)"],
     },
     "iosxr": {
         "backup": ["show running-config", "copy running-config harddisk:/backup-{circuit_tag}.cfg"],
@@ -55,25 +56,26 @@ COMMANDS: dict[str, dict[str, list[str]]] = {
         "core": ["show isis adjacency", "show mpls ldp neighbor brief"],
         "vrf": ["show vrf {vrf}"],
         "ping": ["ping {peer_lo} source {lo}"],
-        "commit": ["commit label {circuit_tag}", "show configuration commit list 1"],
+        "commit": ["commit label {circuit_tag}", "end"],
         "verify_l2": ["show interfaces {sub}", "show l2vpn xconnect interface {sub} detail"],
         "verify_l3": ["show interfaces {sub}", "show route vrf {vrf}", "show bgp vrf {vrf} summary"],
         "verify_inet": ["show interfaces {sub}", "show route | include {sub}"],
-        "rollback": ["show configuration commit list", "rollback configuration to {circuit_tag}  ! label commit layanan ini",
-                     "(atau) rollback configuration last 1"],
+        "rollback": ["show configuration commit list", "rollback configuration last 1",
+                     "rollback configuration to <commit-id sebelum commit {circuit_tag}>"],
+        "commit_rollback": ["commit", "end"],
     },
     "fiberhome": {
-        "backup": ["show running-config", "write file"],
+        "backup": ["show running-config"],
         "port": ["show interface {port}", "show running-config interface {port}"],
         "sub": ["show running-config interface {sub}"],
         "core": ["show isis neighbor", "show mpls ldp session"],
         "vrf": ["show ip vrf {vrf}"],
         "ping": ["ping {peer_lo} source {lo}"],
-        "commit": ["write file"],
+        "commit": ["commit", "end"],
         "verify_l2": ["show interface {sub}", "show mpls l2vc"],
         "verify_l3": ["show interface {sub}", "show ip route vrf {vrf}"],
         "verify_inet": ["show interface {sub}", "show ip route"],
-        "rollback": ["(jalankan konfigurasi rollback di bawah)", "write file"],
+        "rollback": ["(pulihkan dari backup konfigurasi bagian 6)"],
     },
 }
 NOTE_SYNTAX = ("Perintah ditulis dengan sintaks umum per vendor; periksa kesesuaian dengan versi software perangkat "
@@ -133,9 +135,11 @@ def _fill(templates: list[str], **values: str) -> list[str]:
     return [t.format(**values) for t in templates]
 
 
-def build_mop(db: Session, service: m.Service, meta: MopMeta,
+def build_mop(db: Session, service: m.Service, meta: MopMeta, addressing: Addressing | None = None,
               configs: dict[str, dict[str, list[str]]] | None = None) -> dict[str, Any]:
-    """`configs` (Phase 7): {"A"/"B": {"config": [...], "rollback": [...]}} per endpoint."""
+    """`configs`: {"A"/"B": {"config", "rollback", "warnings"}}; generated by the config generator when not given."""
+    if configs is None:
+        configs = generate(db, service, addressing)["endpoints"]
     vendors = {v.id: v for v in db.scalars(select(m.Vendor))}
     pops = {p.id: p for p in db.scalars(select(m.Pop))}
     customer = db.get(m.Customer, service.customer_id)
@@ -263,7 +267,7 @@ def _preparation(service: m.Service, a: _Endpoint, b: _Endpoint) -> Section:
     section = Section("6. Persiapan", [
         "Window maintenance dan nomor change disetujui; kontak customer dan NOC tersedia selama window.",
         "Laporan validasi (bagian 4) tidak memiliki temuan GAGAL.",
-        "Backup konfigurasi setiap perangkat yang diubah disimpan sebelum eksekusi:",
+        "Simpan output konfigurasi setiap perangkat yang diubah (dan pastikan backup RANCID hari ini ada) sebelum eksekusi:",
     ])
     for ep in (a, b):
         section.steps.append(_step(ep, f"Backup konfigurasi {ep.hostname}", "backup", service, None))
@@ -272,9 +276,14 @@ def _preparation(service: m.Service, a: _Endpoint, b: _Endpoint) -> Section:
 
 def _values(service: m.Service, ep: _Endpoint, peer: _Endpoint | None) -> dict[str, str]:
     port = ep.port or "<port>"
+    if ep.dialect == "fiberhome" and ep.port:
+        port = fiberhome_name(port)
+    session = object_session(service)
+    customer = session.get(m.Customer, service.customer_id) if session else None
     return {"port": port, "sub": f"{port}.{service.vlan_id}" if service.vlan_id else port, "vlan": str(service.vlan_id or ""),
             "vrf": service.vrf_name or "<vrf>", "lo": ep.loopback, "peer_lo": peer.loopback if peer else "<loopback peer>",
-            "circuit": service.circuit_id, "circuit_tag": re.sub(r"[^A-Za-z0-9_-]+", "_", service.circuit_id)}
+            "circuit": service.circuit_id, "circuit_tag": re.sub(r"[^A-Za-z0-9_-]+", "_", service.circuit_id),
+            "instance": instance_name(service, customer)}
 
 
 def _step(ep: _Endpoint, title: str, kind: str | list[str], service: m.Service, peer: _Endpoint | None, note: str = "") -> Step:
@@ -302,7 +311,7 @@ def _precheck(service: m.Service, a: _Endpoint, b: _Endpoint, paths: dict[str, l
 
 
 def _execution(service: m.Service, a: _Endpoint, b: _Endpoint, configs: dict[str, dict[str, list[str]]] | None) -> Section:
-    section = Section("8. Eksekusi", ["Eksekusi berurutan: site A lalu site B. Simpan konfigurasi setelah setiap perangkat."])
+    section = Section("8. Eksekusi", ["Eksekusi berurutan: site A lalu site B. Konfigurasi disimpan dengan commit di setiap perangkat."])
     for ep in (a, b):
         config = (configs or {}).get(ep.label, {}).get("config")
         if ep.dialect is None:
@@ -310,10 +319,12 @@ def _execution(service: m.Service, a: _Endpoint, b: _Endpoint, configs: dict[str
             continue
         commit = _fill(COMMANDS[ep.dialect]["commit"], **_values(service, ep, None))
         if config:
-            section.steps.append(Step(ep.hostname, ep.dialect, f"Konfigurasi {ep.hostname} (site {ep.label})", config + commit))
+            warnings = (configs or {}).get(ep.label, {}).get("warnings") or []
+            section.steps.append(Step(ep.hostname, ep.dialect, f"Konfigurasi {ep.hostname} (site {ep.label})", config + commit,
+                                      " ".join(f"Perhatian: {w}" for w in warnings)))
         else:
             section.steps.append(Step(ep.hostname, ep.dialect, f"Konfigurasi {ep.hostname} (site {ep.label})", commit,
-                                      "Konfigurasi layanan dibuat oleh Config Generator (Phase 7); terapkan sebelum perintah simpan di atas."))
+                                      "Konfigurasi belum bisa dibuat otomatis (lihat Config Generator): tulis manual sebelum perintah simpan di atas."))
     return section
 
 
@@ -338,8 +349,13 @@ def _rollback(service: m.Service, a: _Endpoint, b: _Endpoint, configs: dict[str,
         if ep.dialect is None:
             section.steps.append(Step(ep.hostname, None, f"Rollback {ep.hostname}", note="Vendor tidak dikenali: rollback manual."))
             continue
-        commands = (undo or []) + _fill(COMMANDS[ep.dialect]["rollback"], **_values(service, ep, None))
-        section.steps.append(Step(ep.hostname, ep.dialect, f"Rollback {ep.hostname} (site {ep.label})", commands))
+        history = _fill(COMMANDS[ep.dialect]["rollback"], **_values(service, ep, None))
+        title = f"Rollback {ep.hostname} (site {ep.label})"
+        if undo:
+            commit = _fill(COMMANDS[ep.dialect].get("commit_rollback", COMMANDS[ep.dialect]["commit"]), **_values(service, ep, None))
+            section.steps.append(Step(ep.hostname, ep.dialect, title, undo + commit, "Alternatif: " + "; ".join(history)))
+        else:
+            section.steps.append(Step(ep.hostname, ep.dialect, title, history))
     return section
 
 

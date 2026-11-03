@@ -67,6 +67,7 @@ def _cover(pdf: _MopPdf, doc: dict[str, Any]) -> None:
         pdf.multi_cell(0, 8, "DRAFT - validasi desain masih GAGAL. Jangan dieksekusi sebelum temuan diselesaikan.",
                        border=1, fill=True, **NEXT_LINE)
         pdf.set_text_color(0)
+        pdf.set_fill_color(255)  # tables reuse the current fill colour
         pdf.ln(3)
     meta = doc["meta"]
     window = " s/d ".join(v for v in (meta.get("window_start"), meta.get("window_end")) if v)

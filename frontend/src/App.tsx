@@ -2,6 +2,7 @@ import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import Capacity from './pages/Capacity'
 import CollectorSettings from './pages/CollectorSettings'
 import Collectors from './pages/Collectors'
+import ConfigGenerator from './pages/ConfigGenerator'
 import Dashboard from './pages/Dashboard'
 import Inventory from './pages/Inventory'
 import MopGenerator from './pages/MopGenerator'
@@ -19,13 +20,13 @@ const NAV = [
   { to: '/paths', label: 'Customer Path', phase: 4 },
   { to: '/validation', label: 'Service Validation', phase: 5 },
   { to: '/mop', label: 'MoP Generator', phase: 6 },
+  { to: '/configs', label: 'Config Generator', phase: 7 },
   { to: '/collectors', label: 'Collectors', phase: 1 },
   { to: '/settings', label: 'Pengaturan Collector', phase: 1 },
 ]
 
 // Shown in the sidebar so the roadmap stays visible; enabled as each sprint lands.
 const ROADMAP = [
-  { label: 'Config Generator', phase: 7 },
   { label: 'AI Assistant', phase: 9 },
   { label: 'Digital Twin', phase: 10 },
 ]
@@ -70,6 +71,7 @@ export default function App() {
           <Route path="/paths" element={<Paths />} />
           <Route path="/validation" element={<ServiceValidation />} />
           <Route path="/mop" element={<MopGenerator />} />
+          <Route path="/configs" element={<ConfigGenerator />} />
           <Route path="/capacity" element={<Capacity />} />
           <Route path="/collectors" element={<Collectors />} />
           <Route path="/settings" element={<CollectorSettings />} />

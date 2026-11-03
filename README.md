@@ -12,7 +12,8 @@
 | 4 | Customer path engineering (jalur primary/backup, reservasi bandwidth) | ✅ MVP |
 | 5 | Service validation (kapasitas & redundansi, MTU & port, VLAN/VRF/RD/RT, kesiapan perangkat) | ✅ MVP |
 | 6 | MoP generator (PDF: pre-check, eksekusi, verifikasi, rollback per vendor) | ✅ MVP |
-| 7–10 | Config generator (VRP, ZTE, IOS-XR, FiberHome), dashboard lanjutan, AI, digital twin | ⏳ Belum |
+| 7 | Config generator (Huawei VRP, ZTE, Cisco IOS-XR, FiberHome; config + rollback) | ✅ MVP |
+| 8–10 | Dashboard lanjutan, AI, digital twin | ⏳ Belum |
 
 ### Service validation (Phase 5)
 
@@ -39,8 +40,43 @@ masih **gagal**, dokumen ditandai **DRAFT**.
 
 Perintah CLI ditulis per perangkat sesuai dialek vendornya (`app/services/vendors.py`): Huawei VRP, ZTE, Cisco
 IOS-XR, dan FiberHome. Dialek dibaca dari vendor/OS di inventory; bila kosong, dari pola hostname. Perangkat yang
-dialeknya tidak dikenali diberi catatan supaya perintahnya ditulis manual. Bagian eksekusi dan rollback belum memuat
-konfigurasi layanannya, karena itu akan diisi Config Generator (Phase 7).
+dialeknya tidak dikenali diberi catatan supaya perintahnya ditulis manual. Bagian eksekusi dan rollback memuat
+konfigurasi dari Config Generator (Phase 7).
+
+### Config generator (Phase 7)
+
+Menu **Config Generator** (`GET /api/configs/services/{id}`) membuat konfigurasi dan rollback untuk kedua ujung
+layanan dalam sintaks perangkatnya (`app/services/configgen.py`). Script siap tempel: tanpa baris komentar
+(keluar dari view memakai `quit` / `$` / `exit` / `root`) dan disimpan dengan `commit` di semua vendor, bukan
+`write`/`save`. Peringatan ditampilkan di samping script, bukan di dalamnya. File teks per site dan per bagian:
+`/text?side=A|B&part=config|rollback`.
+
+Template mengikuti konfigurasi layanan yang ada di backup RANCID jaringan ini (Metro, BNG, CSR), bukan contoh
+umum vendor:
+
+| Layanan | Huawei VRP | ZTE | FiberHome | Cisco IOS-XR |
+|---|---|---|---|---|
+| L2VPN / IPLC | `vsi … pwsignal ldp` (satu peer, control-word) + `l2 binding vsi` | `vpls` + `access-point` + `pseudo-wire … neighbour … vcid … cw-preferred`, VLAN di `vlan-configuration` | `vfi … vsi-id … peer … encapsulation raw`, sub-interface `l2transport` | `xconnect group … p2p`, `pw-class MPLS-CONTROL-WORD`, `rewrite ingress tag pop 1 symmetric` |
+| L3VPN | `ip vpn-instance` + `bgp … ipv4-family vpn-instance` | `ip vrf` + `router bgp … address-family ipv4 vrf` | tidak dibuat (FiberHome metro hanya L2) | `vrf` + `router bgp … vrf` |
+| Internet | sub-interface dengan alamat global | sama | tidak dibuat | sama |
+| Policer (opsional, `policer=true`) | `qos car … green pass red discard` in/out | `qos` → `rate-limit input/output` | tidak dibuat (tidak ada contoh) | `policy-map … police rate` |
+
+VC/VSI id default = VLAN, seperti praktik ZTE metro (bisa diganti lewat `vc_id`; layanan tanpa VLAN memakai
+100000 + id layanan). Bila layanan lain di antara dua PE yang sama sudah memakai VLAN itu, muncul peringatan
+supaya VC id diganti. Policer default tidak dibuat dan bisa diaktifkan per layanan.
+
+VPLS bisa dibuat sekaligus untuk beberapa VLAN lewat `vlans` (mis. `1480-1485,1489`, maksimal 64). Setiap VLAN
+mendapat sub-interface dan instance sendiri, dengan VC id = VLAN. Di ZTE, nama pw dialokasikan otomatis dari
+running-config perangkat di backup RANCID (`app/services/running_config.py`, cache 5 menit). Nama yang dipakai
+adalah `pwN` terkecil yang belum dideklarasikan (`pw pwN`) atau dirujuk (`pseudo-wire pwN`), lalu dipasangkan ke
+access-point dan neighbour per VLAN. Akan muncul peringatan bila vcid ke neighbour yang sama atau sub-interface itu
+sudah ada di config. Kalau config RANCID tidak bisa diambil, pw dinamai `pw<VC id>` dan muncul peringatan untuk
+mengeceknya manual. MTU instance L2
+2000 sesuai VPLS metro. Nama instance L2 mengikuti gaya jaringan: `<CUSTOMER>_<VLAN>`. Alamat IP sisi PE diisi
+lewat `a_ip` / `b_ip` (CIDR), kalau kosong memakai placeholder `<ip> <mask>`. ASN BGP diisi lewat `bgp_asn`;
+kalau kosong diambil dari RD, padahal di jaringan ini RD tidak selalu sama dengan AS perangkat (mis. RD
+`10001:x` di AS 46038), jadi ada peringatannya. Blok VRF tidak dibuat ulang dan tidak dihapus saat rollback bila
+layanan lain yang masih aktif sudah memakai VRF itu di perangkat yang sama.
 
 ## Menjalankan
 
