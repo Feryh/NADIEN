@@ -1,5 +1,7 @@
 # NADIEN
 
+[![CI](https://github.com/Feryh/NADIEN/actions/workflows/ci.yml/badge.svg)](https://github.com/Feryh/NADIEN/actions/workflows/ci.yml)
+
 **Network Access Design, Implementation & Engineering Platform.** Satu platform untuk desain topologi Metro, capacity planning, validasi engineering, customer path, MoP, dan config generation.
 
 ## Status roadmap
@@ -65,21 +67,45 @@ Software yang bukan versi rekomendasi juga dihitung sebagai penghambat, tetapi h
 versi rekomendasi. Area diurutkan per wave, mulai dari area dengan router terblokir dan layanan paling sedikit. Di
 dalam satu area, core (P/agg) dimigrasi sebelum edge. Layanan tetap di LDP sampai kedua PE-nya siap SRv6.
 
-### Login, role & audit
+### Login, role & akses
 
-Semua `/api` butuh login (cookie sesi HttpOnly, `NADIEN_SESSION_HOURS`, default 12 jam). Saat belum ada pengguna,
-halaman pertama meminta pembuatan **admin pertama**; pengguna lain ditambah admin di menu **Pengguna & Audit**.
+Semua halaman dan `/api` butuh login (cookie sesi HttpOnly, `NADIEN_SESSION_HOURS`, default 12 jam).
+
+- **Admin lokal bawaan.** Saat start pertama, bila belum ada pengguna, dibuat user `admin` (`NADIEN_ADMIN_USERNAME`).
+  Passwordnya diambil dari `NADIEN_ADMIN_PASSWORD`. Bila kosong, password acak dicetak **sekali** di log API.
+  Password ini wajib diganti saat login pertama. Admin lokal tetap bisa login walau SSO aktif, sebagai jalur darurat.
+- **Kebijakan password.** Minimal `NADIEN_PASSWORD_MIN_LENGTH` karakter (default 10), berisi huruf dan angka, dan
+  tidak memuat username. Pengguna baru dan password hasil reset admin wajib diganti saat login berikutnya.
+- **Penguncian akun.** Setelah `NADIEN_LOGIN_MAX_ATTEMPTS` kali gagal (default 5), akun dikunci
+  `NADIEN_LOGIN_LOCK_MINUTES` menit (default 15). Admin bisa membuka kuncinya.
 
 | Role | Hak |
 |---|---|
-| viewer | hanya membaca (termasuk simulasi Digital Twin dan AI chat) |
+| customer | portal **Layanan Saya**: hanya layanan milik customer yang dihubungkan ke akunnya (read-only) |
+| viewer | membaca semua data (termasuk simulasi Digital Twin dan AI chat) |
 | engineer | mengubah data, mengajukan dan mengeksekusi change |
 | approver | engineer + approve/tolak change milik orang lain |
-| admin | semua, termasuk pengguna, Pengaturan Collector, provider AI, backup |
+| admin | semua, termasuk pengguna, SSO, Pengaturan Collector, provider AI, backup |
 
-Setiap write tercatat di audit log (`/api/audit-logs`, admin), begitu juga login, approval, dan setiap eksekusi ke
-perangkat. Sistem eksternal yang mengirim ke `/api/integrations` memakai `Authorization: Bearer <NADIEN_INGEST_TOKEN>`.
-`NADIEN_AUTH_ENABLED=false` mematikan login (semua akses sebagai admin lokal), hanya untuk dev/test.
+Menu **Pengaturan Akses** punya empat tab:
+- **Akun saya** (semua role): profil dan ganti password.
+- **Pengguna** (admin): tambah, role, hubungkan ke customer, nonaktifkan, reset password, buka kunci, hapus.
+- **SSO (OIDC)** (admin).
+- **Audit log** (admin).
+
+**SSO (OpenID Connect).** Didukung Entra ID/Azure AD, Keycloak, Google Workspace, dan Okta. Alurnya authorization
+code + PKCE. Tanda tangan ID token (RS256/ES256) diverifikasi dengan JWKS provider, begitu juga issuer, audience,
+expiry, dan nonce. Role diambil dari satu claim (mis. `groups` atau `roles`) lewat tabel pemetaan nilai → role,
+dan diperbarui setiap login. Bila tidak ada pemetaan yang cocok, login ditolak atau diberi role default. Akses bisa
+dibatasi per domain email. Akun dibuat otomatis saat login pertama, kecuali dimatikan. Client secret disimpan
+terenkripsi. Di identity provider, daftarkan redirect URI `https://<host-nadien>/api/auth/sso/callback`.
+
+**Audit log** mencatat setiap write, beserta user dan IP. Juga tercatat: login berhasil, gagal, dan terkunci; login
+SSO; perubahan pengguna (sebelum → sesudah); pengaturan SSO; approval; dan setiap eksekusi ke perangkat. Log bisa
+difilter per user, jenis aksi, dan rentang tanggal, lalu diekspor ke CSV (`/api/audit-logs/export`).
+
+Sistem eksternal yang mengirim ke `/api/integrations` memakai `Authorization: Bearer <NADIEN_INGEST_TOKEN>`.
+`NADIEN_AUTH_ENABLED=false` mematikan login (semua akses sebagai admin lokal); hanya untuk dev/test.
 
 ### Change & eksekusi ke perangkat
 
@@ -338,8 +364,37 @@ Tabelnya sudah tersedia sebagai "wadah", dengan kolom `source_system` + `externa
 - **Push:** `POST /api/integrations/ingest/{fibers|dwdm_nodes|odfs|patch_panels|dwdm_wavelengths}?source_system=<nama>` berisi array record. Proses upsert berdasarkan `external_id`, jadi aman diulang.
 - **Pull:** daftarkan sumbernya di *Integrations → API Sources*. Connector per sistem nantinya dipasang di `sync_source()` (`backend/app/routers/integrations.py`).
 
+## Migrasi skema database
+
+Skema dikelola **Alembic** (`backend/app/migrations`). API menjalankan `upgrade head` saat start. Pada PostgreSQL
+ini diserialisasi dengan advisory lock, jadi aman untuk banyak worker atau replica. Database yang dibuat sebelum ada
+migrasi (versi lama memakai `create_all`) dilengkapi sampai baseline `0001`, ditandai (stamp), lalu di-upgrade
+seperti biasa.
+
+```bash
+cd backend
+alembic revision --autogenerate -m "tambah kolom x"   # setelah mengubah models.py; periksa hasilnya
+alembic upgrade head                                 # manual (API juga melakukannya saat start)
+alembic upgrade head --sql                           # tampilkan DDL tanpa menjalankan (review DBA)
+alembic downgrade -1
+alembic check                                        # gagal bila models.py berubah tanpa migrasi
+```
+
+Untuk SQLite, migrasi yang mengubah tabel memakai *batch mode* (tabel dibangun ulang); ini otomatis dari `env.py`.
+Test `test_should_match_models_when_empty_db_is_migrated_to_head` dan CI mencegah perubahan model yang belum punya
+migrasi.
+
+## CI
+
+GitHub Actions (`.github/workflows/ci.yml`) berjalan di setiap push ke `main` dan setiap pull request:
+
+| Job | Isi |
+|---|---|
+| Backend tests | `pytest`, lalu `alembic upgrade head` + `alembic check` di SQLite |
+| Migrations on PostgreSQL | PostGIS 16 (image yang sama dengan produksi): upgrade → check → downgrade base → upgrade |
+| Frontend | `npm ci`, typecheck, dan build Vite |
+| Docker images | build image backend dan frontend (tanpa push), setelah dua job pertama lulus |
+
 ## Catatan MVP
 
-- Tabel dibuat lewat `create_all` saat startup. Pakai Alembic sebelum ada data produksi.
-- Belum ada autentikasi (rencana: Keycloak/OAuth2).
 - Koordinat POP masih disimpan sebagai lat/lon biasa. Image Docker sudah PostGIS, jadi siap dimigrasi ke tipe geometry.

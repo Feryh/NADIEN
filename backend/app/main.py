@@ -8,17 +8,20 @@ from . import models  # noqa: F401  (registers tables on Base.metadata)
 from .collectors.runner import runner
 from .collectors.scheduler import Scheduler
 from .config import settings
-from .database import init_schema
+from .database import SessionLocal, init_schema
 from .routers import (ai, analysis, auth, capacity, changes, collectors, configs, dashboard, insights, integrations,
-                      inventory, mop, paths, topology, twin, validation)
+                      inventory, mop, paths, portal, sso, topology, twin, validation)
 from .services import cache, collector_settings
-from .services.auth import authorize
+from .services.auth import authorize, ensure_admin
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # MVP: create tables on startup. Switch to Alembic migrations before production data lands.
+    # Alembic migrations to head (app/migrations); a pre-migration database is stamped at the baseline first.
     init_schema()
+    if settings.auth_enabled:
+        with SessionLocal() as db:
+            ensure_admin(db)
     collector_settings.refresh()  # values saved in Pengaturan Collector override backend/.env
     scheduler = Scheduler(runner) if settings.scheduler_enabled else None
     if scheduler:
@@ -72,9 +75,12 @@ for r in (
     auth.account,
     auth.users,
     auth.audit_logs,
+    portal.router,
+    sso.settings_router,
 ):
     app.include_router(r, prefix="/api", dependencies=[Depends(authorize)])
 app.include_router(auth.public, prefix="/api")
+app.include_router(sso.public, prefix="/api")
 
 
 @app.get("/api/health", tags=["System"])

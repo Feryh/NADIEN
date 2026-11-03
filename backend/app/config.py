@@ -106,6 +106,13 @@ class Settings(BaseSettings):
     # Login and roles. With auth off (tests, single-user dev) every request acts as a local admin.
     auth_enabled: bool = True
     session_hours: float = 12.0
+    # Built-in local admin, created on first start when there are no users. Without a password here a random
+    # one is printed once in the server log. Either way it must be changed at first login.
+    admin_username: str = "admin"
+    admin_password: str | None = None
+    password_min_length: int = 10
+    login_max_attempts: int = 5  # failed logins before the account is locked for login_lock_minutes
+    login_lock_minutes: int = 15
     ingest_token: str | None = None  # Bearer token for external systems posting to /api/integrations
 
     # Pushing changes to devices (SSH/telnet). Engineers type their own device credentials per run; they are

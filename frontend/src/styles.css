@@ -384,3 +384,27 @@ a.button.primary { background: var(--accent-strong); border-color: var(--accent-
 .change-log pre { max-height: 480px; white-space: pre-wrap; }
 .change-site .warnings { margin: 8px 0; padding-left: 18px; color: #facc15; }
 .audit-search { width: 100%; max-width: 360px; margin-bottom: 10px; }
+.user-avatar { width: 30px; height: 30px; flex-shrink: 0; border-radius: 50%; display: grid; place-items: center; font-weight: 700;
+  background: linear-gradient(135deg, #38bdf8, #6366f1); color: #fff; }
+.user-meta { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Pengaturan Akses, customer portal */
+.access-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; margin-bottom: 14px; }
+.access-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
+.access-card h3 { margin-top: 2px; }
+.access-form { display: grid; gap: 10px; margin: 8px 0; }
+.access-form-wide { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.access-form label { display: flex; flex-direction: column; gap: 4px; }
+.access-form label > span { font-size: 12px; color: var(--muted); }
+.access-dl { display: grid; grid-template-columns: 110px 1fr; gap: 8px; margin: 0; }
+.access-dl dt { color: var(--muted); }
+.access-dl dd { margin: 0; }
+.access-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.access-actions button { padding: 3px 9px; font-size: 12px; }
+.access-mapping { width: 100%; margin: 8px 0; }
+.access-mapping input, .access-mapping select { width: 100%; }
+.access-card .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.access-filters { align-items: end; margin-bottom: 10px; }
+.portal-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 6px 0 14px; }
+.portal-stats > div { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; }
+.portal-stats b { font-size: 22px; }
+.portal-stats span { color: var(--muted); font-size: 12px; }

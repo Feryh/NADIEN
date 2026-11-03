@@ -3,19 +3,24 @@
 Passwords: scrypt (stdlib). Sessions: an HMAC-signed cookie carrying the user id, expiry and a stamp of the
 password hash, so changing a password or disabling a user ends that user's sessions without a session table.
 Every API router is mounted behind `authorize`: reads need viewer, writes engineer, a few admin-only areas admin.
+A `customer` user sits outside that ladder and reaches only /api/portal (its own services).
 """
 
 import base64
 import hashlib
 import hmac
+import logging
 import os
+import re
+import secrets
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import models as m
@@ -23,14 +28,20 @@ from ..config import settings
 from ..database import get_db
 from .collector_settings import signing_key
 
-Role = Literal["viewer", "engineer", "approver", "admin"]
-ROLE_RANK: dict[str, int] = {"viewer": 0, "engineer": 1, "approver": 2, "admin": 3}
+log = logging.getLogger(__name__)
+
+Role = Literal["customer", "viewer", "engineer", "approver", "admin"]
+STAFF_ROLES = ("viewer", "engineer", "approver", "admin")
+ROLE_RANK: dict[str, int] = {"customer": -1, "viewer": 0, "engineer": 1, "approver": 2, "admin": 3}
 COOKIE = "nadien_session"
 
-# Writes that only an admin may make: credentials, providers holding API keys, users, backups.
-ADMIN_WRITE_PREFIXES = ("/api/collectors/settings", "/api/ai/providers", "/api/backups")
+# Writes that only an admin may make: credentials, providers holding API keys, users, backups, SSO.
+ADMIN_WRITE_PREFIXES = ("/api/collectors/settings", "/api/ai/providers", "/api/backups", "/api/sso-settings")
 # POSTs that change nothing (simulations, questions): viewers may use them.
 READ_ONLY_POSTS = ("/api/ai/chat", "/api/twin/simulate")
+PORTAL_PREFIX = "/api/portal"
+# Reachable while a password change is still pending.
+PASSWORD_CHANGE_PATHS = ("/api/auth/password",)
 
 _SCRYPT = {"n": 2**14, "r": 8, "p": 1}
 
@@ -41,6 +52,9 @@ class CurrentUser:
     username: str
     role: str
     full_name: str | None = None
+    customer_id: int | None = None
+    must_change_password: bool = False
+    auth_source: str = "local"
 
     def at_least(self, role: str) -> bool:
         return ROLE_RANK[self.role] >= ROLE_RANK[role]
@@ -49,10 +63,18 @@ class CurrentUser:
 LOCAL_ADMIN = CurrentUser(None, "local", "admin", "Auth nonaktif")
 
 
+# --------------------------------------------------------------------------- passwords
+
+
 def hash_password(password: str) -> str:
     salt = os.urandom(16)
     digest = hashlib.scrypt(password.encode(), salt=salt, **_SCRYPT)
     return "scrypt$" + base64.b64encode(salt).decode() + "$" + base64.b64encode(digest).decode()
+
+
+def unusable_password() -> str:
+    """For SSO users: a hash no password matches, still unique so it can stamp sessions."""
+    return "none$" + secrets.token_hex(16)
 
 
 def verify_password(password: str, stored: str) -> bool:
@@ -66,18 +88,38 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(check, base64.b64decode(digest))
 
 
+def password_problem(password: str, username: str) -> str | None:
+    """None when the password meets the policy, else the reason in the UI language."""
+    if len(password) < settings.password_min_length:
+        return f"Password minimal {settings.password_min_length} karakter."
+    if not (re.search(r"[A-Za-z]", password) and re.search(r"\d", password)):
+        return "Password harus berisi huruf dan angka."
+    if username and username.lower() in password.lower():
+        return "Password tidak boleh memuat username."
+    return None
+
+
+def check_password(password: str, username: str) -> None:
+    problem = password_problem(password, username)
+    if problem:
+        raise HTTPException(422, problem)
+
+
+# --------------------------------------------------------------------------- sessions
+
+
 def _stamp(user: m.User) -> str:
     return hashlib.sha256(user.password_hash.encode()).hexdigest()[:16]
 
 
-def _signature(db: Session, payload: str) -> str:
+def sign(db: Session, payload: str) -> str:
     return hmac.new(signing_key(db), payload.encode(), hashlib.sha256).hexdigest()
 
 
 def session_token(db: Session, user: m.User) -> str:
     expires = int(time.time() + settings.session_hours * 3600)
     payload = f"{user.id}.{expires}.{_stamp(user)}"
-    return f"{payload}.{_signature(db, payload)}"
+    return f"{payload}.{sign(db, payload)}"
 
 
 def user_from_token(db: Session, token: str | None) -> m.User | None:
@@ -85,7 +127,7 @@ def user_from_token(db: Session, token: str | None) -> m.User | None:
         return None
     user_id, expires, stamp, signature = token.split(".")
     payload = f"{user_id}.{expires}.{stamp}"
-    if not hmac.compare_digest(signature, _signature(db, payload)):
+    if not hmac.compare_digest(signature, sign(db, payload)):
         return None
     if not expires.isdigit() or int(expires) < time.time() or not user_id.isdigit():
         return None
@@ -96,14 +138,59 @@ def user_from_token(db: Session, token: str | None) -> m.User | None:
 
 
 def as_current(user: m.User) -> CurrentUser:
-    return CurrentUser(user.id, user.username, user.role, user.full_name)
+    return CurrentUser(user.id, user.username, user.role, user.full_name, user.customer_id,
+                       user.must_change_password, user.auth_source)
 
 
-def needs_setup(db: Session) -> bool:
-    return settings.auth_enabled and db.scalar(select(m.User.id).limit(1)) is None
+# --------------------------------------------------------------------------- built-in admin & lockout
+
+
+def ensure_admin(db: Session) -> None:
+    """First start: create the local admin. Several workers race here; the losers see the unique violation."""
+    if db.scalar(select(m.User.id).limit(1)) is not None:
+        return
+    password = settings.admin_password or secrets.token_urlsafe(12)
+    db.add(m.User(username=settings.admin_username, full_name="Administrator", role="admin",
+                  password_hash=hash_password(password), must_change_password=True))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return
+    if settings.admin_password:
+        log.warning("NADIEN: admin lokal '%s' dibuat dengan NADIEN_ADMIN_PASSWORD; wajib ganti saat login pertama.",
+                    settings.admin_username)
+    else:
+        log.warning("NADIEN: admin lokal '%s' dibuat dengan password sementara: %s  (wajib ganti saat login pertama)",
+                    settings.admin_username, password)
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    return value.replace(tzinfo=timezone.utc) if value and value.tzinfo is None else value
+
+
+def locked_for(user: m.User) -> int:
+    """Minutes left on a lockout, 0 when the account may try again."""
+    until = _aware(user.locked_until)
+    if not until:
+        return 0
+    left = (until - datetime.now(timezone.utc)).total_seconds()
+    return max(int(left // 60) + 1, 1) if left > 0 else 0
+
+
+def record_failure(user: m.User) -> None:
+    user.failed_logins = (user.failed_logins or 0) + 1
+    if user.failed_logins >= settings.login_max_attempts:
+        user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=settings.login_lock_minutes)
+        user.failed_logins = 0
+
+
+# --------------------------------------------------------------------------- authorization & audit
 
 
 def required_role(method: str, path: str) -> str:
+    if path.startswith(PORTAL_PREFIX):
+        return "customer"
     if method in ("GET", "HEAD", "OPTIONS") or path in READ_ONLY_POSTS:
         return "viewer"
     if path.startswith(ADMIN_WRITE_PREFIXES):
@@ -111,14 +198,35 @@ def required_role(method: str, path: str) -> str:
     return "engineer"
 
 
-def audit(db: Session, username: str, action: str, target: str, detail: str | None = None) -> None:
+def client_ip(request: Request) -> str | None:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()[:64]
+    return request.client.host[:64] if request.client else None
+
+
+def audit(db: Session, username: str, action: str, target: str, detail: str | None = None,
+          request: Request | None = None) -> None:
     """Added to the session; the caller commits."""
     db.add(m.AuditLog(at=datetime.now(timezone.utc), username=username, action=action, target=target[:512],
-                      detail=detail))
+                      detail=detail, ip=client_ip(request) if request else None))
+
+
+def _check_scope(current: CurrentUser, path: str, needed: str) -> None:
+    if current.must_change_password and path not in PASSWORD_CHANGE_PATHS:
+        raise HTTPException(403, "Ganti password terlebih dahulu.")
+    if current.role == "customer":
+        if needed != "customer" and path not in PASSWORD_CHANGE_PATHS:
+            raise HTTPException(403, "Akun customer hanya dapat melihat layanannya sendiri.")
+        return
+    if needed == "customer":
+        raise HTTPException(403, "Portal ini khusus akun customer.")
+    if not current.at_least(needed):
+        raise HTTPException(403, f"Butuh role {needed} untuk aksi ini (role Anda: {current.role}).")
 
 
 def authorize(request: Request, db: Session = Depends(get_db)) -> CurrentUser:
-    """Router-level guard for every /api router except /api/auth."""
+    """Router-level guard for every /api router except /api/auth's public routes."""
     path = request.url.path
     if not settings.auth_enabled:
         current = LOCAL_ADMIN
@@ -131,14 +239,14 @@ def authorize(request: Request, db: Session = Depends(get_db)) -> CurrentUser:
             raise HTTPException(401, "Silakan login terlebih dahulu.")
         current = as_current(user)
     needed = required_role(request.method, path)
-    if not current.at_least(needed):
-        raise HTTPException(403, f"Butuh role {needed} untuk aksi ini (role Anda: {current.role}).")
+    if settings.auth_enabled:
+        _check_scope(current, path, needed)
     request.state.user = current
-    if needed != "viewer":
-        query = f"?{request.url.query}" if request.url.query else ""
+    if request.method not in ("GET", "HEAD", "OPTIONS") and path not in READ_ONLY_POSTS:
         # Committed now, before the endpoint runs: background-job endpoints never commit this session,
         # and a refused write is worth seeing too.
-        audit(db, current.username, request.method, path + query)
+        query = f"?{request.url.query}" if request.url.query else ""
+        audit(db, current.username, request.method, path + query, request=request)
         db.commit()
     return current
 

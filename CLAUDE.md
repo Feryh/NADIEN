@@ -22,6 +22,8 @@ Phase 1–3 (inventory, topology, capacity) sudah MVP. Lihat README.md untuk det
 - `cd frontend && npm run dev` — frontend dev (:5173, proxy /api ke :8000)
 - `cd frontend && npm run typecheck` — cek TypeScript
 - `cd backend && python -m pytest -q` — test backend (butuh `requirements-dev.txt`)
+- `cd backend && alembic revision --autogenerate -m "..."` — migrasi baru setelah mengubah `models.py` (cek hasilnya;
+  untuk SQLite pakai batch, kolom NOT NULL baru butuh `server_default`); `alembic check` harus bersih
 - `cd backend && python -m app.collectors.run observium` — sync dari Observium (kredensial via env)
 - `cd backend && python -m app.collectors.run rrd --days 90` — histori utilisasi dari RRD Observium
 - `cd backend && python -m app.collectors.run gitweb [--full]` — config semua repo RANCID via gitweb (juga otomatis tiap hari)

@@ -479,17 +479,49 @@ class TwinScenario(TimestampMixin, Base):
 
 
 class User(TimestampMixin, Base):
-    """NADIEN login. Roles rank viewer < engineer < approver < admin; device credentials are never stored here."""
+    """NADIEN login. Staff roles rank viewer < engineer < approver < admin; a `customer` user sees only the
+    services of its customer. Device credentials are never stored here.
+
+    auth_source: local (password here) or oidc (password_hash unusable; identity = external_id, the OIDC sub)."""
 
     __tablename__ = "users"
+    __table_args__ = (Index("ix_users_identity", "auth_source", "external_id", unique=True),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(64), unique=True)
     full_name: Mapped[str | None] = mapped_column(String(128))
+    email: Mapped[str | None] = mapped_column(String(256))
     password_hash: Mapped[str] = mapped_column(String(256))
     role: Mapped[str] = mapped_column(String(16), default="viewer")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    auth_source: Mapped[str] = mapped_column(String(16), default="local")
+    external_id: Mapped[str | None] = mapped_column(String(256))
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id", ondelete="SET NULL"))
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+    failed_logins: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SsoSettings(TimestampMixin, Base):
+    """OpenID Connect provider (single row, id 1): Entra ID, Keycloak, Google Workspace, Okta, ...
+    The client secret is encrypted with the same key as the collector secrets."""
+
+    __tablename__ = "sso_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    display_name: Mapped[str] = mapped_column(String(64), default="SSO")
+    issuer_url: Mapped[str | None] = mapped_column(String(512))
+    client_id: Mapped[str | None] = mapped_column(String(256))
+    client_secret_encrypted: Mapped[str | None] = mapped_column(Text)
+    scopes: Mapped[str] = mapped_column(String(256), default="openid profile email")
+    redirect_uri: Mapped[str | None] = mapped_column(String(512))
+    role_claim: Mapped[str] = mapped_column(String(64), default="groups")
+    role_mapping: Mapped[dict] = mapped_column(JSONType, default=dict)  # claim value -> role
+    default_role: Mapped[str | None] = mapped_column(String(16))  # None: users matching no mapping are refused
+    auto_create: Mapped[bool] = mapped_column(Boolean, default=True)
+    allowed_domains: Mapped[str | None] = mapped_column(String(512))  # comma-separated email domains
 
 
 class AuditLog(Base):
@@ -504,6 +536,7 @@ class AuditLog(Base):
     action: Mapped[str] = mapped_column(String(32))  # HTTP method or an event such as change.approve
     target: Mapped[str] = mapped_column(String(512))
     detail: Mapped[str | None] = mapped_column(Text)
+    ip: Mapped[str | None] = mapped_column(String(64))
 
 
 class ChangeRequest(TimestampMixin, Base):

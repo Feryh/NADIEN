@@ -1,5 +1,6 @@
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthGate, Role, ROLE_LABELS, useAuth } from './auth'
+import Access from './pages/Access'
 import AiAssistant from './pages/AiAssistant'
 import Capacity from './pages/Capacity'
 import Changes from './pages/Changes'
@@ -11,12 +12,14 @@ import DigitalTwin from './pages/DigitalTwin'
 import Inventory from './pages/Inventory'
 import MopGenerator from './pages/MopGenerator'
 import Paths from './pages/Paths'
+import Portal from './pages/Portal'
 import Ports from './pages/Ports'
 import ServiceValidation from './pages/ServiceValidation'
 import Topology from './pages/Topology'
-import Users from './pages/Users'
 
-const NAV: { to: string; label: string; tag: string; role?: Role }[] = [
+type NavItem = { to: string; label: string; tag: string; role?: Role }
+
+const NAV: NavItem[] = [
   { to: '/', label: 'Dashboard', tag: 'P8' },
   { to: '/inventory', label: 'Inventory', tag: 'P1' },
   { to: '/ports', label: 'Kapasitas Port', tag: 'P1' },
@@ -31,7 +34,11 @@ const NAV: { to: string; label: string; tag: string; role?: Role }[] = [
   { to: '/twin', label: 'Digital Twin', tag: 'P10' },
   { to: '/collectors', label: 'Collectors', tag: 'P1' },
   { to: '/settings', label: 'Pengaturan Collector', tag: 'P1', role: 'admin' },
-  { to: '/users', label: 'Pengguna & Audit', tag: 'Admin', role: 'admin' },
+  { to: '/access', label: 'Pengaturan Akses', tag: 'Akses' },
+]
+const CUSTOMER_NAV: NavItem[] = [
+  { to: '/', label: 'Layanan Saya', tag: 'Portal' },
+  { to: '/access', label: 'Akun Saya', tag: 'Akses' },
 ]
 
 export default function App() {
@@ -44,6 +51,8 @@ export default function App() {
 
 function Shell() {
   const { user, authEnabled, can, logout } = useAuth()
+  const customer = user.role === 'customer'
+  const nav = customer ? CUSTOMER_NAV : NAV.filter((n) => !n.role || can(n.role))
   return (
     <div className="app">
       <aside className="sidebar">
@@ -55,7 +64,7 @@ function Shell() {
           </div>
         </div>
         <nav>
-          {NAV.filter((n) => !n.role || can(n.role)).map((n) => (
+          {nav.map((n) => (
             <NavLink key={n.to} to={n.to} end={n.to === '/'}>
               <span>{n.label}</span>
               <span className="phase">{n.tag}</span>
@@ -63,36 +72,44 @@ function Shell() {
           ))}
         </nav>
         <div className="user-box">
-          <div>
+          <div className="user-avatar">{(user.full_name || user.username).slice(0, 1).toUpperCase()}</div>
+          <div className="user-meta">
             <b>{user.full_name || user.username}</b>
             <div className="muted">{user.username} · {ROLE_LABELS[user.role]}</div>
           </div>
-          {authEnabled && <button onClick={logout}>Logout</button>}
+          {authEnabled && <button onClick={logout} title="Keluar">Keluar</button>}
         </div>
-        <a className="api-link" href="/docs" target="_blank" rel="noreferrer">
-          API docs ↗
-        </a>
+        {!customer && <a className="api-link" href="/docs" target="_blank" rel="noreferrer">API docs ↗</a>}
       </aside>
       <main className="content">
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/inventory" element={<Inventory />} />
-          <Route path="/inventory/:entityKey" element={<Inventory />} />
-          <Route path="/topology" element={<Topology />} />
-          <Route path="/ports" element={<Ports />} />
-          <Route path="/paths" element={<Paths />} />
-          <Route path="/validation" element={<ServiceValidation />} />
-          <Route path="/mop" element={<MopGenerator />} />
-          <Route path="/configs" element={<ConfigGenerator />} />
-          <Route path="/changes" element={<Changes />} />
-          <Route path="/ai" element={<AiAssistant />} />
-          <Route path="/twin" element={<DigitalTwin />} />
-          <Route path="/capacity" element={<Capacity />} />
-          <Route path="/collectors" element={<Collectors />} />
-          <Route path="/settings" element={<CollectorSettings />} />
-          <Route path="/users" element={<Users />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        {customer ? (
+          <Routes>
+            <Route path="/" element={<Portal />} />
+            <Route path="/access" element={<Access />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        ) : (
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/inventory" element={<Inventory />} />
+            <Route path="/inventory/:entityKey" element={<Inventory />} />
+            <Route path="/topology" element={<Topology />} />
+            <Route path="/ports" element={<Ports />} />
+            <Route path="/paths" element={<Paths />} />
+            <Route path="/validation" element={<ServiceValidation />} />
+            <Route path="/mop" element={<MopGenerator />} />
+            <Route path="/configs" element={<ConfigGenerator />} />
+            <Route path="/changes" element={<Changes />} />
+            <Route path="/ai" element={<AiAssistant />} />
+            <Route path="/twin" element={<DigitalTwin />} />
+            <Route path="/capacity" element={<Capacity />} />
+            <Route path="/collectors" element={<Collectors />} />
+            <Route path="/settings" element={<CollectorSettings />} />
+            <Route path="/access" element={<Access />} />
+            <Route path="/users" element={<Navigate to="/access?tab=users" replace />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        )}
       </main>
     </div>
   )
