@@ -42,6 +42,10 @@ class ReserveRequest(PathRequest):
     service_type: Literal["internet", "iplc", "l2vpn", "l3vpn"]
     vlan_id: int | None = Field(default=None, ge=1, le=4094)
     vrf_name: str | None = None
+    route_distinguisher: str | None = Field(default=None, max_length=64)
+    route_target: str | None = Field(default=None, max_length=64)
+    a_interface: str | None = Field(default=None, max_length=64)
+    b_interface: str | None = Field(default=None, max_length=64)
     notes: str | None = None
     allow_unprotected: bool = False
 
@@ -102,6 +106,8 @@ def reserve_path(req: ReserveRequest, db: Session = Depends(get_db)):
         customer_id=req.customer_id, circuit_id=req.circuit_id, service_type=req.service_type,
         bandwidth_mbps=req.bandwidth_mbps, a_pop_id=a_dev.pop_id, a_device_id=a_dev.id,
         b_pop_id=b_dev.pop_id, b_device_id=b_dev.id, vlan_id=req.vlan_id, vrf_name=req.vrf_name,
+        route_distinguisher=req.route_distinguisher, route_target=req.route_target,
+        a_interface=req.a_interface, b_interface=req.b_interface,
         protection=req.protection, status="reserved", notes=req.notes,
     )
     db.add(service)

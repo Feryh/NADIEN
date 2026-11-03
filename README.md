@@ -9,7 +9,22 @@
 | 1 | Inventory database (Node, Link, Device, Customer) | ✅ MVP |
 | 2 | Topology builder (LLDP + config backup, drag & drop, warna kapasitas) | ✅ MVP |
 | 3 | Capacity planning engine (forecast & prediksi exhaustion) | ✅ MVP |
-| 4–10 | Customer path, validation, MoP, config gen, dashboard lanjutan, AI, digital twin | ⏳ Belum |
+| 4 | Customer path engineering (jalur primary/backup, reservasi bandwidth) | ✅ MVP |
+| 5 | Service validation (kapasitas & redundansi, MTU & port, VLAN/VRF/RD/RT, kesiapan perangkat) | ✅ MVP |
+| 6–10 | MoP (PDF), config generator (VRP, ZTE, IOS-XR, FiberHome), dashboard lanjutan, AI, digital twin | ⏳ Belum |
+
+### Service validation (Phase 5)
+
+Menu **Service Validation** memeriksa setiap layanan yang belum terminated. Desain baru bisa dicek sebelum reserve
+lewat tombol **Validasi desain** di Customer Path. Empat kelompok cek, masing-masing berstatus lulus, peringatan,
+gagal, atau info:
+
+| Kelompok | Yang dicek |
+|---|---|
+| Kapasitas & redundansi | Utilisasi tiap link primary setelah layanan (warning ≥ 70%, critical ≥ 90%), link down, backup tanpa link/fiber (SRLG)/transit yang sama, single-homing |
+| MTU & port | Port akses ada, admin up, bukan uplink; MTU jalur ≥ kebutuhan layanan (L2VPN/IPLC 1600, L3VPN/Internet 1530), anjuran jumbo 9000 |
+| VLAN / VRF / RD / RT | VLAN wajib untuk L2VPN/IPLC dan tidak bentrok di port yang sama; L3VPN wajib VRF/RD/RT, format ASN:NN, RD tidak dipakai VRF lain |
+| Kesiapan perangkat | Status aktif, loopback, IS-IS NET, SRv6 locator (info), versi software rekomendasi |
 
 ## Menjalankan
 

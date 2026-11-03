@@ -2,6 +2,7 @@ import { FormEvent, useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { fmtG } from '../components/ui'
+import ValidationReport, { ValidationResult } from '../components/ValidationReport'
 
 // Phase 4 — Customer Path Engineering: Site A -> Site B, bandwidth, protection.
 
@@ -20,6 +21,8 @@ interface Hop {
   latency_estimated: boolean
 }
 interface PathInfo {
+  device_ids: number[]
+  link_ids: number[]
   devices: string[]
   pops: string[]
   hops: number
@@ -147,7 +150,11 @@ export default function Paths() {
   const [form, setForm] = useState({ a: '', b: '', bandwidth: '1000', protection: '1+1', metric: 'latency', maxUtil: '80' })
   const [result, setResult] = useState<PathResult | null>(null)
   const [lastRequest, setLastRequest] = useState<Record<string, unknown> | null>(null)
-  const [reserve, setReserve] = useState({ customer_id: '', circuit_id: '', service_type: 'l2vpn', vlan_id: '' })
+  const [reserve, setReserve] = useState({
+    customer_id: '', circuit_id: '', service_type: 'l2vpn', vlan_id: '',
+    a_interface: '', b_interface: '', vrf_name: '', route_distinguisher: '', route_target: '',
+  })
+  const [validation, setValidation] = useState<ValidationResult | null>(null)
   const [services, setServices] = useState<Engineered[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -171,6 +178,7 @@ export default function Paths() {
     setError(null)
     setNotice(null)
     setResult(null)
+    setValidation(null)
     try {
       const request = {
         a: await resolveSite(form.a, pops),
@@ -189,18 +197,50 @@ export default function Paths() {
     }
   }
 
+  // Service fields shared by the validation check and the reservation.
+  const serviceFields = () => ({
+    service_type: reserve.service_type,
+    vlan_id: reserve.vlan_id ? Number(reserve.vlan_id) : null,
+    a_interface: reserve.a_interface.trim() || null,
+    b_interface: reserve.b_interface.trim() || null,
+    vrf_name: reserve.vrf_name.trim() || null,
+    route_distinguisher: reserve.route_distinguisher.trim() || null,
+    route_target: reserve.route_target.trim() || null,
+  })
+
+  async function validateDesign() {
+    if (!result?.primary || !lastRequest) return
+    setBusy(true)
+    setError(null)
+    try {
+      setValidation(await api.post<ValidationResult>('/validation/check', {
+        ...serviceFields(),
+        bandwidth_mbps: lastRequest.bandwidth_mbps,
+        protection: lastRequest.protection,
+        a_device_id: result.primary.device_ids[0],
+        b_device_id: result.primary.device_ids[result.primary.device_ids.length - 1],
+        primary_link_ids: result.primary.link_ids,
+        backup_link_ids: result.backup?.link_ids ?? [],
+      }))
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function doReserve(e: FormEvent) {
     e.preventDefault()
     if (!lastRequest) return
+    if (validation?.status === 'fail' && !confirm('Desain belum lolos validasi. Tetap reserve?')) return
     setBusy(true)
     setError(null)
     try {
       const r = await api.post<PathResult>('/paths/reserve', {
         ...lastRequest,
+        ...serviceFields(),
         customer_id: Number(reserve.customer_id),
         circuit_id: reserve.circuit_id.trim(),
-        service_type: reserve.service_type,
-        vlan_id: reserve.vlan_id ? Number(reserve.vlan_id) : null,
       })
       setNotice(`Service ${reserve.circuit_id} dibuat (status reserved, id ${r.service_id}); bandwidth ditambahkan ke reserved di setiap link.`)
       setResult(r)
@@ -338,8 +378,34 @@ export default function Paths() {
                   <span>VLAN</span>
                   <input type="number" min={1} max={4094} value={reserve.vlan_id} onChange={(e) => setReserve({ ...reserve, vlan_id: e.target.value })} />
                 </label>
+                <label>
+                  <span>Port A ({result.primary.devices[0]})</span>
+                  <input value={reserve.a_interface} placeholder="GigabitEthernet0/3/1" onChange={(e) => setReserve({ ...reserve, a_interface: e.target.value })} />
+                </label>
+                <label>
+                  <span>Port B ({result.primary.devices[result.primary.devices.length - 1]})</span>
+                  <input value={reserve.b_interface} onChange={(e) => setReserve({ ...reserve, b_interface: e.target.value })} />
+                </label>
+                {reserve.service_type === 'l3vpn' && (
+                  <>
+                    <label>
+                      <span>VRF</span>
+                      <input value={reserve.vrf_name} onChange={(e) => setReserve({ ...reserve, vrf_name: e.target.value })} />
+                    </label>
+                    <label>
+                      <span>RD</span>
+                      <input value={reserve.route_distinguisher} placeholder="65000:101" onChange={(e) => setReserve({ ...reserve, route_distinguisher: e.target.value })} />
+                    </label>
+                    <label>
+                      <span>RT</span>
+                      <input value={reserve.route_target} placeholder="65000:101" onChange={(e) => setReserve({ ...reserve, route_target: e.target.value })} />
+                    </label>
+                  </>
+                )}
+                <button type="button" onClick={validateDesign} disabled={busy}>Validasi desain</button>
                 <button className="primary" type="submit" disabled={busy}>Reserve</button>
               </form>
+              {validation && <ValidationReport report={validation} />}
               {!customers.length && (
                 <p className="hint">Belum ada customer — tambahkan di <Link to="/inventory/customers">Inventory → Customer</Link>.</p>
               )}

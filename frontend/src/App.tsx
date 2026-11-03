@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard'
 import Inventory from './pages/Inventory'
 import Paths from './pages/Paths'
 import Ports from './pages/Ports'
+import ServiceValidation from './pages/ServiceValidation'
 import Topology from './pages/Topology'
 
 const NAV = [
@@ -15,13 +16,13 @@ const NAV = [
   { to: '/topology', label: 'Topology', phase: 2 },
   { to: '/capacity', label: 'Capacity Planning', phase: 3 },
   { to: '/paths', label: 'Customer Path', phase: 4 },
+  { to: '/validation', label: 'Service Validation', phase: 5 },
   { to: '/collectors', label: 'Collectors', phase: 1 },
   { to: '/settings', label: 'Pengaturan Collector', phase: 1 },
 ]
 
 // Shown in the sidebar so the roadmap stays visible; enabled as each sprint lands.
 const ROADMAP = [
-  { label: 'Service Validation', phase: 5 },
   { label: 'MoP Generator', phase: 6 },
   { label: 'Config Generator', phase: 7 },
   { label: 'AI Assistant', phase: 9 },
@@ -66,6 +67,7 @@ export default function App() {
           <Route path="/topology" element={<Topology />} />
           <Route path="/ports" element={<Ports />} />
           <Route path="/paths" element={<Paths />} />
+          <Route path="/validation" element={<ServiceValidation />} />
           <Route path="/capacity" element={<Capacity />} />
           <Route path="/collectors" element={<Collectors />} />
           <Route path="/settings" element={<CollectorSettings />} />
