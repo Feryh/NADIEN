@@ -11,6 +11,7 @@ import {
   YAxis,
 } from 'recharts'
 import { api, CapacityColor, CapacityResult, LinkCapacity, LinkCapacityDetail } from '../api'
+import { HotspotsPanel, NodeForecastPanel } from '../components/CapacityPanels'
 import { CAPACITY_HEX, ColorBadge, fmtG, fmtMonths, UtilBar } from '../components/ui'
 
 const GROWTH_SOURCE_LABEL = { manual: 'manual', trend: 'tren', input: 'input', none: '—' }
@@ -37,12 +38,40 @@ function TrendCells({ link }: { link: LinkCapacity }) {
   )
 }
 
+type Tab = 'links' | 'hotspots' | 'nodes'
+const TABS: [Tab, string][] = [['links', 'Link & forecast'], ['hotspots', 'Hotspot'], ['nodes', 'Forecast per node']]
+
 export default function Capacity() {
   const [params, setParams] = useSearchParams()
+  const tab = (params.get('tab') as Tab) || 'links'
+  const selectedId = params.get('link') ? Number(params.get('link')) : null
+  const setTab = (t: Tab) => setParams(t === 'links' ? {} : { tab: t })
+  const openLink = (id: number) => setParams({ ...(tab !== 'links' ? { tab } : {}), link: String(id) })
+
+  return (
+    <div className="capacity">
+      <Calculator />
+
+      {selectedId != null && <LinkDetail linkId={selectedId} onClose={() => setParams(tab !== 'links' ? { tab } : {})} />}
+
+      <div className="card">
+        <div className="tabs">
+          {TABS.map(([t, label]) => (
+            <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>{label}</button>
+          ))}
+        </div>
+        {tab === 'links' && <LinkTable selectedId={selectedId} onOpen={openLink} />}
+        {tab === 'hotspots' && <HotspotsPanel onOpenLink={openLink} />}
+        {tab === 'nodes' && <NodeForecastPanel />}
+      </div>
+    </div>
+  )
+}
+
+function LinkTable({ selectedId, onOpen }: { selectedId: number | null; onOpen: (id: number) => void }) {
   const [links, setLinks] = useState<LinkCapacity[]>([])
   const [filter, setFilter] = useState<CapacityColor | ''>('')
   const [error, setError] = useState<string | null>(null)
-  const selectedId = params.get('link') ? Number(params.get('link')) : null
 
   useEffect(() => {
     api
@@ -51,15 +80,11 @@ export default function Capacity() {
       .catch((e: Error) => setError(e.message))
   }, [])
 
-  const rows = useMemo(() => (filter ? links.filter((l) => l.color === filter) : links), [links, filter])
+  // Thousands of links: render the first 1000 of the current filter (sorted soonest-to-exhaust).
+  const rows = useMemo(() => (filter ? links.filter((l) => l.color === filter) : links).slice(0, 1000), [links, filter])
 
   return (
-    <div className="capacity">
-      <Calculator />
-
-      {selectedId != null && <LinkDetail linkId={selectedId} onClose={() => setParams({})} />}
-
-      <div className="card">
+    <>
         <div className="toolbar">
           <h2>Link Capacity & Forecast</h2>
           <div className="spacer" />
@@ -87,6 +112,9 @@ export default function Capacity() {
                 <th className="num" title="Growth per bulan dari tren 30 hari terakhir">Tren 30h</th>
                 <th className="num" title="Growth per bulan dari tren 90 hari terakhir">Tren 90h</th>
                 <th className="num">Growth/bln dipakai</th>
+                <th className="num" title="Titik awal forecast: nilai tren 90 hari hari ini + peak tipikal (P95), atau trafik kini bila histori < 14 hari">
+                  Basis forecast
+                </th>
                 <th className="num">Ke 80%</th>
                 <th className="num">Penuh</th>
                 <th>Tgl penuh</th>
@@ -97,7 +125,7 @@ export default function Capacity() {
                 <tr
                   key={l.link_id}
                   className={`clickable ${selectedId === l.link_id ? 'selected' : ''}`}
-                  onClick={() => setParams({ link: String(l.link_id) })}
+                  onClick={() => onOpen(l.link_id)}
                 >
                   <td>
                     <ColorBadge color={l.color}>{l.committed_pct.toFixed(0)}%</ColorBadge>
@@ -118,6 +146,10 @@ export default function Capacity() {
                     {l.growth_gbps_per_month != null ? `${l.growth_gbps_per_month.toFixed(1)}G` : '—'}
                     <div className="muted small">{GROWTH_SOURCE_LABEL[l.growth_source]}</div>
                   </td>
+                  <td className="num">
+                    {fmtG(l.forecast_basis_gbps)}
+                    <div className="muted small">{l.forecast_method === 'trend' ? `tren ${l.trend_days} hr` : 'trafik kini'}</div>
+                  </td>
                   <td className="num">{fmtMonths(l.months_to_threshold)}</td>
                   <td className="num">{fmtMonths(l.months_to_full)}</td>
                   <td>{l.exhaustion_date ?? '—'}</td>
@@ -126,8 +158,10 @@ export default function Capacity() {
             </tbody>
           </table>
         </div>
-      </div>
-    </div>
+        {links.length > rows.length && (
+          <div className="muted small">Ditampilkan {rows.length.toLocaleString()} dari {links.length.toLocaleString()} link (urut paling cepat habis).</div>
+        )}
+    </>
   )
 }
 

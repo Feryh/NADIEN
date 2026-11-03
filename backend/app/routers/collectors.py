@@ -6,6 +6,7 @@ from .. import models as m
 from ..backup import BackupError, backup_dir, create_backup, is_backupable, list_backups
 from ..collectors import jobs
 from ..collectors.configs import parse_config
+from ..collectors.configs.gitweb import GitwebClient, GitwebError
 from ..collectors.configs.oxidized import OxidizedClient, os_hint
 from ..collectors.configs.rancid import RancidError, open_from_settings
 from ..collectors.observium.client import ObserviumClient, ObserviumError
@@ -41,6 +42,19 @@ def status(db: Session = Depends(get_db)):
             "configured": bool(settings.rancid_path or (settings.rancid_ssh_host and settings.rancid_ssh_user)),
         },
         "oxidized": {"url": settings.oxidized_url, "configured": bool(settings.oxidized_url)},
+        "gitweb": {
+            "url": settings.gitweb_url,
+            "configured": bool(settings.gitweb_url),
+            "files": db.scalar(select(func.count()).select_from(m.GitwebFile)) or 0,
+            "devices_from_gitweb": db.scalar(select(func.count(func.distinct(m.GitwebFile.device_id)))
+                                             .where(m.GitwebFile.created_device.is_(True))) or 0,
+            "last_synced_at": db.scalar(select(func.max(m.GitwebFile.synced_at))),
+            "schedule": {
+                "enabled": settings.scheduler_enabled and bool(settings.gitweb_daily_at),
+                "daily_at": settings.gitweb_daily_at,
+                "timezone": settings.schedule_timezone,
+            },
+        },
         "rrd": {
             "mode": settings.observium_rrd_source,
             "path": settings.observium_rrd_path,
@@ -139,6 +153,19 @@ def rancid_sync(discover: bool = True):
     except RancidError as exc:
         raise HTTPException(400 if "not configured" in str(exc) else 502, str(exc)) from exc
     return _start("rancid", lambda db, progress: jobs.run_rancid(db, discover, opened, progress))
+
+
+@router.post("/configs/gitweb/sync", status_code=202)
+def gitweb_sync(full: bool = Query(False, description="Re-read every file, not only those changed since the last run"),
+                discover: bool = True):
+    """Start a background job: configs of every RANCID repo in gitweb. Only files whose blob changed
+    since the last run are downloaded; devices missing from the inventory (CSR) are created."""
+    try:
+        client = GitwebClient()
+    except GitwebError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    kind = "gitweb-full" if full else "gitweb"
+    return _start(kind, lambda db, progress: jobs.run_gitweb(db, full, discover, client, progress))
 
 
 @router.post("/configs/oxidized/sync", status_code=202)

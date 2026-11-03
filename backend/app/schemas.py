@@ -82,7 +82,7 @@ class DeviceCreate(BaseModel):
     vendor_id: int | None = None
     model_id: int | None = None
     software_id: int | None = None
-    role: Literal["p", "pe", "agg", "access", "dci", "olt", "bng"] = "pe"
+    role: Literal["p", "pe", "agg", "csr", "access", "dci", "olt", "bng"] = "pe"
     mgmt_ip: str | None = None
     loopback_ipv4: str | None = None
     isis_net: str | None = None
@@ -355,6 +355,12 @@ class CapacityResult(BaseModel):
     threshold_date: str | None
     exhaustion_date: str | None
     color: Literal["green", "yellow", "red"]
+    # Level the forecast starts from: the trend line's value today plus the typical peak above it
+    # (95th percentile of residuals), or the current peak when there is too little history.
+    forecast_basis_gbps: float | None = None
+    forecast_method: Literal["trend", "current"] = "current"
+    trend_r2: float | None = None  # fit quality of the trend (0–1)
+    trend_days: int = 0  # days of history the trend was fitted on
 
 
 class LinkCapacity(CapacityResult):

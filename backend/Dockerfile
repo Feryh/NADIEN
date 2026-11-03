@@ -18,4 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 
 EXPOSE 8000
-CMD ["sh", "-c", "python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+# NADIEN_SEED_DEMO=true fills an empty database with demo data (development only).
+# WEB_CONCURRENCY = uvicorn worker processes; job state and the daily schedule live in the DB, so
+# workers and replicas never run the same sync twice.
+ENV WEB_CONCURRENCY=1 NADIEN_SEED_DEMO=false
+CMD ["sh", "-c", "if [ \"$NADIEN_SEED_DEMO\" = true ]; then python -m app.seed; fi; exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY} --proxy-headers --forwarded-allow-ips='*'"]

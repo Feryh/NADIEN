@@ -12,12 +12,18 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from pydantic import BaseModel, Field
+
 from .. import models as m
 from ..collectors import runner as jobs_runner
 from ..database import get_db
+from ..services import cache
 from ..services.areas import (
     AREA_ORDER,
+    AREAS,
     CATEGORY_LABELS,
+    CATEGORY_ORDER,
+    CATEGORY_PATTERN,
     ROLE_TIER,
     UNMAPPED_AREA,
     area_for_hostnames,
@@ -31,7 +37,7 @@ from ..services.areas import (
     site_for,
     speed_bucket,
 )
-from ..services.capacity import capacity_color
+from ..services.capacity import capacity_color, occupancy_pct
 
 router = APIRouter(tags=["Analysis"])
 
@@ -213,6 +219,12 @@ def topology_view(
     """area: areas + inter-area trunks · pop (needs `area`): POPs of one area + neighbouring areas ·
     device (needs `pop`): devices of one POP + links out to other POPs ·
     neighbors (needs `device_id`): one device and everything within `depth` hops."""
+    key = ("topology", level, area, (pop or "").upper(), device_id, depth)
+    return cache.cached(key, lambda: _topology_view(db, level, area, pop, device_id, depth))
+
+
+def _topology_view(db: Session, level: str, area: str | None, pop: str | None, device_id: int | None,
+                   depth: int) -> dict:
     ctx = _context(db)
     links = _links(db)
     if level == "area":
@@ -331,7 +343,8 @@ def _pop_level(ctx: _Ctx, links, area: str) -> dict:
         p = ctx.pops[pid]
         devs = devices_per_pop[pid]
         nodes.append({
-            "id": f"pop:{p.code}", "kind": "pop", "label": p.code, "name": p.name, "area": area,
+            "id": f"pop:{p.code}", "kind": "pop", "label": p.code, "name": p.name, "area": area, "pop_id": pid,
+            "region": p.region,
             "devices": len(devs), "sites": len({site_for(d.hostname, p.code) for d in devs}),
             "categories": dict(Counter(category_for(d.role) for d in devs)),
             # Highest role in the POP: core POPs (P/DCI) sit in the middle of the ring layout.
@@ -371,8 +384,86 @@ def _device_level(ctx: _Ctx, links, pop_code: str) -> dict:
             "area": ctx.area_of_pop.get(rp.id, UNMAPPED_AREA) if rp else UNMAPPED_AREA,
             "devices": len(remote_devices),
         })
-    return {"level": "device", "pop": pop.code, "pop_name": pop.name,
+    return {"level": "device", "pop": pop.code, "pop_name": pop.name, "pop_id": pop.id, "region": pop.region,
             "area": ctx.area_of_pop.get(pop.id, UNMAPPED_AREA), "nodes": nodes, "edges": _edges(edges)}
+
+
+# --------------------------------------------------------------------------- search & POP area
+
+
+@router.get("/topology/search")
+def topology_search(q: str = Query(..., min_length=2), limit: int = Query(15, ge=1, le=50),
+                    db: Session = Depends(get_db)):
+    """Hostname or POP code/name, for the topology search box: exact matches first, then prefix, then
+    substring. Each hit says where to open it (device -> its neighbours, POP -> its devices)."""
+    needle = q.strip().upper()
+    ctx = _context(db)
+
+    def rank(text: str) -> int:
+        return 0 if text == needle else 1 if text.startswith(needle) else 2
+
+    pops = [p for p in ctx.pops.values() if needle in p.code.upper() or needle in (p.name or "").upper()]
+    pops.sort(key=lambda p: (rank(p.code.upper()), p.code))
+    devices = [d for d in ctx.devices.values() if needle in d.hostname.upper()]
+    devices.sort(key=lambda d: (rank(d.hostname.upper()), len(d.hostname), d.hostname))
+    return {
+        "pops": [{"pop_id": p.id, "code": p.code, "name": p.name, "area": ctx.area_of_pop[p.id],
+                  "devices": sum(1 for d in ctx.devices.values() if d.pop_id == p.id)} for p in pops[:limit]],
+        "devices": [{"device_id": d.id, "hostname": d.hostname, "pop": ctx.pop_code(d.id), "role": d.role,
+                     "category": category_for(d.role), "area": ctx.area_of_device(d.id)} for d in devices[:limit]],
+    }
+
+
+@router.get("/areas/options")
+def area_options(db: Session = Depends(get_db)):
+    """Area names a POP can be assigned to: the standard areas plus any custom region already in use."""
+    used = {(p.region or "").strip() for p in db.scalars(select(m.Pop))} - {"", UNMAPPED_AREA}
+    return {"areas": list(AREAS) + sorted(used - set(AREAS))}
+
+
+class PopAreaIn(BaseModel):
+    area: str | None = Field(default=None, max_length=64, description="Empty clears it (back to automatic)")
+
+
+@router.put("/pops/{pop_id}/area")
+def set_pop_area(pop_id: int, payload: PopAreaIn, db: Session = Depends(get_db)):
+    """Assign a POP to an area by hand. A curated area always wins over the automatic mapping."""
+    pop = db.get(m.Pop, pop_id)
+    if pop is None:
+        raise HTTPException(404, f"POP {pop_id} not found")
+    area = (payload.area or "").strip()
+    pop.region = None if not area or area == UNMAPPED_AREA else area
+    db.commit()
+    return {"pop_id": pop.id, "code": pop.code, "region": pop.region,
+            "area": area_for_pop(pop.code, pop.region, pop.name)}
+
+
+# --------------------------------------------------------------------------- device summary
+
+
+@router.get("/inventory/devices/summary")
+def device_summary(db: Session = Depends(get_db)):
+    """Device counts per category, with the role, vendor, status and area split of each category."""
+    return cache.cached(("inventory", "devices-summary"), lambda: _device_summary(db))
+
+
+def _device_summary(db: Session) -> dict:
+    ctx = _context(db)
+    per: dict[str, dict[str, Counter]] = defaultdict(lambda: defaultdict(Counter))
+    totals: Counter = Counter()
+    for d in ctx.devices.values():
+        cat = category_for(d.role)
+        totals[cat] += 1
+        per[cat]["roles"][d.role] += 1
+        per[cat]["vendors"][ctx.vendors.get(d.vendor_id or -1) or "Unknown"] += 1
+        per[cat]["status"][d.status] += 1
+        per[cat]["areas"][ctx.area_of_device(d.id)] += 1
+    categories = [
+        {"category": c, "label": CATEGORY_LABELS[c], "devices": totals[c],
+         **{k: dict(v.most_common()) for k, v in per[c].items()}}
+        for c in CATEGORY_ORDER if totals[c]
+    ]
+    return {"total": sum(totals.values()), "categories": categories}
 
 
 # --------------------------------------------------------------------------- port capacity
@@ -402,7 +493,7 @@ class _Usage:
     def summary(self) -> dict[str, Any]:
         return {
             "total": self.total, "used": self.used, "idle": self.idle, "disabled": self.disabled,
-            "used_pct": round(self.used / self.total * 100, 1) if self.total else 0.0,
+            "used_pct": occupancy_pct(self.used, self.total),
         }
 
     def speeds(self) -> list[dict[str, Any]]:
@@ -442,13 +533,18 @@ def _device_matches(ctx: _Ctx, device_id: int, category, area, pop, vendor) -> b
 
 @router.get("/inventory/ports/summary")
 def port_summary(
-    category: str | None = Query(None, pattern="^(router|metro|olt|access|other)$"),
+    category: str | None = Query(None, pattern=CATEGORY_PATTERN),
     area: str | None = None,
     pop: str | None = None,
     vendor: str | None = None,
     db: Session = Depends(get_db),
 ):
     """Physical ports by speed: used (oper up) / idle (admin up, oper down) / disabled (admin down)."""
+    key = ("ports", "summary", category, area, (pop or "").upper(), (vendor or "").lower())
+    return cache.cached(key, lambda: _port_summary(db, category, area, pop, vendor))
+
+
+def _port_summary(db: Session, category, area, pop, vendor) -> dict:
     ctx = _context(db)
     overall = _Usage()
     per_category: dict[str, _Usage] = defaultdict(_Usage)
@@ -461,7 +557,7 @@ def port_summary(
         overall.add(bucket, state, n)
         per_category[cat].add(bucket, state, n)
         devices_per_category[cat].add(device_id)
-    order = ["router", "metro", "olt", "access", "other"]
+    order = CATEGORY_ORDER
     return {
         "filters": {"category": category, "area": area, "pop": pop, "vendor": vendor},
         "totals": overall.summary(),
@@ -478,7 +574,7 @@ def port_summary(
 
 @router.get("/inventory/ports/devices")
 def port_devices(
-    category: str | None = Query(None, pattern="^(router|metro|olt|access|other)$"),
+    category: str | None = Query(None, pattern=CATEGORY_PATTERN),
     area: str | None = None,
     pop: str | None = None,
     vendor: str | None = None,
@@ -489,6 +585,23 @@ def port_devices(
     db: Session = Depends(get_db),
 ):
     """Per-device port usage (optionally for one speed bucket), most idle ports first by default."""
+    rows = device_port_usage(db, category, area, pop, vendor, speed)
+    needle = (q or "").lower()
+    if needle:
+        rows = [r for r in rows if needle in r["hostname"].lower()]
+    reverse = sort != "hostname"
+    rows = sorted(rows, key=lambda r: r[sort] if sort != "hostname" else r["hostname"], reverse=reverse)
+    return {"total_devices": len(rows), "devices": rows[:limit]}
+
+
+def device_port_usage(db: Session, category: str | None = None, area: str | None = None, pop: str | None = None,
+                      vendor: str | None = None, speed: str | None = None) -> list[dict[str, Any]]:
+    """Port usage per device (physical ports; used = oper up). Cached: shared by the ports page and hotspots."""
+    key = ("ports", "devices", category, area, (pop or "").upper(), (vendor or "").lower(), speed)
+    return cache.cached(key, lambda: _device_port_usage(db, category, area, pop, vendor, speed))
+
+
+def _device_port_usage(db: Session, category, area, pop, vendor, speed) -> list[dict[str, Any]]:
     ctx = _context(db)
     usage: dict[int, _Usage] = defaultdict(_Usage)
     for device_id, spd, admin, oper, n in _port_rows(db):
@@ -499,11 +612,8 @@ def port_devices(
             continue
         usage[device_id].add(bucket, _port_state(admin, oper), n)
     rows = []
-    needle = (q or "").lower()
     for device_id, u in usage.items():
         d = ctx.devices[device_id]
-        if needle and needle not in d.hostname.lower():
-            continue
         rows.append({
             "device_id": device_id, "hostname": d.hostname, "pop": ctx.pop_code(device_id),
             "area": ctx.area_of_device(device_id), "site": site_for(d.hostname, ctx.pop_code(device_id)),
@@ -511,6 +621,4 @@ def port_devices(
             **u.summary(),
             "speeds": {r["speed"]: {"used": r["used"], "idle": r["idle"], "disabled": r["disabled"]} for r in u.speeds()},
         })
-    reverse = sort != "hostname"
-    rows.sort(key=lambda r: r[sort] if sort != "hostname" else r["hostname"], reverse=reverse)
-    return {"total_devices": len(rows), "devices": rows[:limit]}
+    return rows

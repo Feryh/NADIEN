@@ -99,7 +99,7 @@ class Device(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     hostname: Mapped[str] = mapped_column(String(128), unique=True)
-    pop_id: Mapped[int] = mapped_column(ForeignKey("pops.id"))
+    pop_id: Mapped[int] = mapped_column(ForeignKey("pops.id"), index=True)
     vendor_id: Mapped[int | None] = mapped_column(ForeignKey("vendors.id"))
     model_id: Mapped[int | None] = mapped_column(ForeignKey("device_models.id"))
     software_id: Mapped[int | None] = mapped_column(ForeignKey("software_versions.id"))
@@ -252,6 +252,7 @@ class Link(TimestampMixin, Base):
     """Logical IP/Metro-E link between two router interfaces (a physical port or a bundle)."""
 
     __tablename__ = "links"
+    __table_args__ = (Index("ix_links_a_device", "a_device_id"), Index("ix_links_b_device", "b_device_id"))
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
@@ -285,9 +286,67 @@ class ObserviumPort(Base):
     observium_hostname: Mapped[str] = mapped_column(String(255))
 
 
+class GitwebFile(Base):
+    """One RANCID config file seen in gitweb: its last blob hash, so daily runs fetch only changes."""
+
+    __tablename__ = "gitweb_files"
+    __table_args__ = (UniqueConstraint("repo", "path"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    repo: Mapped[str] = mapped_column(String(128))
+    path: Mapped[str] = mapped_column(String(255))
+    blob_sha: Mapped[str] = mapped_column(String(40))
+    device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id", ondelete="SET NULL"))
+    # True when the device exists only because of this file (not in Observium): its ports get
+    # speed from the name and are treated as in service when described and not shut down.
+    created_device: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(16))  # applied | unmatched | unsupported | skipped | error
+    detail: Mapped[str | None] = mapped_column(String(255))
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CollectorJob(Base):
+    """Background sync jobs, shared by every API process/replica: one running job at a time."""
+
+    __tablename__ = "collector_jobs"
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(16), index=True)  # running | ok | failed
+    phase: Mapped[str] = mapped_column(String(64))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    report: Mapped[dict | None] = mapped_column(JSONType)
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class AppState(Base):
+    """Small shared counters, e.g. the read-model cache version every API process watches."""
+
+    __tablename__ = "app_state"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ScheduledRun(Base):
+    """Claims one scheduled run per job per day, so several API processes never start it twice."""
+
+    __tablename__ = "scheduled_runs"
+    __table_args__ = (UniqueConstraint("job", "run_date"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job: Mapped[str] = mapped_column(String(32))
+    run_date: Mapped[str] = mapped_column(String(10))  # YYYY-MM-DD in the schedule's time zone
+    job_id: Mapped[str | None] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class UtilizationSample(Base):
     __tablename__ = "utilization_samples"
-    __table_args__ = (Index("ix_util_link_ts", "link_id", "ts"),)
+    # ix_util_ts serves the "last N days for every link" scans of the capacity views.
+    __table_args__ = (Index("ix_util_link_ts", "link_id", "ts"), Index("ix_util_ts", "ts"))
 
     id: Mapped[int] = mapped_column(primary_key=True)
     link_id: Mapped[int] = mapped_column(ForeignKey("links.id", ondelete="CASCADE"))

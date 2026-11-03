@@ -1,9 +1,11 @@
 # Panduan Launch NADIEN
 
-Dua skenario:
+Skenario:
 
 1. [Local / development](#1-local--development): laptop atau PC untuk coding dan uji coba.
 2. [Server production](#2-server-production): satu server Linux yang dipakai tim engineering.
+3. [Harvester](#3-harvester-production): VM Harvester (compose) atau RKE2 guest cluster (Kubernetes).
+4. [Kapasitas ±50 user](#4-kapasitas-50-user-bersamaan): tuning yang sudah disiapkan dan hasil uji bebannya.
 
 Komponen yang selalu ada:
 
@@ -135,8 +137,8 @@ Database di-backup otomatis sebelum setiap sync (lihat README, bagian *Backup da
 >   **tidak** otomatis ditambahkan ke tabel lama. Sebelum upgrade versi, backup dulu dan cek perubahan `models.py`.
 > - `docker-compose.yml` bawaan memakai password database `nadien` dan membuka port 5432/8000 ke semua interface.
 >   Itu hanya cocok untuk development. Langkah 3 menutupnya.
-> - Command default backend menjalankan `app.seed`. Di database production yang masih kosong, ini akan mengisi
->   **data contoh**. Override di langkah 3 mematikannya.
+> - `docker-compose.yml` (development) mengisi **data contoh** ke database kosong (`NADIEN_SEED_DEMO=true`).
+>   `docker-compose.prod.yml` mematikannya.
 
 ### Spesifikasi server
 
@@ -190,43 +192,26 @@ NADIEN_OBSERVIUM_URL=http://<observium>
 NADIEN_OBSERVIUM_TOKEN=<token-read-only>
 NADIEN_OBSERVIUM_POP_REGEX=^([A-Za-z]{3,4})[-_.]
 NADIEN_BACKUP_KEEP=15
+# RANCID gitweb (semua repo; sumber satu-satunya untuk CSR) + jadwal harian
+NADIEN_GITWEB_URL=http://172.17.12.232/gitweb/
+NADIEN_GITWEB_DAILY_AT=02:30
 # Kalau UI diakses dari domain lain selain lewat nginx bawaan:
 # NADIEN_CORS_ORIGINS=["https://nadien.example.co.id"]
 ```
 
-`NADIEN_DATABASE_URL` **tidak** perlu diisi di sini, karena sudah diatur oleh file override di bawah.
+`NADIEN_DATABASE_URL` **tidak** perlu diisi di sini, karena sudah diatur oleh `docker-compose.prod.yml`.
 
-**c. Override compose.** Buat `docker-compose.prod.yml`. Isinya menutup port, mengganti password, mematikan seed,
-dan menambahkan restart otomatis:
+**c. Override compose.** File [`docker-compose.prod.yml`](../docker-compose.prod.yml) sudah ada di repo. Isinya:
 
-```yaml
-services:
-  db:
-    environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?isi POSTGRES_PASSWORD di .env}
-    ports: !reset []                     # DB tidak dibuka ke luar
-    restart: unless-stopped
+- menutup port DB dan API, sehingga keduanya hanya bisa diakses lewat nginx frontend;
+- mengambil password DB dari `.env`;
+- mematikan data contoh (`NADIEN_SEED_DEMO=false`);
+- menjalankan **4 worker** uvicorn dengan pool koneksi yang disesuaikan untuk ±50 user (lihat bagian 4);
+- menyetel PostgreSQL (`max_connections`, `shared_buffers`);
+- menambahkan restart otomatis.
 
-  backend:
-    environment:
-      NADIEN_DATABASE_URL: postgresql+psycopg://nadien:${POSTGRES_PASSWORD}@db:5432/nadien
-      NADIEN_BACKUP_DIR: /backups
-    # Tanpa app.seed. Satu worker saja: create_all saat startup bisa bentrok kalau dijalankan beberapa worker sekaligus.
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
-    ports: !reset []                     # API hanya lewat nginx frontend
-    volumes:
-      - ./backups:/backups
-      # Hanya kalau memakai RRD ssh / RANCID SFTP (key read-only + known_hosts):
-      # - /opt/nadien/ssh:/root/.ssh:ro
-    restart: unless-stopped
-
-  frontend:
-    ports: !reset ["127.0.0.1:8080:80"]  # di belakang reverse proxy HTTPS (langkah 5)
-    restart: unless-stopped
-```
-
-Kalau tidak memakai reverse proxy dan servernya hanya bisa diakses dari jaringan internal, port frontend boleh
-dibuat `"8080:80"` atau `"80:80"`.
+Frontend dibuka di `127.0.0.1:8080` untuk dipasang di belakang reverse proxy HTTPS (langkah 5). Kalau tidak memakai
+reverse proxy dan servernya hanya bisa diakses dari jaringan internal, ganti menjadi `"80:80"`.
 
 > `!reset` butuh Docker Compose v2.24 atau lebih baru. Cek dengan `docker compose version`.
 
@@ -316,6 +301,21 @@ Backup otomatis hanya dijalankan lewat jalur ini. Tambahkan dengan `crontab -e` 
 
 Jangan menjadwalkan Full sync dan RRD pada jam yang sama. Keduanya membebani Observium.
 
+**Update RANCID gitweb tidak perlu cron.** Backend menjalankannya sendiri setiap hari pada `NADIEN_GITWEB_DAILY_AT`
+(default 02:30, zona `NADIEN_SCHEDULE_TIMEZONE`). Perilakunya:
+
+- Hanya file yang berubah sejak sync terakhir yang diunduh.
+- Backup dibuat hanya kalau memang ada perubahan.
+- Jatah tiap hari diklaim satu kali di database, sehingga dengan 4 worker atau beberapa replica sync tetap jalan
+  sekali saja.
+- Kalau server mati pada jam itu, sync dijalankan begitu server hidup lagi.
+- Sync manual tetap bisa dari UI (**Collectors → RANCID gitweb**) atau dari CLI:
+
+```bash
+docker compose exec -T backend python -m app.collectors.run gitweb          # perubahan terbaru
+docker compose exec -T backend python -m app.collectors.run gitweb --full   # baca ulang semua file
+```
+
 ### Langkah 7: Backup & restore
 
 - Backup otomatis (`pg_dump`, 15 terakhir) dibuat sebelum setiap Full sync atau sync config. Hasilnya ada di
@@ -348,7 +348,105 @@ curl -s http://127.0.0.1:8080/api/health
 ```
 
 Kalau `models.py` menambah kolom atau tabel, tabel **baru** akan dibuat otomatis, tetapi kolom baru di tabel lama
-**tidak**. Tambahkan dengan `ALTER TABLE` manual sampai migrasi Alembic tersedia.
+**tidak**. Tambahkan dengan `ALTER TABLE` manual sampai migrasi Alembic tersedia. Index baru di tabel lama ditambahkan
+otomatis saat startup.
+
+---
+
+## 3. Harvester (production)
+
+Harvester (SUSE HCI) bisa menjalankan NADIEN dengan dua cara. Mulai dari Opsi A, lalu pindah ke Opsi B kalau butuh
+high availability.
+
+### Opsi A: VM Harvester + Docker Compose (disarankan untuk mulai)
+
+1. Upload image cloud Ubuntu 22.04/24.04 di **Images**, misalnya
+   `https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img`.
+2. Buat VM di **Virtual Machines → Create**:
+   - Spesifikasi: 8 vCPU, 16 GB RAM, disk 200 GB.
+   - Network: VLAN yang bisa mengakses Observium (172.17.42.136) dan gitweb (172.17.12.232).
+   - User data (Advanced Options): isi dengan [`deploy/harvester/cloud-init.yaml`](../deploy/harvester/cloud-init.yaml).
+     Isi `REPO_URL` di file itu, atau salin kode ke `/opt/nadien` setelah VM menyala.
+3. Login ke VM, lalu ikuti **bagian 2, langkah 3–8** (`.env`, `backend/.env`, `docker compose up -d`, reverse proxy,
+   cron). `docker-compose.prod.yml` sudah memakai 4 worker dan tuning PostgreSQL untuk ±50 user.
+4. Aktifkan backup VM di **Harvester → Backup & Snapshot** sebagai pelengkap backup `pg_dump` NADIEN. Simpan backup
+   di target backup S3/NFS di luar cluster.
+
+### Opsi B: Kubernetes (RKE2 guest cluster di Harvester)
+
+Manifest ada di [`deploy/k8s/`](../deploy/k8s/), dengan storage class `harvester`.
+
+| Komponen | Isi |
+|---|---|
+| `nadien-db` | StatefulSet PostGIS 16, PVC 100 Gi |
+| `nadien-api` | 2 replica × 2 worker, stateless, untuk user. Bisa ditambah. |
+| `nadien-worker` | 1 pod untuk sync collector, backup `pg_dump` (PVC sendiri) dan jadwal gitweb harian |
+| `nadien-frontend` | 2 replica nginx. `/api/collectors` dan `/api/backups` diarahkan ke worker, sisanya ke api |
+| CronJob | utilisasi tiap 10 menit, Full sync 01:00, RRD 7 hari 04:30. Memanggil API worker, sehingga terlihat di UI dan tidak bentrok |
+| Ingress | ingress-nginx bawaan RKE2, TLS, whitelist IP (NADIEN belum punya login) |
+
+Volume Harvester hanya bisa di-mount satu node (ReadWriteOnce). Karena itu backup dipegang satu pod worker, sedangkan
+replica API tidak butuh volume.
+
+```bash
+# 1. Build & push image ke registry internal
+docker build -t registry.example.co.id/neteng/nadien-backend:0.1.0 backend
+docker build -t registry.example.co.id/neteng/nadien-frontend:0.1.0 frontend
+docker push registry.example.co.id/neteng/nadien-backend:0.1.0
+docker push registry.example.co.id/neteng/nadien-frontend:0.1.0
+```
+
+```bash
+# 2. Secret (jangan di-commit)
+kubectl create namespace nadien
+kubectl -n nadien create secret generic nadien-db --from-literal=POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+kubectl -n nadien create secret generic nadien-env --from-env-file=backend/.env
+kubectl -n nadien create secret tls nadien-tls --cert=fullchain.pem --key=privkey.pem
+```
+
+```bash
+# 3. Sesuaikan host Ingress dan nama image di deploy/k8s/kustomization.yaml, lalu
+kubectl apply -k deploy/k8s
+kubectl -n nadien get pods
+kubectl -n nadien exec deploy/nadien-worker -- python -m app.collectors.run observium   # sync pertama
+```
+
+`backend/.env` untuk secret `nadien-env` cukup berisi `NADIEN_OBSERVIUM_*`, `NADIEN_GITWEB_*` dan sejenisnya.
+`NADIEN_DATABASE_URL` diisi oleh manifest.
+
+---
+
+## 4. Kapasitas ±50 user bersamaan
+
+Yang sudah disiapkan:
+
+- **Cache read-model** (`NADIEN_CACHE_TTL_S`, default 60 detik) untuk topologi, capacity, hotspot, dashboard, ringkasan
+  port dan perangkat:
+  - Satu view dihitung sekali per proses, lalu dipakai bersama oleh semua user.
+  - Setiap perubahan data (edit, discovery, sync selesai) menaikkan versi cache di database. Semua worker dan replica
+    membuang cache-nya dalam ±1 detik.
+  - Kalau banyak request datang bersamaan untuk view yang sama, view itu dihitung sekali saja (single flight).
+- **Proses:** beberapa worker uvicorn (`WEB_CONCURRENCY`). Status job sync dan jadwal harian disimpan di database,
+  sehingga aman dijalankan multi-proses dan multi-replica.
+- **Database:**
+  - Pool koneksi per proses: `NADIEN_DB_POOL_SIZE` dan `NADIEN_DB_MAX_OVERFLOW`. Jaga agar
+    worker × (pool + overflow) tetap di bawah `max_connections`.
+  - Index baru untuk link per perangkat, perangkat per POP, dan sampel utilisasi per waktu.
+  - Dashboard menghitung port di SQL, tidak lagi memuat 300 ribu interface.
+- **Jaringan:** respons API di-gzip (backend dan nginx). Aset frontend di-cache permanen karena nama file-nya
+  mengandung hash.
+
+Hasil uji beban lokal (WSL, SQLite, 4 worker, data nyata 4.225 perangkat / 8.000+ link), 50 user virtual dengan jeda
+0,5–2 detik antar klik:
+
+| | Hasil |
+|---|---|
+| Throughput | 37 request/detik, 0 error |
+| p95 per endpoint | < 0,4 detik (dashboard, topologi, capacity, hotspot, forecast node, port, pencarian) |
+| Puncak | 3–9 detik hanya di detik pertama, saat 50 user bersamaan mengenai 4 proses yang cache-nya masih kosong |
+
+Di production dengan PostgreSQL hasilnya setara atau lebih baik. Kalau user bertambah, naikkan `replicas` `nadien-api`
+(Opsi B) atau `WEB_CONCURRENCY` (Opsi A), lalu cek `max_connections`.
 
 ### Troubleshooting
 

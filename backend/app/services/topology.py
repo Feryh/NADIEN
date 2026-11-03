@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from ..models import Device, Interface, Link, LldpNeighbor, UtilizationSample
 from ..schemas import DiscoveryResult
+from .areas import csr_parts
 
 
 _IP = re.compile(r"[\d.]+|[0-9a-fA-F:]*:[0-9a-fA-F:]*")
@@ -57,6 +58,19 @@ def host_key(name: str) -> str:
     return "-".join(p for p in _SPLIT.split(norm_host(name)) if p)
 
 
+def _names_port(text: str, name: str) -> bool:
+    """`name` appears in `text` as a whole port name: not inside a longer name (gei- in xgei-) and
+    not followed by more digits (…/0/1 in …/0/10)."""
+    start = text.find(name)
+    while start != -1:
+        before = text[start - 1] if start else ""
+        after = text[start + len(name)] if start + len(name) < len(text) else ""
+        if not before.isalnum() and not after.isdigit():
+            return True
+        start = text.find(name, start + 1)
+    return False
+
+
 @dataclass
 class _Adjacency:
     a: Interface
@@ -73,6 +87,7 @@ class _Discovery:
         self.devices = {d.id: d for d in db.scalars(select(Device))}
         self.by_host = {norm_host(d.hostname): d for d in self.devices.values()}
         self.by_host_key = {host_key(d.hostname): d for d in self.devices.values()}
+        self._add_site_keys()
         self.host_first_parts = {k.split("-")[0] for k in self.by_host_key}
         self.max_host_parts = max((k.count("-") + 1 for k in self.by_host_key), default=1)
         self.ifaces = {i.id: i for i in db.scalars(select(Interface))}
@@ -80,6 +95,19 @@ class _Discovery:
         self.adjacencies: dict[frozenset[int], _Adjacency] = {}
         self.covered: set[int] = set()
         self.created_ids: set[int] = set()
+        self._ports_by_device: dict[int, list[Interface]] | None = None
+
+    def _add_site_keys(self) -> None:
+        """Cell-site neighbours are often written without the role/vendor suffix
+        ("SUL-SN-SGM-0011:xgei-1/1/0/1" for SUL-SN-SGM-0011-ME1-ZTE). REGION-PROV-CITY-SITE is unique
+        per site, so it is accepted as a name too — only when exactly one device has it."""
+        sites: dict[str, list[Device]] = {}
+        for device in self.devices.values():
+            if csr_parts(device.hostname):
+                sites.setdefault("-".join(host_key(device.hostname).split("-")[:4]), []).append(device)
+        for key, devices in sites.items():
+            if len(devices) == 1 and key not in self.by_host_key:
+                self.by_host_key[key] = devices[0]
 
     def iface(self, device: Device, name: str) -> Interface:
         key = (device.id, norm_if(name))
@@ -156,9 +184,10 @@ class _Discovery:
                 continue
             by_pair.setdefault(pair, {}).setdefault(iface.device_id, []).append(iface)
 
-        for sides in by_pair.values():
+        for pair, sides in by_pair.items():
             if len(sides) != 2:
-                continue  # only one end describes the other: not enough to call it a link
+                self.one_sided(pair, sides)
+                continue
             (_, ours), (_, theirs) = sides.items()
             remaining = list(theirs)
             for a in ours:
@@ -170,6 +199,32 @@ class _Discovery:
                 )
                 remaining.remove(b)
                 self.add(a, b, "config")
+
+    def one_sided(self, pair: frozenset[int], sides: dict[int, list[Interface]]) -> None:
+        """Only one end describes the other (typical for a cell-site uplink to a metro box that is
+        not described back). Accepted only when the description also names an existing, uncovered
+        port of the remote device — the hostname alone is not enough to call it a link."""
+        ((device_id, ours),) = sides.items()
+        remote_id = next(iter(pair - {device_id}))
+        for a in ours:
+            b = self.named_port(remote_id, a.description or "")
+            if b is not None and b.id not in self.covered:
+                self.add(a, b, "config")
+
+    def named_port(self, device_id: int, description: str) -> Interface | None:
+        """Port of `device_id` written in the description, longest name wins (xgei-1/1/0/10 over /1)."""
+        if self._ports_by_device is None:
+            self._ports_by_device = {}
+            for iface in self.ifaces.values():
+                if iface.if_type != "subinterface":
+                    self._ports_by_device.setdefault(iface.device_id, []).append(iface)
+        text = norm_if(description)
+        best: Interface | None = None
+        for iface in self._ports_by_device.get(device_id, []):
+            name = norm_if(iface.name)
+            if len(name) >= 4 and _names_port(text, name) and (best is None or len(name) > len(norm_if(best.name))):
+                best = iface
+        return best
 
     def phantom_ids(self, valid_iface_ids: set[int] | None) -> set[int]:
         """Ports the NMS does not know that carry nothing but a name — what discovery created

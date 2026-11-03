@@ -98,8 +98,11 @@ Data valid diambil dari jaringan, bukan diisi manual:
 | Observium `/ports` rate | ifIn/OutOctets_rate | 1 sampel utilisasi per link per sync, `current_gbps` |
 | RRD Observium lewat `graph.php?format=json` (default), atau `rrdtool xport` via SSH | peak harian in/out 7–365 hari | histori utilisasi per link, tren 7/30/90 hari, `current_gbps` = peak hari penuh terakhir |
 | Config dari RANCID Observium (`/opt/observium/rancid`, via SFTP atau mount), Oxidized, atau upload | LAG membership, IP & MTU, loopback, IS-IS NET, SRv6 locator | Interface & Router |
+| Semua repo RANCID lewat gitweb (`NADIEN_GITWEB_URL`), otomatis tiap hari, hanya file yang berubah | Config sebagai cadangan Observium. Perangkat yang tidak ada di Observium (CSR) dibuat dari config | Router, Interface, role **CSR** |
 
-Parser config: **Cisco IOS-XR**, **Huawei VRP**, **Juniper Junos** (format kurung kurawal & `display set`), **Nokia SR OS** (classic & MD-CLI). Vendor terdeteksi otomatis.
+Parser config: **Cisco IOS-XR**, **Cisco IOS/IOS-XE/NX-OS**, **Huawei VRP**, **Juniper Junos** (format kurung kurawal & `display set`), **Nokia SR OS** (classic & MD-CLI), **ZTE ZXCTN / ZXR10 M6000**, **FiberHome R8xx**. Vendor terdeteksi otomatis. Config OLT (GPON) dilaporkan sebagai tidak didukung.
+
+Perangkat di repo `CSR-*` selalu ber-role `csr`, dengan POP = kota di hostname (`BAL-BA-BLI-0004-ME1-ZTE` → POP `BLI`, area dari kode provinsi `BA`). Di perangkat yang dimonitor Observium, config hanya melengkapi port yang sudah ada dan tidak menambah port baru.
 
 Aturan penggabungan:
 - **Observium** menang untuk state operasional (speed, status, ifAlias).

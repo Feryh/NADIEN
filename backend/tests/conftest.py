@@ -17,6 +17,9 @@ os.environ.update({
     "NADIEN_RANCID_SSH_USER": "",
     "NADIEN_RANCID_SSH_PASSWORD": "",
     "NADIEN_OXIDIZED_URL": "",
+    "NADIEN_GITWEB_URL": "",
+    "NADIEN_SCHEDULER_ENABLED": "false",
+    "NADIEN_CACHE_TTL_S": "0",  # each test has its own DB; a shared cache would leak results between them
 })
 
 import httpx  # noqa: E402

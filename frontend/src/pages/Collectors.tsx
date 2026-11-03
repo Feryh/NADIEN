@@ -30,12 +30,21 @@ const PHASES: Record<string, string> = {
   discovery: 'membangun topologi',
   utilization: 'menyimpan utilisasi',
   configs: 'membaca config',
+  list: 'membaca daftar repo gitweb',
 }
 
 interface CollectorStatus {
   observium: { url: string; configured: boolean; auth: string | null; last_sync_at: string | null; last_status: string | null }
   rancid: { source: string | null; configured: boolean }
   oxidized: { url: string | null; configured: boolean }
+  gitweb: {
+    url: string | null
+    configured: boolean
+    files: number
+    devices_from_gitweb: number
+    last_synced_at: string | null
+    schedule: { enabled: boolean; daily_at: string | null; timezone: string }
+  }
   rrd: { mode: 'api' | 'local' | 'ssh'; path: string; configured: boolean; mapped_ports: number }
   parts: string[]
 }
@@ -46,6 +55,9 @@ const VENDORS = [
   { value: 'vrp', label: 'Huawei VRP' },
   { value: 'junos', label: 'Juniper Junos' },
   { value: 'sros', label: 'Nokia SR OS' },
+  { value: 'zte', label: 'ZTE ZXCTN / M6000' },
+  { value: 'fiberhome', label: 'FiberHome R8xx' },
+  { value: 'ios', label: 'Cisco IOS / NX-OS' },
 ]
 
 async function postText<T>(path: string, text: string): Promise<T> {
@@ -233,6 +245,49 @@ export default function Collectors() {
           Catatan: RRD port Observium punya batas DS 100 Gbps; trafik di atas itu (link 400G) tersimpan sebagai NaN dan hari itu
           terlewat. Link yang kemungkinan terpotong dilaporkan di <code>possibly_clipped</code>.
         </p>
+      </div>
+
+      <div className="card">
+        <div className="toolbar">
+          <h2>RANCID gitweb (semua repo)</h2>
+          <span className={`pill ${status?.gitweb.configured ? 'pill-ok' : 'pill-bad'}`}>
+            {status?.gitweb.configured ? 'siap' : 'belum di-set'}
+          </span>
+          {status?.gitweb.schedule.enabled && (
+            <span className="pill pill-ok">
+              otomatis tiap hari {status.gitweb.schedule.daily_at} ({status.gitweb.schedule.timezone})
+            </span>
+          )}
+          <div className="spacer" />
+          <button
+            disabled={!!busy || jobRunning || !status?.gitweb.configured}
+            onClick={() => startJob('/collectors/configs/gitweb/sync?full=true')}
+            title="Baca ulang semua file, bukan hanya yang berubah"
+          >
+            Sync penuh
+          </button>
+          <button
+            className="primary"
+            disabled={!!busy || jobRunning || !status?.gitweb.configured}
+            onClick={() => startJob('/collectors/configs/gitweb/sync')}
+          >
+            Ambil perubahan terbaru
+          </button>
+        </div>
+        <p className="hint">
+          {status?.gitweb.url && <code>{status.gitweb.url}</code>} · semua repo RANCID (CSR, METRO, ROUTER, BNG, CGN, OLT, …). Hanya file
+          yang berubah sejak sync terakhir yang diunduh. Perangkat yang tidak ada di Observium (mis. CSR) dibuat dari config-nya;
+          perangkat di repo CSR-* selalu ber-role <b>CSR</b>. Config OLT dilaporkan sebagai tidak didukung.
+          {status?.gitweb.configured &&
+            ` ${status.gitweb.files.toLocaleString()} file tercatat · ${status.gitweb.devices_from_gitweb.toLocaleString()} perangkat hanya dari gitweb` +
+              (status.gitweb.last_synced_at ? ` · terakhir ${new Date(status.gitweb.last_synced_at).toLocaleString()}` : '')}
+        </p>
+        {!status?.gitweb.configured && (
+          <p className="hint">
+            Set di <code>backend/.env</code>: <code>NADIEN_GITWEB_URL=http://172.17.12.232/gitweb/</code> (opsional{' '}
+            <code>NADIEN_GITWEB_USER</code>/<code>_PASSWORD</code>, jadwal <code>NADIEN_GITWEB_DAILY_AT=02:30</code>), lalu restart backend.
+          </p>
+        )}
       </div>
 
       <div className="card">

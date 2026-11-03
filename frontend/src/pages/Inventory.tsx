@@ -1,4 +1,5 @@
 import { useParams, NavLink, Navigate } from 'react-router-dom'
+import DeviceSummary from '../components/DeviceSummary'
 import ResourceTable from '../components/ResourceTable'
 import { ENTITIES, ENTITY_BY_KEY, GROUPS } from '../entities'
 
@@ -22,7 +23,10 @@ export default function Inventory() {
           </div>
         ))}
       </nav>
-      <ResourceTable key={entity.key} entity={entity} />
+      <div className="inventory-main">
+        {entity.endpoint === '/devices' && <DeviceSummary />}
+        <ResourceTable key={entity.key} entity={entity} />
+      </div>
     </div>
   )
 }

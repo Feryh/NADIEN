@@ -14,7 +14,8 @@ from app.main import app
 
 from .conftest import config_text, observium_transport
 
-IOS_CLASSIC = "!RANCID-CONTENT-TYPE: cisco\n!\nhostname YGY-AGG-01\ninterface TenGigabitEthernet0/1\n description x\n"
+# An OLT shelf config: no router interfaces, reported as unsupported rather than misread as VRP.
+OLT_CONFIG = "!RANCID-CONTENT-TYPE: huaweiolt\n!\n sysname YGY-AGG-01\ninterface gpon 0/1\n"
 
 
 def build_archive(base):
@@ -31,7 +32,7 @@ def build_archive(base):
     (metro / "configs" / "SBY-P-01").write_text(
         "#RANCID-CONTENT-TYPE: juniper\n#\n# Chassis MX10008\n# Routing Engine 0\n" + config_text("junos.cfg"))
     (metro / "configs" / "old-router").write_text("!RANCID-CONTENT-TYPE: cisco-xr\nhostname OLD\n")
-    (access / "configs" / "YGY-AGG-01").write_text(IOS_CLASSIC)
+    (access / "configs" / "YGY-AGG-01").write_text(OLT_CONFIG)
     (base / "logs" / "metro.20261102").write_text("log")
 
 
@@ -49,7 +50,10 @@ def test_rancid_hint():
     assert rancid_hint("#RANCID-CONTENT-TYPE: juniper\n") == "junos"
     assert rancid_hint("!RANCID-CONTENT-TYPE: vrp\n") == "vrp"
     assert rancid_hint("#RANCID-CONTENT-TYPE: sros\n") == "sros"
-    assert rancid_hint("!RANCID-CONTENT-TYPE: cisco\n") is None
+    assert rancid_hint("!RANCID-CONTENT-TYPE: cisco\n") == "ios"
+    assert rancid_hint("!RANCID-CONTENT-TYPE: zte\n") == "zte"
+    assert rancid_hint("!RANCID-CONTENT-TYPE: fiberhomemetro\n") == "fiberhome"
+    assert rancid_hint("!RANCID-CONTENT-TYPE: huaweiolt\n") is None
     assert rancid_hint("hostname X\n") is None
 
 
@@ -96,7 +100,7 @@ def test_sync_rancid_applies_configs(inventory, tmp_path):
 
     assert report["files"] == 5 and report["applied"] == 3
     assert report["unmatched_files"] == ["old-router"]
-    assert report["unsupported"] == ["YGY-AGG-01 (RANCID type: cisco)"]
+    assert report["unsupported"] == ["YGY-AGG-01 (RANCID type: huaweiolt)"]
     assert {r["device"] for r in report["results"]} == {"JKT-P-01", "BDG-PE-01", "SBY-P-01"}  # BDG via mgmt IP
 
     hosts = {d.hostname: d for d in db.scalars(select(m.Device))}

@@ -1,19 +1,28 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from . import models  # noqa: F401  (registers tables on Base.metadata)
+from .collectors.runner import runner
+from .collectors.scheduler import Scheduler
 from .config import settings
-from .database import Base, engine
+from .database import init_schema
 from .routers import analysis, capacity, collectors, dashboard, integrations, inventory, paths, topology
+from .services import cache
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # MVP: create tables on startup. Switch to Alembic migrations before production data lands.
-    Base.metadata.create_all(engine)
+    init_schema()
+    scheduler = Scheduler(runner) if settings.scheduler_enabled else None
+    if scheduler:
+        scheduler.start()
     yield
+    if scheduler:
+        scheduler.stop()
 
 
 app = FastAPI(
@@ -28,6 +37,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Topology/capacity payloads are large JSON (thousands of rows); compressing them cuts transfer ~10×.
+app.add_middleware(GZipMiddleware, minimum_size=2048)
+
+
+@app.middleware("http")
+async def drop_cache_on_write(request: Request, call_next):
+    response = await call_next(request)
+    if request.method not in ("GET", "HEAD", "OPTIONS") and response.status_code < 400:
+        cache.clear()
+    return response
+
 
 for r in (
     inventory.router,

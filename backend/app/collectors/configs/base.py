@@ -6,6 +6,7 @@ loopback, IS-IS NET and SRv6 locator.
 """
 
 import ipaddress
+import re
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
 
@@ -155,3 +156,28 @@ def to_int(value: str) -> int | None:
         return int(value)
     except ValueError:
         return None
+
+
+# Port speed from the interface name, for devices only known from their config (no SNMP speed).
+# Longest/most specific prefixes first: "xxvgei" before "xgei" before "gei".
+_SPEED_PREFIXES: list[tuple[str, float]] = [
+    ("fourhundredgige", 400), ("400ge", 400), ("hundredgige", 100), ("hundredgigabitethernet", 100),
+    ("100ge", 100), ("cgei", 100), ("fiftygige", 50), ("50ge", 50), ("fortygige", 40),
+    ("fortygigabitethernet", 40), ("40ge", 40), ("twentyfivegige", 25), ("25ge", 25), ("xxvgei", 25),
+    ("tengige", 10), ("tengigabitethernet", 10), ("xgigabitethernet", 10), ("10ge", 10), ("xgei", 10),
+    ("te", 10), ("xe", 10), ("gigabitethernet", 1), ("gige", 1), ("ge", 1), ("gei", 1), ("gi", 1),
+    ("fastethernet", 0.1), ("fa", 0.1),
+]
+_FIBERHOME_ETH = re.compile(r"^eth-(\d*)gi")  # eth-gi / eth-10gi / eth-25gi / eth-100gi
+
+
+def speed_from_name(name: str) -> float | None:
+    lowered = name.strip().lower().replace(" ", "")
+    match = _FIBERHOME_ETH.match(lowered)
+    if match:
+        return float(match.group(1) or 1)
+    for prefix, speed in _SPEED_PREFIXES:
+        rest = lowered[len(prefix):]
+        if lowered.startswith(prefix) and rest[:1] and (rest[0].isdigit() or rest[0] == "-"):
+            return float(speed)
+    return None

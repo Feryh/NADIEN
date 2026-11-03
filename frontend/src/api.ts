@@ -44,6 +44,77 @@ export interface CapacityResult {
   threshold_date: string | null
   exhaustion_date: string | null
   color: CapacityColor
+  /** Level the forecast starts from: trend value today + typical peak above it, or the current peak. */
+  forecast_basis_gbps: number | null
+  forecast_method: 'trend' | 'current'
+  trend_r2: number | null
+  trend_days: number
+}
+
+/** suspect: utilization far above 100 % — the link capacity data itself is wrong. */
+export type HotspotLevel = 'critical' | 'warning' | 'normal' | 'suspect'
+
+export interface NodeForecast extends CapacityResult {
+  key: string
+  label: string
+  pop: string | null
+  links: number
+  history_days: number
+}
+
+export interface Hotspots {
+  thresholds: { warning_pct: number; critical_pct: number; suspect_pct: number }
+  links: {
+    counts: Record<HotspotLevel, number>
+    rows: {
+      link_id: number
+      a_device: string
+      b_device: string
+      a_pop: string | null
+      b_pop: string | null
+      status: string
+      capacity_gbps: number
+      current_gbps: number
+      utilization_pct: number
+      level: HotspotLevel
+      months_to_threshold: number | null
+    }[]
+  }
+  devices: {
+    counts: Record<HotspotLevel, number>
+    rows: {
+      device_id: number
+      hostname: string
+      pop: string
+      area: string
+      category: string
+      vendor: string | null
+      total: number
+      used: number
+      idle: number
+      disabled: number
+      used_pct: number
+      level: HotspotLevel
+    }[]
+  }
+}
+
+export interface DeviceSummary {
+  total: number
+  categories: {
+    category: string
+    label: string
+    devices: number
+    roles: Record<string, number>
+    vendors: Record<string, number>
+    status: Record<string, number>
+    areas: Record<string, number>
+  }[]
+}
+
+export interface TopologySearch {
+  pops: { pop_id: number; code: string; name: string; area: string; devices: number }[]
+  devices: { device_id: number; hostname: string; pop: string; role: string; category: string; area: string }[]
 }
 
 export interface LinkCapacity extends CapacityResult {

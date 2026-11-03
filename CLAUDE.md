@@ -24,6 +24,7 @@ Phase 1–3 (inventory, topology, capacity) sudah MVP. Lihat README.md untuk det
 - `cd backend && python -m pytest -q` — test backend (butuh `requirements-dev.txt`)
 - `cd backend && python -m app.collectors.run observium` — sync dari Observium (kredensial via env)
 - `cd backend && python -m app.collectors.run rrd --days 90` — histori utilisasi dari RRD Observium
+- `cd backend && python -m app.collectors.run gitweb [--full]` — config semua repo RANCID via gitweb (juga otomatis tiap hari)
 
 ## Architecture
 
@@ -33,8 +34,13 @@ Phase 1–3 (inventory, topology, capacity) sudah MVP. Lihat README.md untuk det
 - `backend/app/services/topology.py` — LLDP adalah sumber wajib, deskripsi config hanya backup.
 - `backend/app/services/capacity.py` — semua rumus kapasitas; warna dari committed % (current + reserved).
 - `frontend/src/entities.ts` — definisi field yang menggerakkan semua layar inventory.
-- `backend/app/collectors/` — Observium (inventory, LLDP, utilisasi) dan parser config 4 vendor.
-  Parser bersifat murni (tanpa DB) dan diuji dengan fixture di `backend/tests/fixtures/`.
+- `backend/app/collectors/` — Observium (inventory, LLDP, utilisasi), RANCID gitweb (`configs/gitweb.py`,
+  semua repo, inkremental per blob hash, membuat perangkat CSR) dan parser config 7 OS (IOS-XR, IOS/NX-OS,
+  VRP, Junos, SR OS, ZTE, FiberHome). Parser bersifat murni (tanpa DB) dan diuji dengan fixture di
+  `backend/tests/fixtures/`.
+- `backend/app/collectors/runner.py` + `scheduler.py` — status job dan jadwal harian disimpan di DB
+  (`collector_jobs`, `scheduled_runs`) supaya aman untuk banyak worker/replica.
+- `backend/app/services/cache.py` — cache read-model; versi di tabel `app_state` dinaikkan setiap write.
   Kredensial Observium/Oxidized hanya lewat env; jangan pernah ditulis ke file yang di-commit.
 - `backend/app/collectors/jobs.py` — satu-satunya pintu untuk menjalankan sync: backup DB dulu
   (`app/backup.py`, retensi 15), baru sync. Router dan CLI wajib lewat sini, jangan panggil

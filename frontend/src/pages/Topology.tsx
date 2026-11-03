@@ -1,7 +1,8 @@
 import cytoscape, { Core, ElementDefinition } from 'cytoscape'
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link as RouterLink, useSearchParams } from 'react-router-dom'
 import { api, CapacityColor, DiscoveryResult } from '../api'
+import { PopAreaEditor, SearchHit, TopologySearchBox } from '../components/TopologyTools'
 import { CAPACITY_HEX, fmtG } from '../components/ui'
 
 // Drill-down topology:
@@ -49,6 +50,8 @@ interface NodeData {
   center?: boolean
   x?: number | null
   y?: number | null
+  pop_id?: number
+  region?: string | null
 }
 
 interface View {
@@ -56,6 +59,8 @@ interface View {
   area?: string
   pop?: string
   pop_name?: string
+  pop_id?: number
+  region?: string | null
   device?: string
   device_id?: number
   depth?: number
@@ -67,10 +72,12 @@ interface View {
 type Pos = { x: number; y: number }
 
 const ROLE_COLOR: Record<string, string> = {
-  p: '#6366f1', dci: '#f97316', pe: '#0ea5e9', bng: '#e879f9', agg: '#14b8a6', access: '#64748b', olt: '#a3e635',
+  p: '#6366f1', dci: '#f97316', pe: '#0ea5e9', bng: '#e879f9', agg: '#14b8a6', csr: '#fb7185', access: '#64748b', olt: '#a3e635',
 }
-const TIER_LABEL = ['Core (P/DCI)', 'PE / BNG', 'Metro / Aggregation', 'OLT / Access', 'Lainnya']
-const CATEGORY_LABEL: Record<string, string> = { router: 'Router', metro: 'Metro', olt: 'OLT', access: 'Access', other: 'Lainnya' }
+const TIER_LABEL = ['Core (P/DCI)', 'PE / BNG', 'Metro / Aggregation', 'CSR / OLT / Access', 'Lainnya']
+const CATEGORY_LABEL: Record<string, string> = {
+  router: 'Router', metro: 'Metro', csr: 'CSR', olt: 'OLT', access: 'Access', other: 'Lainnya',
+}
 
 const STYLE = [
   {
@@ -334,7 +341,6 @@ export default function Topology() {
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<{ node?: NodeData; edge?: EdgeData } | null>(null)
   const [message, setMessage] = useState<{ text: string; error?: boolean } | null>(null)
-  const [search, setSearch] = useState('')
   const [colorFilter, setColorFilter] = useState<'all' | 'warn' | 'red'>('all')
   const [edgeLabels, setEdgeLabels] = useState(false)
   const [syncPhase, setSyncPhase] = useState<string | null>(null)
@@ -464,23 +470,15 @@ export default function Topology() {
     })
   }, [colorFilter, edgeLabels, view])
 
-  async function findDevice(e: FormEvent) {
-    e.preventDefault()
-    const term = search.trim()
-    if (!term) return
-    try {
-      const [devices, pops] = await Promise.all([
-        api.get<{ id: number; hostname: string; pop_id: number }[]>(`/devices?q=${encodeURIComponent(term)}&limit=20`),
-        api.get<{ id: number; code: string }[]>('/pops?limit=10000'),
-      ])
-      const popMatch = pops.find((p) => p.code.toUpperCase() === term.toUpperCase())
-      if (popMatch) return go({ level: 'device', pop: popMatch.code })
-      const exact = devices.find((d) => d.hostname.toUpperCase() === term.toUpperCase()) ?? devices[0]
-      if (!exact) return setMessage({ text: `"${term}" tidak ditemukan`, error: true })
-      go({ level: 'neighbors', device_id: exact.id, depth: 1 })
-    } catch (err) {
-      setMessage({ text: (err as Error).message, error: true })
-    }
+  // A POP opens its devices; a device opens its neighbours, centred and highlighted.
+  function openHit(hit: SearchHit) {
+    if (hit.kind === 'pop') go({ level: 'device', pop: hit.code })
+    else go({ level: 'neighbors', device_id: hit.deviceId, depth: 1, focus: hit.label })
+  }
+
+  async function areaSaved(code: string, area: string) {
+    setMessage({ text: `Area POP ${code} disimpan: ${area}.` })
+    await load()
   }
 
   async function savePositions() {
@@ -578,10 +576,7 @@ export default function Topology() {
             </>
           )}
         </nav>
-        <form onSubmit={findDevice} className="inline">
-          <input className="search" placeholder="Cari hostname / kode POP…" value={search} onChange={(e) => setSearch(e.target.value)} />
-          <button type="submit">Cari</button>
-        </form>
+        <TopologySearchBox onPick={openHit} />
         {level === 'neighbors' && (
           <div className="segmented">
             {[1, 2].map((d) => (
@@ -664,6 +659,13 @@ export default function Topology() {
             )}
           </div>
           <hr />
+          {level === 'device' && view?.pop_id != null && !node && !edge && (
+            <div className="detail">
+              <h3>POP {view.pop}</h3>
+              <div className="small muted">Area: {view.area}</div>
+              <PopAreaEditor popId={view.pop_id} region={view.region} onSaved={(a) => areaSaved(view.pop ?? '', a)} />
+            </div>
+          )}
           {node && (
             <div className="detail">
               <h3>{node.label}</h3>
@@ -677,6 +679,7 @@ export default function Topology() {
                 {node.kind === 'pop' && (
                   <>
                     <dt>Nama</dt><dd>{node.name}</dd>
+                    <dt>Area</dt><dd>{node.area}{node.region ? '' : ' (otomatis)'}</dd>
                     <dt>Perangkat</dt><dd>{node.devices} di {node.sites} site</dd>
                     <dt>Kategori</dt>
                     <dd>{Object.entries(node.categories ?? {}).map(([c, n]) => `${CATEGORY_LABEL[c] ?? c} ${n}`).join(' · ')}</dd>
@@ -697,6 +700,9 @@ export default function Topology() {
                   </>
                 )}
               </dl>
+              {node.kind === 'pop' && node.pop_id != null && (
+                <PopAreaEditor popId={node.pop_id} region={node.region} onSaved={(a) => areaSaved(node.label, a)} />
+              )}
               {node.internal && node.internal.links > 0 && (
                 <p className="small muted">
                   Link internal: {node.internal.links} · {fmtG(node.internal.capacity_gbps)} · {node.internal.committed_pct}% committed

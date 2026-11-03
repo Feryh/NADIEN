@@ -224,9 +224,13 @@ def _hostname_codes(hostname: str) -> list[str]:
 
 
 def pop_code_for_hostname(hostname: str | None) -> str | None:
-    """POP code a hostname points at explicitly: a city name, else a single city-code token."""
+    """POP code a hostname points at explicitly: a cell-site city token, a city name, else a single
+    city-code token."""
     if not hostname:
         return None
+    parts = csr_parts(hostname)
+    if parts is not None:
+        return parts[2]
     by_name = city_code_for_hostname(hostname)
     if by_name:
         return by_name
@@ -253,6 +257,9 @@ def area_for_hostname(hostname: str | None) -> str | None:
     3166-2:ID, e.g. JT, JI) as its own token, or a city/province name. Only when they all agree."""
     if not hostname:
         return None
+    csr_area = area_for_csr(hostname)
+    if csr_area:
+        return csr_area
     candidates = {_AREA_BY_CODE[c] for c in _hostname_codes(hostname)}
     for token in re.split(r"[^A-Z0-9]+", hostname.upper()):
         if len(token) == 2 and token.isalpha() and token in _AREA_BY_SHORT_CODE:
@@ -289,9 +296,34 @@ def area_position(area: str) -> tuple[float, float] | None:
 
 _TOKEN = re.compile(r"[-_.\s]+")
 
+# Cell-site router naming: REGION-PROVINCE-CITY-SITEID-ROLE-VENDOR, e.g. BAL-BA-BLI-0004-ME1-ZTE,
+# SUL-SN-SGM-0078-ME1-ZTE. The region is a 3-letter island group, the province the 2-letter code.
+_CSR_HOSTNAME = re.compile(r"^(SUM|SUL|KAL|BAL|NUS|JAW|JAV|PAP|MAL|MLK)-([A-Z]{2})-([A-Z]{3,4})-(\d{3,6})(?:-|$)")
+_AREA_BY_REGION_TOKEN = {
+    "SUM": "Sumatera", "SUL": "Sulawesi", "KAL": "Kalimantan", "BAL": "Bali & Nusa Tenggara",
+    "NUS": "Bali & Nusa Tenggara", "PAP": "Maluku & Papua", "MAL": "Maluku & Papua", "MLK": "Maluku & Papua",
+}
+
+
+def csr_parts(hostname: str | None) -> tuple[str, str, str, str] | None:
+    """(region, province, city, site id) for a cell-site style hostname, else None."""
+    match = _CSR_HOSTNAME.match((hostname or "").strip().upper())
+    return match.groups() if match else None  # type: ignore[return-value]
+
+
+def area_for_csr(hostname: str | None) -> str | None:
+    parts = csr_parts(hostname)
+    if parts is None:
+        return None
+    region, province, _, _ = parts
+    return _AREA_BY_SHORT_CODE.get(province) or _AREA_BY_REGION_TOKEN.get(region)
+
 
 def site_for(hostname: str, pop_code: str) -> str:
-    """Site code from the hostname: the token after the POP code, else '-'."""
+    """Site code from the hostname: the token after the POP code, else '-' (cell sites: the site id)."""
+    parts = csr_parts(hostname)
+    if parts is not None:
+        return parts[3]
     tokens = [t for t in _TOKEN.split(hostname.upper()) if t]
     pop = pop_code.upper()
     for i, token in enumerate(tokens[:-1]):
@@ -305,16 +337,20 @@ def site_for(hostname: str, pop_code: str) -> str:
 CATEGORIES: dict[str, list[str]] = {
     "router": ["p", "pe", "bng", "dci"],
     "metro": ["agg"],
+    "csr": ["csr"],
     "olt": ["olt"],
     "access": ["access"],
 }
 CATEGORY_LABELS = {
     "router": "Router (P/PE/BNG/DCI)",
     "metro": "Metro / Aggregation",
+    "csr": "CSR (Cell Site Router)",
     "olt": "OLT",
     "access": "Access / Switch",
     "other": "Lainnya",
 }
+CATEGORY_ORDER = list(CATEGORY_LABELS)
+CATEGORY_PATTERN = "^(" + "|".join(CATEGORY_ORDER) + ")$"  # for Query(pattern=...)
 _CATEGORY_BY_ROLE = {role: cat for cat, roles in CATEGORIES.items() for role in roles}
 
 
@@ -323,7 +359,7 @@ def category_for(role: str | None) -> str:
 
 
 # Role tiers for layered device layouts (top to bottom).
-ROLE_TIER = {"dci": 0, "p": 0, "pe": 1, "bng": 1, "agg": 2, "access": 3, "olt": 3}
+ROLE_TIER = {"dci": 0, "p": 0, "pe": 1, "bng": 1, "agg": 2, "csr": 3, "access": 3, "olt": 3}
 
 
 # Standard port speeds; anything else (106G, 8G, 622M, SNMP overflow 4295G…) is "Non-standar":

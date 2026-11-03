@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from ...services.areas import csr_parts
 from ...services.topology import strip_domain
 
 # Observium `os` -> (vendor, OS family). Unknown OSes fall back to the row's own `vendor` field.
@@ -107,12 +108,15 @@ def is_role_word(code: str) -> bool:
     return _role_word(code.upper()) is not None
 
 
+def role_from_hostname(hostname: str) -> str | None:
+    """Role written in the hostname, or None when no token names one."""
+    if csr_parts(hostname):  # BAL-BA-BLI-0004-ME1-ZTE: a cell-site router despite its ME1 token
+        return "csr"
+    return next((role for token in _tokens(hostname) if (role := _role_word(token))), None)
+
+
 def guess_role(hostname: str) -> str:
-    for token in _tokens(hostname):
-        role = _role_word(token)
-        if role:
-            return role
-    return "pe"
+    return role_from_hostname(hostname) or "pe"
 
 
 def infer_pop(hostname: str, known_codes: set[str]) -> str | None:
@@ -150,6 +154,9 @@ def parse_device(row: dict[str, Any], pop_regex: str) -> DeviceRecord | None:
     pop_code = match.group(1).upper() if match else None
     if pop_code and _role_word(pop_code):  # "OLT-..." / "CGW-...": a role, not a POP
         pop_code = None
+    cell_site = csr_parts(hostname)
+    if cell_site:  # the first token is the island group (BAL, SUM); the city is the POP
+        pop_code = cell_site[2]
 
     os_name = (row.get("os") or "").lower()
     vendor, os_family = OS_VENDOR.get(os_name, (row.get("vendor") or None, row.get("os") or None))

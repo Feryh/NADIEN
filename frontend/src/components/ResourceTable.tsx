@@ -263,7 +263,9 @@ function FormModal(props: {
   const { entity, row, refs, onClose, onSaved } = props
   const editable = entity.fields.filter((f) => !f.readonly)
   const [values, setValues] = useState<Record<string, string | boolean>>(() =>
-    Object.fromEntries(editable.map((f) => [f.name, toInput(f, row ? row[f.name] : f.type === 'select' ? f.options?.[0] : null)])),
+    Object.fromEntries(
+      editable.map((f) => [f.name, toInput(f, row ? row[f.name] : f.type === 'select' && !f.blankDefault ? f.options?.[0] : null)]),
+    ),
   )
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -308,6 +310,8 @@ function FormModal(props: {
               input = (
                 <select value={String(value)} onChange={(e) => set(f.name, e.target.value)} required={f.required}>
                   {!f.required && <option value="">—</option>}
+                  {/* A stored value outside the list (custom area) stays selectable, so saving never wipes it. */}
+                  {value && !f.options?.includes(String(value)) && <option value={String(value)}>{String(value)}</option>}
                   {f.options?.map((o) => (
                     <option key={o} value={o}>
                       {o}

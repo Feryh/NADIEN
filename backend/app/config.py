@@ -68,5 +68,31 @@ class Settings(BaseSettings):
     oxidized_user: str | None = None
     oxidized_password: str | None = None
 
+    # RANCID repositories published through gitweb (all repos: CSR, METRO, OLT, BNG, ...). Backup source
+    # for configs, and the only source for devices Observium does not monitor (cell-site routers).
+    gitweb_url: str | None = None  # e.g. http://172.17.12.232/gitweb/
+    gitweb_user: str | None = None
+    gitweb_password: str | None = None
+    gitweb_verify_tls: bool = True
+    gitweb_workers: int = 8  # parallel blob downloads
+    gitweb_exclude_repos: list[str] = []
+    gitweb_create_devices: bool = True
+
+    # In-process daily scheduler. With several replicas each day's run is claimed once in the DB;
+    # set false where an external scheduler (Kubernetes CronJob, cron) runs the CLI instead.
+    scheduler_enabled: bool = True
+    schedule_timezone: str = "Asia/Jakarta"
+    gitweb_daily_at: str | None = "02:30"  # HH:MM; empty disables the daily gitweb update
+
+    # Link hotspots (utilization of the busiest links/ports): warning and critical levels.
+    hotspot_warning_pct: float = 70.0
+    hotspot_critical_pct: float = 90.0
+    hotspot_suspect_pct: float = 150.0  # above this the link capacity is treated as wrong data
+
+    # Read-model cache for heavy views (topology, capacity, dashboard); cleared on every write.
+    cache_ttl_s: float = 60.0
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
+
 
 settings = Settings()
