@@ -65,18 +65,6 @@ interface Engineered {
   paths: { role: string; hops: number; latency_ms: number | null; latency_estimated: boolean; reserved_gbps: number; released: boolean; devices: string[] }[]
 }
 
-type Endpoint = { pop: string } | { device_id: number }
-
-async function resolveSite(text: string, pops: string[]): Promise<Endpoint> {
-  const term = text.trim()
-  if (!term) throw new Error('Site A dan Site B wajib diisi')
-  if (pops.includes(term.toUpperCase())) return { pop: term.toUpperCase() }
-  const found = await api.get<{ id: number; hostname: string }[]>(`/devices?q=${encodeURIComponent(term)}&limit=20`)
-  const exact = found.find((d) => d.hostname.toUpperCase() === term.toUpperCase())
-  if (exact) return { device_id: exact.id }
-  throw new Error(`"${term}" bukan kode POP atau hostname yang dikenal${found.length ? ` (mungkin: ${found.slice(0, 3).map((d) => d.hostname).join(', ')})` : ''}`)
-}
-
 function AfterBar({ pct }: { pct: number | null }) {
   if (pct == null) return <span className="muted">–</span>
   const color = pct >= 80 ? '#ef4444' : pct >= 60 ? '#eab308' : '#22c55e'
@@ -145,7 +133,7 @@ function PathCard({ title, path, accent }: { title: string; path: PathInfo; acce
 }
 
 export default function Paths() {
-  const [pops, setPops] = useState<string[]>([])
+  const [devices, setDevices] = useState<{ id: number; hostname: string; status: string }[]>([])
   const [customers, setCustomers] = useState<{ id: number; name: string }[]>([])
   const [form, setForm] = useState({ a: '', b: '', bandwidth: '1000', protection: '1+1', metric: 'latency', maxUtil: '80' })
   const [result, setResult] = useState<PathResult | null>(null)
@@ -165,7 +153,9 @@ export default function Paths() {
   }, [])
 
   useEffect(() => {
-    api.get<{ code: string }[]>('/pops?limit=10000').then((r) => setPops(r.map((p) => p.code))).catch(() => undefined)
+    api.get<{ id: number; hostname: string; status: string }[]>('/devices?limit=10000')
+      .then((r) => setDevices(r.filter((d) => d.status !== 'decommissioned').sort((a, b) => a.hostname.localeCompare(b.hostname))))
+      .catch((e: Error) => setError(e.message))
     api.get<{ id: number; name: string }[]>('/customers?limit=10000').then(setCustomers).catch(() => undefined)
     loadServices()
   }, [loadServices])
@@ -181,8 +171,8 @@ export default function Paths() {
     setValidation(null)
     try {
       const request = {
-        a: await resolveSite(form.a, pops),
-        b: await resolveSite(form.b, pops),
+        a: { device_id: Number(form.a) },
+        b: { device_id: Number(form.b) },
         bandwidth_mbps: Number(form.bandwidth),
         protection: form.protection,
         metric: form.metric,
@@ -267,14 +257,19 @@ export default function Paths() {
       <div className="card">
         <h2>Customer Path Engineering</h2>
         <form className="calc-form" onSubmit={submit}>
-          <datalist id="pop-codes">{pops.map((p) => <option key={p} value={p} />)}</datalist>
           <label>
-            <span>Site A (kode POP / hostname)</span>
-            <input list="pop-codes" value={form.a} onChange={set('a')} placeholder="JKT atau JKT-NDC-BNG2-M4" required />
+            <span>Site A (hostname)</span>
+            <select value={form.a} onChange={set('a')} required>
+              <option value="">Pilih perangkat Site A</option>
+              {devices.map((d) => <option key={d.id} value={d.id}>{d.hostname}</option>)}
+            </select>
           </label>
           <label>
-            <span>Site B</span>
-            <input list="pop-codes" value={form.b} onChange={set('b')} placeholder="SBY" required />
+            <span>Site B (hostname)</span>
+            <select value={form.b} onChange={set('b')} required>
+              <option value="">Pilih perangkat Site B</option>
+              {devices.map((d) => <option key={d.id} value={d.id}>{d.hostname}</option>)}
+            </select>
           </label>
           <label>
             <span>Bandwidth (Mbps)</span>
@@ -302,8 +297,8 @@ export default function Paths() {
           <button className="primary" type="submit" disabled={busy}>{busy ? 'Menghitung…' : 'Hitung jalur'}</button>
         </form>
         <p className="hint">
-          Site berupa POP berarti perangkat mana pun di POP itu boleh jadi ujung (backup akan diusahakan lewat perangkat ujung
-          yang berbeda). Link dipakai hanya jika status up dan utilisasi setelah layanan ≤ batas.
+          Jalur dihitung dari hostname Site A ke hostname Site B yang dipilih. Link dipakai hanya jika status up dan utilisasi
+          setelah layanan ≤ batas; jalur backup akan diusahakan memakai perangkat ujung yang berbeda bila tersedia.
         </p>
       </div>
 

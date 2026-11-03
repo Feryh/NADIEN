@@ -182,6 +182,11 @@ def test_should_build_one_instance_per_vlan_when_vpls_batch_is_requested(db, mak
     assert [line for line in config if line.startswith("vsi ")] == [f"vsi PT-CONTOH_{v}" for v in (1480, 1481, 1482)]
 
 
+def test_should_keep_vc_id_override_when_standard_mode_sends_one_vlan(db, make_service):
+    config = generate(db, make_service("vrp", "l2vpn"), Addressing(vc_id=9001, vlans=[1480]))["endpoints"]["A"]["config"]
+    assert "  vsi-id 9001" in config
+
+
 def test_should_define_policy_map_once_when_iosxr_batch_is_policed(db, make_service):
     a = generate(db, make_service("iosxr", "l2vpn"), Addressing(vlans=[10, 11], policer=True))["endpoints"]["A"]
     assert sum(line.startswith("policy-map") for line in a["config"]) == 1

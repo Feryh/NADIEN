@@ -8,8 +8,27 @@ from sqlalchemy.orm import Session
 from .. import models as m
 from ..database import get_db
 from ..services.configgen import AddressError, Addressing, as_text, generate, parse_cidr, parse_vlans
+from ..services.network_change_gen import NetworkChangeError, NetworkChangeIn, generate_network_change, network_change_hints
 
 router = APIRouter(prefix="/configs", tags=["Config Generator"])
+
+
+@router.post("/network-change")
+def network_change_config(payload: NetworkChangeIn, db: Session = Depends(get_db)):
+    """Generate a device config change and rollback using its vendor and latest RANCID config."""
+    try:
+        return generate_network_change(db, payload)
+    except NetworkChangeError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/network-change/hints")
+def network_change_config_hints(device_id: int, operation: Literal["igp", "bgp", "parameters"], db: Session = Depends(get_db)):
+    """Suggested values and interface choices parsed from the device's latest RANCID config."""
+    try:
+        return network_change_hints(db, device_id, operation)
+    except NetworkChangeError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 def addressing_params(

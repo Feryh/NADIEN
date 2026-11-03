@@ -10,6 +10,8 @@
 
 import re
 
+from .rancid_locations import LOCATION_BY_HOSTNAME
+
 UNMAPPED_AREA = "Belum dipetakan"
 
 # area -> (approx. longitude, latitude) for laying areas out west -> east, and its POP codes.
@@ -31,7 +33,7 @@ AREAS: dict[str, tuple[tuple[float, float], list[str]]] = {
         "TBN", "LMG", "BLT", "TLG", "PNG",
     ]),
     "Bali & Nusa Tenggara": ((116.0, -8.6), ["DPS", "MTR", "KPN", "BMA"]),
-    "Kalimantan": ((115.5, -1.0), ["BPN", "SMD", "PTK", "BJM", "PKY", "TRK"]),
+    "Kalimantan": ((115.5, -1.0), ["BPN", "SMR", "PTK", "BJM", "PKY", "TRK"]),
     "Sulawesi": ((121.0, -2.0), ["MKS", "MND", "KDI", "PLU", "GTO"]),
     "Maluku & Papua": ((133.0, -3.0), ["AMB", "JYP", "SON", "TTE", "MKW", "TIM", "MRK"]),
     "Internasional": ((98.0, 6.0), ["SIN", "HKG"]),
@@ -94,7 +96,7 @@ CITIES: dict[str, tuple[str, str]] = {
     "BKT": ("bukittinggi", _SUM), "MRE": ("muara enim", _SUM), "PYH": ("payakumbuh", _SUM),
     "MSB": ("musi banyuasin", _SUM),
     # Kalimantan
-    "BPN": ("balikpapan", _KAL), "SMR": ("samarinda", _KAL), "PTK": ("pontianak", _KAL), "BJM": ("banjarmasin", _KAL),
+    "BPN": ("balikpapan", _KAL), "SMR": ("samarinda", _KAL), "SMD": ("sumedang", _JBB), "PTK": ("pontianak", _KAL), "BJM": ("banjarmasin", _KAL),
     "BJB": ("banjarbaru", _KAL), "PKY": ("palangkaraya", _KAL), "PLK": ("palangkaraya", _KAL),
     "TRG": ("tenggarong", _KAL), "SKW": ("singkawang", _KAL), "PBU": ("pangkalan bun", _KAL),
     "TRK": ("tarakan", _KAL),
@@ -109,13 +111,85 @@ CITIES: dict[str, tuple[str, str]] = {
     # Internasional
     "SIN": ("singapore", "Internasional"), "HKG": ("hong kong", "Internasional"),
 }
+# POP and city codes confirmed by the supplied RANCID device/location list.
+CITIES.update({
+    # Jabodetabek and Banten
+    "TGR": ("tangerang", _JABO), "TGRK": ("serang", _JBB),
+    # Java
+    "SMN": ("sleman", _JTG), "BTL": ("bantul", _JTG), "CEPU": ("cepu", _JTG),
+    "CLCP": ("cilacap", _JTG), "GND": ("gandrungmangu", _JTG),
+    "CBN": ("cirebon", _JBB),
+    "JTM": ("madiun", _JTM), "KRS": ("probolinggo", _JTM),
+    # Bali and Nusa Tenggara
+    "ALR": ("alor", _BNT), "LBJ": ("labuan bajo", _BNT), "TGE": ("tange", _BNT),
+    "RTG": ("ruteng", _BNT), "ENDE": ("ende", _BNT),
+    # Sumatera and Riau Islands
+    "LMP": ("bandar lampung", _SUM), "BGK": ("bangka", _SUM), "BTN": ("tanjung uban", _SUM),
+    "MTK": ("matak", _SUM), "TRP": ("tarempa", _SUM), "ANTR": ("tarempa", _SUM),
+    "TJB": ("tanjung balai karimun", _SUM), "PWG": ("perawang", _SUM), "BLS": ("bengkalis", _SUM),
+    "SIAK": ("siak", _SUM), "UJT": ("ujung tanjung", _SUM),
+    # Maluku and Papua
+    "TMK": ("timika", _MP), "AGT": ("agats", _MP), "WTR": ("wetar", _MP),
+    "SGP": ("sugapa", _MP), "TKR": ("tiakur", _MP), "TNH": ("tanah merah", _MP),
+    "ENA": ("enarotali", _MP), "FEF": ("fef", _MP), "KYM": ("kenyam", _MP),
+    "TIGI": ("tigi", _MP), "KTM": ("kotamulia", _MP), "KBG": ("karubaga", _MP),
+    "TOM": ("tiom", _MP), "KBK": ("kobakma", _MP), "ARS": ("arso", _MP),
+    "OSB": ("oksibil", _MP), "ELE": ("elelim", _MP), "KIG": ("kigamani", _MP),
+    "ILA": ("ilaga", _MP), "KPI": ("kepi", _MP), "RAN": ("ransiki", _MP),
+    "BIAK": ("biak", _MP), "SER": ("serui", _MP), "NUM": ("numfor", _MP),
+    "BOT": ("botawa", _MP),
+    # Additional locations identified in the inventory (including compact host tokens).
+    "SMRG": ("semarang", _JTG), "LBP": ("lubuk pakam", _SUM), "PGP": ("pangkal pinang", _SUM),
+    "KIS": ("kisaran", _SUM), "SRH": ("sei rampah", _SUM), "KLS": ("mandoge", _SUM),
+    "RAP": ("rantau prapat", _SUM), "PWD": ("purwodadi", _JTG), "SOR": ("soreang", _JBB),
+    "GMN": ("tebing tinggi", _SUM), "TTG": ("tebing tinggi", _SUM),
+    "SPE": ("sape", _BNT),
+    "DLK": ("daik lingga", _SUM),
+    "HAU": ("haurgeulis", _JBB), "GMP": ("gempol", _JTM), "SNT": ("sentul", _JABO),
+    "CIL": ("cileungsi", _JABO), "GKD": ("gunungkidul", _JTG), "WTS": ("wates", _JTG),
+    "SGL": ("sungai liat", _SUM), "PAM": ("pamulang", _JABO), "KBY": ("kubu raya", _KAL),
+    "BAJ": ("bajawa", _BNT), "DKAI": ("dekai", _MP), "TUL": ("tual", _MP),
+    "NAB": ("nabire", _MP), "BTGD": ("batu gede", _BNT),
+    # International
+    "TLS": ("dili", "Internasional"),
+})
+
 # Codes that are also everyday tokens in hostnames (BSD the site, SIT/PAL/TIM words, model
 # fragments): accepted as an explicit POP code, but never read from a hostname token.
-_HOSTNAME_UNSAFE_CODES = {"BSD", "SIT", "PAL", "MAD", "TIM", "SON", "BLA", "PAD", "SMP", "KRA", "BIT", "PRE"}
+_HOSTNAME_UNSAFE_CODES = {"BSD", "SIT", "PAL", "MAD", "TIM", "SON", "BLA", "PAD", "SMP", "KRA", "BIT", "PRE", "SNT"}
+# LBP appears as a site token in hostnames, but isn't a curated POP code. Keep its
+# city mapping for location/area lookup while leaving POP records for manual review.
+_NON_POP_CITY_CODES = {"LBP"}
 # Other spellings of a city seen in hostnames/locations -> its code.
 CITY_ALIASES: dict[str, str] = {
     "tasik": "TSK", "jogja": "YGY", "parepare": "PRE", "pangkalanbun": "PBU", "palangka raya": "PKY",
     "belitung timur": "MGR", "belu": "ATB",
+    "univ siliwangi": "TSK", "universitas siliwangi": "TSK", "unissula": "SMG",
+    "universitas diponegoro": "SMG", "soeta": "TNG", "larangan": "TNG",
+    "meruya": "JKT", "senayan": "JKT", "pramuka": "JKT", "taman ismail marzuki": "JKT",
+    "boven digoel": "TNH", "batugede": "BTGD", "sumbawa besar": "SBW",
+    "itc permata hijau": "JKT", "diskominfo dki": "JKT", "ratu prabu": "JKT",
+    "upn veteran site 2": "DPK", "sekjen kementerian agama": "JKT",
+    "kementerian ketenagakerjaan": "JKT", "universitas terbuka": "TNG",
+    "universitas soedirman": "PWT", "tsel buaran": "JKT", "taruna bakti": "BDG",
+    "ditlantas polda bali": "DPS", "ditlantas polda sumatera utara": "MDN",
+    "wisma raharja": "JKT", "wijaya karya": "JKT", "yayasan al izhar": "JKT",
+    "samratulangi": "MND", "metro tv joglo": "JKT", "mandiri rempoa": "TNG",
+    "mabes tni au": "JKT", "kementrian komdigi": "JKT", "kementrian koperasi": "JKT",
+    "kemenkeu": "JKT", "kemendesa": "JKT", "jati baru": "JKT",
+    "gedung sapta pesona": "JKT", "formula e": "JKT", "diskominfo asahan": "KIS",
+    "mten bulding": "JKT", "mten building": "JKT", "brantas abipraya": "JKT",
+    "kawasan lintas biru digital": "CKR", "pager ngumbuk": "SDA",
+    "mnc skyvision": "JKT", "midi utama indo": "TNG", "kominfo pdsi": "JKT",
+    "pertamina ep": "JKT", "pusintek kemenkeu": "JKT",
+    "pusintek kemakeu": "JKT", "gedung sapta pesono": "JKT",
+    "yyg": "YGY", "unsoed idc duren": "JKT", "cibisnine": "JKT",
+    "balai teknik bendungan": "JKT", "wisma millenia": "JKT", "bakti kominfo duren": "JKT",
+    "transcosmos yogya": "YGY", "arkadia": "JKT", "kemhan": "JKT",
+    "telkom karet": "JKT", "deltamas": "CKR", "daik lingga": "DLK",
+    "menara danareksa": "JKT", "semen the east": "JKT", "mandiri grha mantap": "JKT",
+    "gunung kidul": "GKD", "undip": "SMG", "boven dgl": "TNH", "kuburaya": "KBY",
+    "gedung sapta pesona": "JKT", "ntb shape": "SPE",
 }
 
 _AREA_BY_CODE = {code: area for area, (_, codes) in AREAS.items() for code in codes}
@@ -173,6 +247,7 @@ _AREA_KEYWORDS: dict[str, list[str]] = {
     "Sulawesi": ["sulawesi", "sulut", "sulteng", "sulsel", "sultra", "sulbar", "makassar", "palu", "manado", "kendari", "gorontalo", "mamuju"],
     "Maluku & Papua": ["maluku", "malut", "ambon", "ternate", "papua", "papua barat", "papua tengah", "papua pegunungan", "papua selatan", "jayapura", "sorong", "manokwari", "timika", "merauke"],
 }
+_AREA_KEYWORDS["Jabodetabek"].append("kyaimaja")
 for _name, _area in {name: area for name, area in CITIES.values()}.items():
     if _name not in _AREA_KEYWORDS[_area]:
         _AREA_KEYWORDS[_area].append(_name)
@@ -238,7 +313,8 @@ FUNCTION_TOKENS = {
 def is_city_code(code: str | None) -> bool:
     """A registered city code, or a 4-letter variant of one (JKTU / JKTS = Jakarta Utara / Selatan)."""
     code = (code or "").upper()
-    return bool(code) and code not in FUNCTION_TOKENS and (code in _AREA_BY_CODE or code[:3] in _AREA_BY_CODE)
+    return (bool(code) and code not in FUNCTION_TOKENS and code not in _NON_POP_CITY_CODES
+            and (code in _AREA_BY_CODE or code[:3] in _AREA_BY_CODE))
 
 
 def first_city_code(hostname: str | None) -> str | None:
@@ -256,18 +332,22 @@ def first_city_code(hostname: str | None) -> str | None:
 
 
 def pop_code_for_hostname(hostname: str | None) -> str | None:
-    """POP code a hostname points at explicitly: a cell-site city token, a city name, else a single
-    city-code token."""
+    """POP code from a cell-site name, first city token, or the supplied inventory location."""
     if not hostname:
         return None
     parts = csr_parts(hostname)
     if parts is not None:
         return parts[2]
-    by_name = city_code_for_hostname(hostname)
-    if by_name:
-        return by_name
-    codes = set(_hostname_codes(hostname))
-    return codes.pop() if len(codes) == 1 else None
+    by_code = first_city_code(hostname)
+    if by_code:
+        return by_code
+    # A directional district name isn't enough to infer the broader POP (for example,
+    # NUMFOR-TIMUR); retain the area mapping but ask for a curated POP code.
+    if re.search(r"(?<![a-z])numfor\s+timur(?![a-z])", _words(hostname)):
+        return None
+    location = LOCATION_BY_HOSTNAME.get(hostname.strip().upper())
+    text = f"{hostname} {location}" if location else hostname
+    return city_code_for_hostname(text)
 
 
 def sibling_codes(code: str) -> list[str]:
@@ -280,18 +360,31 @@ def sibling_codes(code: str) -> list[str]:
 
 
 def city_label(code: str) -> str | None:
-    entry = CITIES.get(code.upper())
+    code = code.upper()
+    entry = CITIES.get(code) or CITIES.get(code[:3])
     return entry[0].title() if entry else None
 
 
 def area_for_hostname(hostname: str | None) -> str | None:
-    """Area written explicitly in a hostname: a city code token, a 2-letter province code (SNI ISO
-    3166-2:ID, e.g. JT, JI) as its own token, or a city/province name. Only when they all agree."""
+    """Area from a hostname: its first registered city code wins; names and province tokens are fallbacks."""
     if not hostname:
         return None
     csr_area = area_for_csr(hostname)
     if csr_area:
         return csr_area
+    location = LOCATION_BY_HOSTNAME.get(hostname.strip().upper())
+    location_area = area_for_name(location) if location else None
+    if location_area:
+        return location_area
+    # Trunk names describe both ends of a circuit, so a city code on the left doesn't
+    # establish the device's own area when another endpoint belongs to a different area.
+    tokens = re.split(r"[^A-Z0-9]+", hostname.upper())
+    is_trunk = any(token in {"TRUNK", "BACKHAUL", "TRANSIT", "INTERCONNECT"} for token in tokens)
+    # The first registered city token is normally the POP; later tokens often name a remote customer site.
+    primary_code = first_city_code(hostname)
+    primary_area = area_for_code(primary_code) if primary_code else None
+    if primary_area and not is_trunk:
+        return primary_area
     candidates = {_AREA_BY_CODE[c] for c in _hostname_codes(hostname)}
     for token in re.split(r"[^A-Z0-9]+", hostname.upper()):
         if len(token) == 2 and token.isalpha() and token in _AREA_BY_SHORT_CODE:
@@ -428,6 +521,7 @@ _CSR_HOSTNAME = re.compile(r"^(SUM|SUL|KAL|BAL|NUS|JAW|JAV|PAP|MAL|MLK)-([A-Z]{2
 _AREA_BY_REGION_TOKEN = {
     "SUM": "Sumatera", "SUL": "Sulawesi", "KAL": "Kalimantan", "BAL": "Bali & Nusa Tenggara",
     "NUS": "Bali & Nusa Tenggara", "PAP": "Maluku & Papua", "MAL": "Maluku & Papua", "MLK": "Maluku & Papua",
+    "NTB": "Bali & Nusa Tenggara", "NTT": "Bali & Nusa Tenggara",
 }
 
 
