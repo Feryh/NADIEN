@@ -50,6 +50,16 @@ def test_should_refuse_deleting_unassigned(client, pops):
     assert client.delete(f"/api/pops/{pops['parked'].id}").status_code == 422
 
 
+def test_should_refuse_deleting_pop_when_devices_still_use_it(client, pops, db):
+    resp = client.delete(f"/api/pops/{pops['jkts'].id}")
+    assert resp.status_code == 409 and "masih dipakai 1 perangkat" in resp.json()["detail"]
+    assert db.get(m.Pop, pops["jkts"].id) is not None
+
+
+def test_should_delete_pop_when_nothing_uses_it(client, pops, db):
+    assert client.delete(f"/api/pops/{pops['jkt'].id}").status_code == 204
+
+
 def test_should_move_devices_and_fill_details_when_merging_duplicate_pop(client, pops, db):
     body = client.post(f"/api/pops/{pops['jkts'].id}/merge", json={"target_code": "jkt"}).json()
     assert body["into"] == "JKT" and body["moved"] == {"devices.pop_id": 1}

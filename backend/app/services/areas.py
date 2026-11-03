@@ -66,7 +66,7 @@ CITIES: dict[str, tuple[str, str]] = {
     "SGN": ("sragen", _JTG), "PWR": ("purworejo", _JTG), "PML": ("pemalang", _JTG), "BLA": ("blora", _JTG),
     "BRS": ("brebes", _JTG), "WNS": ("wonosobo", _JTG), "RBG": ("rembang", _JTG), "WNG": ("wonogiri", _JTG),
     "KRA": ("karanganyar", _JTG), "SKH": ("sukoharjo", _JTG), "BTG": ("batang", _JTG), "GBG": ("grobogan", _JTG),
-    "BNR": ("banjarnegara", _JTG),
+    "BNR": ("banjarnegara", _JTG), "WSB": ("wonosobo", _JTG),
     # Jawa Timur
     "SBY": ("surabaya", _JTM), "MLG": ("malang", _JTM), "MJO": ("mojokerto", _JTM), "MJK": ("mojokerto", _JTM),
     "NJK": ("nganjuk", _JTM), "PRB": ("probolinggo", _JTM), "PBL": ("probolinggo", _JTM), "JBR": ("jember", _JTM),
@@ -90,6 +90,9 @@ CITIES: dict[str, tuple[str, str]] = {
     "LLG": ("lubuk linggau", _SUM), "TJP": ("tanjung pinang", _SUM), "NTNA": ("natuna", _SUM),
     "LSM": ("lhokseumawe", _SUM), "LGS": ("langsa", _SUM), "LKT": ("langkat", _SUM), "MGR": ("manggar", _SUM),
     "TBT": ("tebing tinggi", _SUM), "LHT": ("lahat", _SUM),
+    # POPs whose Observium location names the city (Bukit Tinggi, Muara Enim, Payakumbuh, Sekayu Musi Banyuasin)
+    "BKT": ("bukittinggi", _SUM), "MRE": ("muara enim", _SUM), "PYH": ("payakumbuh", _SUM),
+    "MSB": ("musi banyuasin", _SUM),
     # Kalimantan
     "BPN": ("balikpapan", _KAL), "SMR": ("samarinda", _KAL), "PTK": ("pontianak", _KAL), "BJM": ("banjarmasin", _KAL),
     "BJB": ("banjarbaru", _KAL), "PKY": ("palangkaraya", _KAL), "PLK": ("palangkaraya", _KAL),
@@ -99,6 +102,7 @@ CITIES: dict[str, tuple[str, str]] = {
     "MKS": ("makassar", _SUL), "MND": ("manado", _SUL), "KDI": ("kendari", _SUL), "PLU": ("palu", _SUL),
     "PAL": ("palu", _SUL), "GTO": ("gorontalo", _SUL), "MMJ": ("mamuju", _SUL), "BIT": ("bitung", _SUL),
     "PRE": ("pare pare", _SUL), "KTG": ("kotamobagu", _SUL), "PLW": ("polewali", _SUL),
+    "WTP": ("watampone", _SUL),
     # Maluku & Papua
     "AMB": ("ambon", _MP), "JYP": ("jayapura", _MP), "SON": ("sorong", _MP), "TTE": ("ternate", _MP),
     "MKW": ("manokwari", _MP), "TIM": ("timika", _MP), "MRK": ("merauke", _MP),
@@ -221,6 +225,34 @@ def _hostname_codes(hostname: str) -> list[str]:
                 codes.append(candidate)
                 break
     return codes
+
+
+# Hostname tokens that name a function, platform or company, never a place (CGW-NAP-BDG-BBU,
+# VRR-MPLS-JKT-BSD, M6KS-BRAS-CGN-JKTT-PSR). They are skipped when looking for a POP code.
+FUNCTION_TOKENS = {
+    "NAP", "CGN", "NIX", "NDC", "CORE", "MPLS", "BRAS", "ISP", "CPE", "MGMT", "UTP", "OPT", "VMX", "VRR",
+    "NEW", "MTI", "CDN", "DRC", "IDC", "ZTE", "HW", "FH", "DCI", "IXP", "OTT", "SPE", "IGW", "BNG", "OLT",
+}
+
+
+def is_city_code(code: str | None) -> bool:
+    """A registered city code, or a 4-letter variant of one (JKTU / JKTS = Jakarta Utara / Selatan)."""
+    code = (code or "").upper()
+    return bool(code) and code not in FUNCTION_TOKENS and (code in _AREA_BY_CODE or code[:3] in _AREA_BY_CODE)
+
+
+def first_city_code(hostname: str | None) -> str | None:
+    """POP code as written in the hostname: the first token, left to right, that is a registered city
+    code (CGW-NAP-BDL-KDT -> BDL, M6KS-BRAS-CGN-JKTT-PSR -> JKTT). 4-letter variants are kept as
+    written (JKTS stays JKTS). Codes that are also everyday hostname words are never read here."""
+    for token in re.split(r"[^A-Z0-9]+", (hostname or "").upper()):
+        match = _CODE_TOKEN.match(token)
+        if not match:
+            continue
+        code = match.group(1)
+        if is_city_code(code) and code not in _HOSTNAME_UNSAFE_CODES and code[:3] not in _HOSTNAME_UNSAFE_CODES:
+            return code
+    return None
 
 
 def pop_code_for_hostname(hostname: str | None) -> str | None:

@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from ... import models as m
 from ...config import settings
+from ...services.areas import FUNCTION_TOKENS, is_city_code
 from ...services.topology import discover_links, legacy_host_key, norm_host, norm_if
 from .client import ObserviumClient
 from .parsers import (
@@ -156,9 +157,12 @@ class _Writer:
             self.report.counts["devices_created"] += 1
         else:
             self.report.counts["devices_updated"] += 1
-            # Not curated: parked in UNASSIGNED, or in a POP an older parser wrongly named after a role.
+            # Not curated: parked in UNASSIGNED, in a POP an older parser named after a role or function
+            # word (OLT, NAP), or in a non-city POP while the hostname names a registered city code.
             current = next((p for p in self.pops.values() if p.id == device.pop_id), None)
-            misplaced = current is None or current.code == UNASSIGNED or is_role_word(current.code)
+            misplaced = (current is None or current.code == UNASSIGNED or is_role_word(current.code)
+                         or current.code in FUNCTION_TOKENS
+                         or (not is_city_code(current.code) and is_city_code(rec.pop_code)))
             if rec.pop_code and misplaced and (current is None or current.code != rec.pop_code):
                 device.pop_id = self.pop(rec).id
                 self.report.counts["devices_pop_assigned"] += 1

@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from ...services.areas import csr_parts
+from ...services.areas import FUNCTION_TOKENS, csr_parts, first_city_code, is_city_code
 from ...services.topology import strip_domain
 
 # Observium `os` -> (vendor, OS family). Unknown OSes fall back to the row's own `vendor` field.
@@ -119,23 +119,36 @@ def guess_role(hostname: str) -> str:
     return role_from_hostname(hostname) or "pe"
 
 
+def pop_from_tokens(hostname: str, regex_code: str | None) -> str | None:
+    """A registered city code anywhere in the hostname wins over a first token that is not one
+    (VRR-MPLS-JKT-BSD -> JKT, not VRR). Without any registered code the first token stays (BKT-GGP-BNG1-M4
+    -> BKT: a real city the dictionary does not list yet), unless it is a function word (NAP, CGN, ...)."""
+    if regex_code and is_city_code(regex_code):
+        return regex_code
+    found = first_city_code(hostname)
+    if found:
+        return found
+    return None if regex_code in FUNCTION_TOKENS else regex_code
+
+
 def infer_pop(hostname: str, known_codes: set[str]) -> str | None:
     """POP for hostnames the regex missed (role-first convention, e.g. OLT2-MA5800-X15-JKTS-TND).
 
     A token that is already a known POP code wins (left to right: the POP precedes the site);
     otherwise the first purely alphabetic 3–4 letter token that is not a role word.
     """
-    tokens = _tokens(hostname)
-    for token in tokens:
-        if _role_word(token):  # never a POP, even if an older sync created a POP named "OLT"
-            continue
+    found = first_city_code(hostname)  # CGW-NAP-BDG-BBU -> BDG, never the function word NAP
+    if found:
+        return found
+    tokens = [t for t in _tokens(hostname) if not _role_word(t) and t not in FUNCTION_TOKENS]
+    for token in tokens:  # role words are never a POP, even if an older sync created a POP named "OLT"
         if token in known_codes:
             return token
         base = token.rstrip("0123456789")  # JKT2 -> JKT
         if base != token and base in known_codes:
             return base
     for token in tokens:
-        if token.isalpha() and 3 <= len(token) <= 4 and _role_word(token) is None:
+        if token.isalpha() and 3 <= len(token) <= 4:
             return token
     return None
 
@@ -157,6 +170,8 @@ def parse_device(row: dict[str, Any], pop_regex: str) -> DeviceRecord | None:
     cell_site = csr_parts(hostname)
     if cell_site:  # the first token is the island group (BAL, SUM); the city is the POP
         pop_code = cell_site[2]
+    else:
+        pop_code = pop_from_tokens(hostname, pop_code)
 
     os_name = (row.get("os") or "").lower()
     vendor, os_family = OS_VENDOR.get(os_name, (row.get("vendor") or None, row.get("os") or None))

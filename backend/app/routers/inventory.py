@@ -3,7 +3,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from .. import models as m
 from .. import schemas as s
@@ -18,7 +18,19 @@ UNASSIGNED_POP = "UNASSIGNED"
 
 def _pop_guard(pop: m.Pop, changes: dict[str, Any] | None) -> None:
     """UNASSIGNED is where collectors park devices whose POP the hostname does not tell; a sync
-    recreates it under that code, so renaming or deleting it only produces a second copy."""
+    recreates it under that code, so renaming or deleting it only produces a second copy.
+    Any POP still in use cannot be deleted (SQLite does not enforce foreign keys: its devices
+    would silently lose their POP)."""
+    if changes is None and pop.code.upper() != UNASSIGNED_POP:
+        db = object_session(pop)
+        devices = db.scalar(select(func.count()).select_from(m.Device).where(m.Device.pop_id == pop.id)) or 0
+        others = sum(db.scalar(select(func.count()).select_from(model).where(column == pop.id)) or 0
+                     for model, column in _POP_REFERENCES if model is not m.Device)
+        if devices or others:
+            raise HTTPException(409, f"POP {pop.code} masih dipakai {devices} perangkat"
+                                     f"{f' dan {others} data lain' if others else ''}: pindahkan dulu (edit kolom POP "
+                                     f"perangkat) atau gabungkan ke POP lain")
+        return
     if pop.code.upper() != UNASSIGNED_POP:
         return
     if changes is None:

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from .. import models as m
 from ..collectors import runner as jobs_runner
+from ..collectors.jobs import JobError, backup_before
 from ..database import get_db
 from ..services import cache
 from ..services.areas import (
@@ -29,6 +30,9 @@ from ..services.areas import (
     area_for_hostnames,
     area_for_pop,
     city_label,
+    csr_parts,
+    first_city_code,
+    is_city_code,
     pop_code_for_hostname,
     sibling_codes,
     area_position,
@@ -199,6 +203,93 @@ def auto_assign_areas(db: Session = Depends(get_db)):
         "pops_created": created,
         "still_unmapped": sorted(still),
     }
+
+
+@router.post("/pops/rehome")
+def rehome_pops(apply: bool = False, db: Session = Depends(get_db)):
+    """Review POPs against the hostname rule: a device in a POP whose code is not a registered city
+    code (NAP, VRR, CGN, UNASSIGNED, ...) moves to the first registered city code in its hostname
+    (CGW-NAP-BDL-KDT -> BDL). POPs left empty are deleted. `apply=false` only previews."""
+    backup = None
+    if apply:
+        jobs_runner.ensure_idle(jobs_runner.runner)
+        try:
+            backup = backup_before(db, "rehome-pops")  # many devices change POP at once: keep a way back
+        except JobError as exc:
+            raise HTTPException(500, str(exc)) from exc
+    pops = {p.code.upper(): p for p in db.scalars(select(m.Pop))}
+    by_id = {p.id: p for p in pops.values()}
+    moves: dict[tuple[str, str], list[str]] = defaultdict(list)
+    created: list[str] = []
+    for device in db.scalars(select(m.Device)):
+        current = by_id.get(device.pop_id)
+        if current is None or is_city_code(current.code):
+            continue  # registered city POPs are curated as they are
+        target = _rule_pop(device.hostname)
+        if not target or target == current.code.upper():
+            continue
+        moves[(current.code, target)].append(device.hostname)
+        if not apply:
+            continue
+        pop = pops.get(target)
+        if pop is None:
+            area = area_for_pop(target, None, None)
+            pop = m.Pop(code=target, name=city_label(target) or target, status="active",
+                        region=None if area == UNMAPPED_AREA else area)
+            db.add(pop)
+            db.flush()
+            pops[target], by_id[pop.id] = pop, pop
+            created.append(target)
+        device.pop_id = pop.id
+    db.flush()
+    sources = {source for source, _ in moves}
+    deleted = _delete_empty_pops(db, [pops[s.upper()] for s in sources]) if apply else []
+    if apply:
+        db.commit()
+    remaining = _non_city_pops(db) if apply else None
+    return {
+        "applied": apply,
+        "backup": backup,
+        "devices_moved": sum(len(v) for v in moves.values()),
+        "moves": [{"from": s, "to": t, "devices": len(h), "examples": h[:5]}
+                  for (s, t), h in sorted(moves.items(), key=lambda kv: -len(kv[1]))],
+        "pops_created": created,
+        "pops_deleted": deleted,
+        "non_city_pops_left": remaining,
+    }
+
+
+def _rule_pop(hostname: str) -> str | None:
+    parts = csr_parts(hostname)
+    return parts[2] if parts else first_city_code(hostname)
+
+
+def _delete_empty_pops(db: Session, candidates: list[m.Pop]) -> list[str]:
+    from .inventory import _POP_REFERENCES  # every column that points at a POP
+
+    deleted = []
+    for pop in candidates:
+        if pop.code.upper() == UNASSIGNED_POP or is_city_code(pop.code):
+            continue
+        in_use = any(db.scalar(select(func.count()).select_from(model).where(column == pop.id))
+                     for model, column in _POP_REFERENCES)
+        if not in_use:
+            db.delete(pop)
+            deleted.append(pop.code)
+    return sorted(deleted)
+
+
+def _non_city_pops(db: Session) -> list[dict[str, Any]]:
+    """Non-city POPs that still hold devices (no registered city code in their hostnames): for manual review."""
+    rows = db.execute(select(m.Pop.code, func.count(m.Device.id)).join(m.Device, m.Device.pop_id == m.Pop.id)
+                      .group_by(m.Pop.code)).all()
+    return [{"code": code, "devices": n} for code, n in sorted(rows, key=lambda r: -r[1])
+            if not is_city_code(code) and not _all_cell_sites(db, code)]
+
+
+def _all_cell_sites(db: Session, code: str) -> bool:
+    hostnames = db.scalars(select(m.Device.hostname).join(m.Pop, m.Pop.id == m.Device.pop_id).where(m.Pop.code == code))
+    return all(csr_parts(h) for h in hostnames)
 
 
 # --------------------------------------------------------------------------- drill-down topology
