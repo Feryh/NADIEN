@@ -1,11 +1,20 @@
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message)
+  }
+}
+
+/** Fired when the session is gone, so the app can show the login screen again. */
+export const UNAUTHORIZED_EVENT = 'nadien:unauthorized'
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method,
+    credentials: 'same-origin',
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
+  if (res.status === 401 && !path.startsWith('/auth/')) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
   if (!res.ok) {
     let detail = res.statusText
     try {
@@ -14,7 +23,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     } catch {
       /* non-JSON error body */
     }
-    throw new ApiError(`${res.status} — ${detail}`)
+    throw new ApiError(`${res.status} — ${detail}`, res.status)
   }
   return res.status === 204 ? (undefined as T) : res.json()
 }

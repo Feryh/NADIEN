@@ -90,7 +90,7 @@ class Settings(BaseSettings):
     hotspot_suspect_pct: float = 150.0  # above this the link capacity is treated as wrong data
 
     # Collector settings page (Pengaturan Collector). Values saved there override this environment.
-    # NADIEN has no login yet: set false in production to keep credentials env-only.
+    # Only admins can change it; set false in production to keep credentials env-only.
     settings_ui_enabled: bool = True
     # Key for the secrets saved from that page (Fernet, urlsafe base64). Without it a key file is created
     # next to the backups; with several replicas set the same key everywhere (see docs/LAUNCH.md).
@@ -102,6 +102,20 @@ class Settings(BaseSettings):
     ai_ollama_url: str = "http://localhost:11434"
     ai_default_model: str = "llama3.1:8b"
     ai_context_chars: int = 12000  # network data sent with each question (local models have small contexts)
+
+    # Login and roles. With auth off (tests, single-user dev) every request acts as a local admin.
+    auth_enabled: bool = True
+    session_hours: float = 12.0
+    ingest_token: str | None = None  # Bearer token for external systems posting to /api/integrations
+
+    # Pushing changes to devices (SSH/telnet). Engineers type their own device credentials per run; they are
+    # never stored. A jump host, when set, is reached with the same credentials unless a jump user is given.
+    device_jump_host: str | None = None
+    device_jump_port: int = 22
+    device_jump_user: str | None = None
+    device_timeout_s: float = 30.0
+    # Host keys seen on first connect are kept here and enforced afterwards (default: next to the backups).
+    device_known_hosts: str | None = None
 
     # Read-model cache for heavy views (topology, capacity, dashboard); cleared on every write.
     cache_ttl_s: float = 60.0

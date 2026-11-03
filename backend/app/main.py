@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
@@ -9,9 +9,10 @@ from .collectors.runner import runner
 from .collectors.scheduler import Scheduler
 from .config import settings
 from .database import init_schema
-from .routers import (ai, analysis, capacity, collectors, configs, dashboard, insights, integrations, inventory, mop,
-                      paths, topology, twin, validation)
+from .routers import (ai, analysis, auth, capacity, changes, collectors, configs, dashboard, insights, integrations,
+                      inventory, mop, paths, topology, twin, validation)
 from .services import cache, collector_settings
+from .services.auth import authorize
 
 
 @asynccontextmanager
@@ -67,8 +68,13 @@ for r in (
     configs.router,
     ai.router,
     twin.router,
+    changes.router,
+    auth.account,
+    auth.users,
+    auth.audit_logs,
 ):
-    app.include_router(r, prefix="/api")
+    app.include_router(r, prefix="/api", dependencies=[Depends(authorize)])
+app.include_router(auth.public, prefix="/api")
 
 
 @app.get("/api/health", tags=["System"])

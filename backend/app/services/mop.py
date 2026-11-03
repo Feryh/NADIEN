@@ -174,6 +174,18 @@ def build_mop(db: Session, service: m.Service, meta: MopMeta, addressing: Addres
     }
 
 
+def site_checks(db: Session, service: m.Service) -> dict[str, dict[str, list[str]]]:
+    """Show-only commands per site for change execution: {"A": {"precheck": [...], "postcheck": [...]}, "B": ...},
+    the same ones the MoP prints in its pre-check and verification sections."""
+    vendors = {v.id: v for v in db.scalars(select(m.Vendor))}
+    pops = {p.id: p for p in db.scalars(select(m.Pop))}
+    a = _Endpoint("A", db.get(m.Device, service.a_device_id) if service.a_device_id else None, service.a_interface, vendors, pops)
+    b = _Endpoint("B", db.get(m.Device, service.b_device_id) if service.b_device_id else None, service.b_interface, vendors, pops)
+    pre = _precheck(service, a, b, {"primary": [], "backup": []}).steps
+    post = _verification(service, a, b).steps
+    return {ep.label: {"precheck": pre[i].commands, "postcheck": post[i].commands} for i, ep in enumerate((a, b))}
+
+
 # --------------------------------------------------------------------------- sections
 
 

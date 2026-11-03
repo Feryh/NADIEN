@@ -96,6 +96,14 @@ def _fernet(db: Session, create: bool = False) -> Fernet | None:
     return Fernet(path.read_bytes().strip())
 
 
+def signing_key(db: Session) -> bytes:
+    """Raw bytes of the same key, for HMAC-signed login sessions (created on first use like the secrets)."""
+    if settings.secret_key:
+        return settings.secret_key.encode()
+    _fernet(db, create=True)
+    return _key_file(db).read_bytes().strip()
+
+
 def encrypt_secret(db: Session, value: str) -> str:
     """Encrypt with the same key as the collector secrets (other features store their API keys this way)."""
     fernet = _fernet(db, create=True)

@@ -50,6 +50,7 @@ class Addressing:
     bgp_asn: int | None = None
     policer: bool = False
     vlans: list[int] | None = None  # VPLS batch: one sub-interface + instance per VLAN instead of the service VLAN
+    vc_ids: dict[int, int] | None = None  # per-VLAN VC id, for VLANs whose default (VC id = VLAN) clashes
 
 
 @dataclass
@@ -73,6 +74,7 @@ class _Ctx:
     asn: str
     vrf_exists: bool
     warnings: list[str] = field(default_factory=list)
+    vc_conflicts: list[str] = field(default_factory=list)  # why this VC id cannot be used as is
     pw: str | None = None  # ZTE pw name allocated from the running config
     first: bool = True  # first VLAN of a batch: carries the vendor's entry command and shared blocks
 
@@ -119,6 +121,37 @@ def parse_vlans(value: str | None) -> list[int] | None:
     return sorted(vlans)
 
 
+def parse_vc_ids(value: str | None) -> dict[int, int] | None:
+    """"1480:9001,1481:9002" -> {1480: 9001, 1481: 9002}: VLAN -> VC id overrides."""
+    if not value or not value.strip():
+        return None
+    vc_ids: dict[int, int] = {}
+    for part in re.split(r"[,\s]+", value.strip()):
+        match = re.fullmatch(r"(\d{1,4}):(\d{1,10})", part)
+        if not match:
+            raise AddressError(f"VC id per VLAN tidak valid: {part} (contoh 1480:9001)")
+        vlan, vc_id = int(match.group(1)), int(match.group(2))
+        if not 1 <= vlan <= 4094 or not 1 <= vc_id <= 4294967295:
+            raise AddressError(f"VC id per VLAN {part} di luar rentang")
+        vc_ids[vlan] = vc_id
+    return vc_ids
+
+
+def check_vc_ids(vlans: list[int] | None, vc_ids: dict[int, int] | None) -> None:
+    """Overrides must name VLANs of the batch, and no two VLANs may end up on the same VC id."""
+    if not vc_ids:
+        return
+    if not vlans:
+        raise AddressError("VC id per VLAN hanya untuk batch VLAN; untuk VLAN layanan isi VC id.")
+    unknown = sorted(set(vc_ids) - set(vlans))
+    if unknown:
+        raise AddressError(f"VC id diisi untuk VLAN yang tidak ada di daftar: {', '.join(map(str, unknown))}")
+    effective = [vc_ids.get(vlan, vlan) for vlan in vlans]
+    duplicates = sorted({vc for vc in effective if effective.count(vc) > 1})
+    if duplicates:
+        raise AddressError(f"VC id dipakai lebih dari satu VLAN di batch ini: {', '.join(map(str, duplicates))}")
+
+
 ConfigSource = Callable[[int], str]  # device id -> running config text (raises RunningConfigError)
 
 
@@ -154,8 +187,10 @@ def _vlans(service: m.Service, addressing: Addressing) -> list[int]:
 
 
 def vc_id_for(service: m.Service, addressing: Addressing, vlan: int | None = None) -> int:
-    """VC id = VLAN; a given VC id only applies to a single-VLAN service."""
+    """VC id = VLAN unless overridden per VLAN; a single VC id only applies to a single-VLAN service."""
     vlan = vlan if vlan is not None else service.vlan_id
+    if addressing.vc_ids and vlan in addressing.vc_ids:
+        return addressing.vc_ids[vlan]
     single = not addressing.vlans or len(addressing.vlans) == 1
     return (addressing.vc_id if single else None) or vlan or VC_ID_BASE + service.id
 
@@ -197,7 +232,7 @@ def _endpoint(db: Session, service: m.Service, customer: m.Customer | None, labe
         warnings.append("FiberHome memakai pseudowire tanpa control-word (encapsulation raw), vendor lain dengan "
                         "control-word: samakan pengaturan control-word di kedua ujung.")
     if addressing.vc_id and len(contexts) > 1:
-        warnings.append("VC id manual diabaikan untuk batch beberapa VLAN: VC id = VLAN masing-masing.")
+        warnings.append("VC id manual diabaikan untuk batch beberapa VLAN: isi VC id per VLAN.")
     if dialect == "zte" and kind == "l2vpn":
         _zte_from_running_config(contexts, config_source, device.id, out["notes"], warnings)
     config: list[str] = []
@@ -210,6 +245,9 @@ def _endpoint(db: Session, service: m.Service, customer: m.Customer | None, labe
         warnings += ctx.warnings
     unique = list(dict.fromkeys(warnings + [SYNTAX_WARNING]))
     out.update(config=config, rollback=rollback, commit=COMMIT[dialect], warnings=unique)
+    if kind == "l2vpn":
+        out["vc_ids"] = [{"vlan": ctx.vlan, "vc_id": ctx.vc_id, "pw": ctx.pw, "conflicts": ctx.vc_conflicts}
+                         for ctx in contexts]
     return out
 
 
@@ -246,6 +284,7 @@ def _zte_from_running_config(contexts: list[_Ctx], config_source: ConfigSource, 
     for ctx, pw in zip(contexts, allocate_pw(used, len(contexts))):
         ctx.pw = pw
         if (ctx.peer_loopback, ctx.vc_id) in vcids:
+            ctx.vc_conflicts.append(f"sudah ada di config RANCID (neighbour {ctx.peer_loopback})")
             warnings.append(f"vcid {ctx.vc_id} ke neighbour {ctx.peer_loopback} sudah ada di config perangkat: "
                             "isi VC id lain.")
         if re.search(rf"^interface {re.escape(ctx.sub)}\s*$", text, re.M):
@@ -289,11 +328,13 @@ def _context(db: Session, service: m.Service, customer: m.Customer | None, devic
         warnings.append(f"Sub-interface {sub} sudah ada di inventory: pastikan tidak dipakai layanan lain.")
     peer = db.get(m.Device, peer_id) if peer_id else None
     vc_id = vc_id_for(service, addressing, vlan)
+    vc_conflicts: list[str] = []
     if _kind(service.service_type) == "l2vpn":
         if not (peer and peer.loopback_ipv4):
             warnings.append("Loopback PE lawan belum diketahui: isi <loopback-peer> secara manual.")
         clash = _vc_clash(db, service, vc_id)
         if clash:
+            vc_conflicts.append(f"dipakai layanan {clash} antara dua PE yang sama")
             warnings.append(f"VC id {vc_id} juga dipakai layanan {clash} antara dua PE yang sama: isi VC id lain.")
     parsed = parse_cidr(ip)
     if service.service_type in ("l3vpn", "internet") and parsed is None:
@@ -323,7 +364,7 @@ def _context(db: Session, service: m.Service, customer: m.Customer | None, devic
         vc_id=vc_id, kbps=service.bandwidth_mbps * 1000, policer=addressing.policer,
         ip=parsed[0] if parsed else None, mask=parsed[1] if parsed else None,
         vrf=service.vrf_name or "<vrf>", rd=rd or "<rd>", rt=rts or ["<rt>"], asn=asn or "<asn>",
-        vrf_exists=vrf_exists, warnings=warnings, first=first,
+        vrf_exists=vrf_exists, warnings=warnings, vc_conflicts=vc_conflicts, first=first,
     )
 
 

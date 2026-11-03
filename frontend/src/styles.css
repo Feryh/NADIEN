@@ -95,6 +95,7 @@ tr.clickable:hover, tr.selected { background: var(--panel-2); }
 .pill-ok { background: #22c55e22; color: #86efac; }
 .pill-bad { background: #ef444422; color: #fca5a5; }
 .pill-muted { background: #64748b33; color: var(--muted); }
+.pill-warn { background: #eab30833; color: #facc15; }
 td.trend-up { color: #fbbf24; }
 td.trend-down { color: #86efac; }
 .badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; font-weight: 600; white-space: nowrap; }
@@ -363,3 +364,23 @@ a.button.primary { background: var(--accent-strong); border-color: var(--accent-
 .ai-input { display: flex; gap: 8px; align-items: flex-end; border-top: 1px solid var(--border); padding-top: 10px; }
 .ai-input textarea { flex: 1; resize: vertical; min-height: 44px; }
 .notice { background: #22c55e1f; border: 1px solid #22c55e55; color: #86efac; padding: 8px 12px; border-radius: 7px; margin: 8px 0; }
+.vc-ids { margin-bottom: 14px; }
+.vc-ids input { width: 140px; }
+.vc-ids .pill-bad { white-space: normal; }
+/* Login, user box, change execution */
+.login-page { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.login-card { width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 12px; }
+.login-card label { display: flex; flex-direction: column; gap: 4px; }
+.user-box { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px; margin: 8px 0;
+  border-top: 1px solid var(--border); font-size: 12px; }
+.user-box button { padding: 4px 10px; font-size: 12px; }
+.change-meta { margin: 0 0 12px; line-height: 1.6; }
+.change-review, .change-run { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 12px 0; }
+.change-review textarea { width: 100%; min-height: 60px; margin-bottom: 8px; }
+.change-review .actions, .change-run .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.change-scripts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
+.change-scripts h4 { margin: 10px 0 4px; }
+.change-scripts pre, .change-log pre { max-height: 320px; overflow: auto; margin: 0; }
+.change-log pre { max-height: 480px; white-space: pre-wrap; }
+.change-site .warnings { margin: 8px 0; padding-left: 18px; color: #facc15; }
+.audit-search { width: 100%; max-width: 360px; margin-bottom: 10px; }

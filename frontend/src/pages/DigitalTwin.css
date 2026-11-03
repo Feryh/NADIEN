@@ -10,5 +10,4 @@
 .twin-options button { font-size: 12px; text-align: left; }
 .twin-result h3 { margin-top: 14px; }
 .twin-notes { margin: 12px 0 0; padding-left: 18px; }
-.pill-warn { background: #eab30833; color: #facc15; }
 @media (max-width: 700px) { .twin-wide { grid-column: auto; } }

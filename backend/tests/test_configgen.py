@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app import models as m
 from app.database import get_db
 from app.main import app
-from app.services.configgen import AddressError, Addressing, generate, parse_vlans
+from app.services.configgen import AddressError, Addressing, check_vc_ids, generate, parse_vc_ids, parse_vlans
 from app.services.mop import MopMeta, build_mop
 from app.services.running_config import RunningConfigError
 from tests.test_validation import net  # noqa: F401  (shared A — P — B network fixture)
@@ -214,6 +214,29 @@ def test_should_warn_when_vcid_to_same_neighbour_already_exists_on_zte(db, make_
     a = generate(db, make_service("zte", "l2vpn"), Addressing(vlans=[1481]),
                  config_source=lambda device_id: ZTE_RUNNING)["endpoints"]["A"]
     assert any("vcid 1481" in w for w in a["warnings"])
+
+
+def test_should_mark_vc_id_as_conflicting_when_running_config_already_uses_it(db, make_service):
+    a = generate(db, make_service("zte", "l2vpn"), Addressing(vlans=[1480, 1481]),
+                 config_source=lambda device_id: ZTE_RUNNING)["endpoints"]["A"]
+    assert [(row["vlan"], bool(row["conflicts"])) for row in a["vc_ids"]] == [(1480, False), (1481, True)]
+
+
+def test_should_use_per_vlan_vc_id_when_batch_overrides_a_clashing_vlan(db, make_service):
+    a = generate(db, make_service("zte", "l2vpn"), Addressing(vlans=[1480, 1481], vc_ids={1481: 9481}),
+                 config_source=lambda device_id: ZTE_RUNNING)["endpoints"]["A"]
+    assert [(row["vc_id"], row["conflicts"]) for row in a["vc_ids"]] == [(1480, []), (9481, [])]
+    assert "    neighbour 10.0.0.1 vcid 9481 cw-preferred" in a["config"]
+
+
+@pytest.mark.parametrize("vlans, vc_ids", [([1480, 1481], {1480: 1481}), ([1480], {1490: 9000}), (None, {1480: 9000})])
+def test_should_reject_per_vlan_vc_ids_when_duplicate_or_outside_batch(vlans, vc_ids):
+    with pytest.raises(AddressError):
+        check_vc_ids(vlans, vc_ids)
+
+
+def test_should_parse_per_vlan_vc_ids_when_given_as_vlan_colon_vc_list():
+    assert parse_vc_ids("1480:9001, 1481:9002") == {1480: 9001, 1481: 9002}
 
 
 def test_should_fall_back_to_vc_named_pw_when_running_config_is_unavailable(db, make_service):

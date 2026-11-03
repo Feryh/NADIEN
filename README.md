@@ -65,6 +65,40 @@ Software yang bukan versi rekomendasi juga dihitung sebagai penghambat, tetapi h
 versi rekomendasi. Area diurutkan per wave, mulai dari area dengan router terblokir dan layanan paling sedikit. Di
 dalam satu area, core (P/agg) dimigrasi sebelum edge. Layanan tetap di LDP sampai kedua PE-nya siap SRv6.
 
+### Login, role & audit
+
+Semua `/api` butuh login (cookie sesi HttpOnly, `NADIEN_SESSION_HOURS`, default 12 jam). Saat belum ada pengguna,
+halaman pertama meminta pembuatan **admin pertama**; pengguna lain ditambah admin di menu **Pengguna & Audit**.
+
+| Role | Hak |
+|---|---|
+| viewer | hanya membaca (termasuk simulasi Digital Twin dan AI chat) |
+| engineer | mengubah data, mengajukan dan mengeksekusi change |
+| approver | engineer + approve/tolak change milik orang lain |
+| admin | semua, termasuk pengguna, Pengaturan Collector, provider AI, backup |
+
+Setiap write tercatat di audit log (`/api/audit-logs`, admin), begitu juga login, approval, dan setiap eksekusi ke
+perangkat. Sistem eksternal yang mengirim ke `/api/integrations` memakai `Authorization: Bearer <NADIEN_INGEST_TOKEN>`.
+`NADIEN_AUTH_ENABLED=false` mematikan login (semua akses sebagai admin lokal), hanya untuk dev/test.
+
+### Change & eksekusi ke perangkat
+
+Dari **Config Generator** → **Ajukan change**: config, commit, rollback, pre-check dan post-check kedua site
+dibekukan saat diajukan, jadi yang di-approve sama persis dengan yang dikirim. Alurnya:
+
+1. **Approval** oleh approver/admin yang bukan pembuat change (atau ditolak dengan catatan).
+2. **Pre-check** (perintah show) boleh sebelum atau sesudah approval.
+3. **Push site A**, lalu **push site B**, masing-masing hanya setelah yang sebelumnya berhasil. Perintah dikirim satu
+   per satu dan menunggu prompt. Bila perangkat menolak sebuah baris (`Error:`, `% Invalid`, `^`, …) atau meminta
+   konfirmasi, script berhenti di baris itu.
+4. **Post-check** setelah push site itu; **rollback** memakai script rollback yang sama-sama dibekukan.
+
+Koneksi SSH atau telnet memakai username/password perangkat milik engineer yang menjalankan. Kredensial ini hanya
+ada di memori selama sesi, tidak disimpan, dan disamarkan di transkrip. Transkrip lengkap tiap sesi disimpan per
+eksekusi. Host key SSH dicatat saat koneksi pertama dan diwajibkan sesudahnya (`NADIEN_DEVICE_KNOWN_HOSTS`,
+default di folder backup). Jump host opsional: `NADIEN_DEVICE_JUMP_HOST`/`_PORT`/`_USER`, dengan kredensial yang
+sama kecuali diisi lain. Timeout per perintah: `NADIEN_DEVICE_TIMEOUT_S`.
+
 ### AI Assistant (Phase 9)
 
 Menu **AI Assistant** menjawab pertanyaan tentang jaringan dengan model yang dipilih (`POST /api/ai/chat`).

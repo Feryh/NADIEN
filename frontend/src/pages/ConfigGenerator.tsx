@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
+import { useAuth } from '../auth'
 import { StatusBadge } from '../components/ValidationReport'
 import { fmtG } from '../components/ui'
 
@@ -25,6 +26,39 @@ interface Endpoint {
   commit: string[]
   warnings: string[]
   notes: string[]
+  vc_ids?: VcIdRow[]
+}
+
+interface VcIdRow {
+  vlan: number | null
+  vc_id: number
+  pw: string | null
+  conflicts: string[]
+}
+
+interface VcIdView {
+  vlan: number | null
+  vc_id: number
+  pws: string[]
+  conflicts: string[]
+}
+
+/** One row per VLAN: the VC id both ends use, with each end's conflicts (DB services, RANCID running config). */
+function mergeVcRows(result: ConfigResult): VcIdView[] {
+  const rows = new Map<string, VcIdView>()
+  for (const ep of Object.values(result.endpoints)) {
+    for (const r of ep.vc_ids ?? []) {
+      const key = String(r.vlan)
+      const row = rows.get(key) ?? { vlan: r.vlan, vc_id: r.vc_id, pws: [], conflicts: [] }
+      if (r.pw) row.pws.push(`${ep.label}: ${r.pw}`)
+      for (const c of r.conflicts) {
+        const text = `${ep.device ?? `Site ${ep.label}`}: ${c}`
+        if (!row.conflicts.includes(text)) row.conflicts.push(text)
+      }
+      rows.set(key, row)
+    }
+  }
+  return [...rows.values()]
 }
 
 interface ConfigResult {
@@ -77,7 +111,13 @@ export default function ConfigGenerator() {
   const [devices, setDevices] = useState<DeviceOption[]>([])
   const [inputs, setInputs] = useState<Inputs>({ a_ip: '', b_ip: '', vlan: '', vlans: '', vc_id: '', bgp_asn: '' })
   const [vlanMode, setVlanMode] = useState<VlanMode>('standard')
+  const [vcIds, setVcIds] = useState<Record<number, string>>({})
+  // Kept across refetches (result is cleared while a new one loads) so VC id inputs keep focus.
+  const [vcRows, setVcRows] = useState<VcIdView[]>([])
   const [policer, setPolicer] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const { can } = useAuth()
+  const navigate = useNavigate()
   const [result, setResult] = useState<ConfigResult | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -101,9 +141,29 @@ export default function ConfigGenerator() {
     }
     // Standard is a one-VLAN batch: the backend keeps the VC id override only when exactly one VLAN is sent.
     if (mode === 'l2vpn' && vlanMode === 'standard' && inputs.vlan.trim()) q.set('vlans', inputs.vlan.trim())
+    const overrides = Object.entries(vcIds).filter(([vlan, vc]) => vc.trim() && vc.trim() !== vlan)
+    if (mode === 'l2vpn' && vlanMode === 'multiple' && overrides.length) {
+      q.set('vc_ids', overrides.map(([vlan, vc]) => `${vlan}:${vc.trim()}`).join(','))
+    }
     if (policer) q.set('policer', 'true')
     return q.toString()
-  }, [inputs, mode, vlanMode, policer])
+  }, [inputs, mode, vlanMode, vcIds, policer])
+
+  useEffect(() => {
+    setVcRows([])
+    setVcIds({})
+  }, [selected, mode, vlanMode])
+
+  const submitChange = () => {
+    if (selected == null) return
+    setSubmitting(true)
+    setError(null)
+    // Same query as the preview, so the frozen script is exactly what is shown here.
+    api.post<{ id: number }>(`/changes?${query}`, { service_id: selected })
+      .then((c) => navigate(`/changes?id=${c.id}`))
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setSubmitting(false))
+  }
 
   const modeServices = services?.filter((s) => mode === 'l2vpn'
     ? ['l2vpn', 'iplc'].includes(s.service_type.toLowerCase())
@@ -119,7 +179,9 @@ export default function ConfigGenerator() {
     }
     // Debounced so a half-typed address does not fire a request (and a 422) on every key.
     const timer = window.setTimeout(() => {
-      api.get<ConfigResult>(`/configs/services/${selected}?${query}`).then(setResult).catch((e: Error) => setError(e.message))
+      api.get<ConfigResult>(`/configs/services/${selected}?${query}`)
+        .then((r) => { setResult(r); setVcRows(mergeVcRows(r)) })
+        .catch((e: Error) => setError(e.message))
     }, 400)
     return () => window.clearTimeout(timer)
   }, [selected, query, mode, vlanMode, inputs.vlans])
@@ -158,7 +220,7 @@ export default function ConfigGenerator() {
             {mode === 'l2vpn' && vlanMode === 'multiple' && <label className="span-2">
               <span>Daftar VLAN / rentang VLAN (maks. 64)</span>
               <input value={inputs.vlans} placeholder="Contoh: 1480-1485,1489" maxLength={256}
-                onChange={(e) => setInputs({ ...inputs, vlans: e.target.value })} />
+                onChange={(e) => { setInputs({ ...inputs, vlans: e.target.value }); setVcIds({}) }} />
               <small className="muted">Pisahkan VLAN dengan koma; gunakan tanda rentang untuk beberapa VLAN berurutan.</small>
             </label>}
             {INPUTS.filter((f) => mode === 'l2vpn'
@@ -213,8 +275,14 @@ export default function ConfigGenerator() {
             <h2>{result ? `${result.circuit_id} — ${result.service_type.toUpperCase()}` : `Service #${selected}`}</h2>
             <div className="spacer" />
             <Link className="button" to={`/mop?service=${selected}`}>Buat MoP</Link>
+            {can('engineer') && <button className="primary" disabled={!result || submitting} onClick={submitChange}>
+              Ajukan change</button>}
             <button onClick={() => setParams({ mode })}>Tutup</button>
           </div>
+          {mode === 'l2vpn' && vcRows.length > 0 && (
+            <VcIdTable rows={vcRows} editable={vlanMode === 'multiple'} values={vcIds}
+              onChange={(vlan, value) => setVcIds({ ...vcIds, [vlan]: value })} />
+          )}
           {result ? (
             Object.values(result.endpoints).map((ep) => (
               <EndpointConfig key={ep.label} ep={ep} textUrl={(part) =>
@@ -307,6 +375,47 @@ function NetworkChangeForm({ mode, devices }: { mode: Exclude<Mode, 'l2vpn' | 'l
       </div>
     </div>}
   </div>
+}
+
+function VcIdTable({ rows, editable, values, onChange }: {
+  rows: VcIdView[]
+  editable: boolean
+  values: Record<number, string>
+  onChange: (vlan: number, value: string) => void
+}) {
+  const clashing = rows.filter((r) => r.conflicts.length).length
+  return (
+    <div className="vc-ids">
+      <h3>VC id per VLAN {clashing > 0 && <span className="pill pill-bad">{clashing} bentrok</span>}</h3>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th className="num">VLAN</th><th>VC id</th><th>PW (ZTE)</th><th>Status</th></tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={String(r.vlan)}>
+                <td className="num">{r.vlan ?? '-'}</td>
+                <td>
+                  {editable && r.vlan != null
+                    ? <input type="number" min={1} max={4294967295} value={values[r.vlan] ?? String(r.vc_id)}
+                        aria-label={`VC id VLAN ${r.vlan}`} onChange={(e) => onChange(r.vlan as number, e.target.value)} />
+                    : <b>{r.vc_id}</b>}
+                </td>
+                <td>{r.pws.join(', ') || '-'}</td>
+                <td>{r.conflicts.length
+                  ? <span className="pill pill-bad" title={r.conflicts.join('\n')}>Bentrok: {r.conflicts.join('; ')}</span>
+                  : <span className="pill pill-ok">OK</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="hint">
+        {editable
+          ? 'Default VC id = VLAN. Ganti VC id pada VLAN yang bentrok; config dan rollback di bawah ikut memakai nilai baru.'
+          : 'Default VC id = VLAN. Bila bentrok, isi VC / PW id di atas.'}
+      </p>
+    </div>
+  )
 }
 
 function EndpointConfig({ ep, textUrl }: { ep: Endpoint; textUrl: (part: 'config' | 'rollback') => string }) {

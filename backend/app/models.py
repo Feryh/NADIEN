@@ -473,3 +473,73 @@ class TwinScenario(TimestampMixin, Base):
     changes: Mapped[list] = mapped_column(JSONType)
     result: Mapped[dict | None] = mapped_column(JSONType)
     run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+# --------------------------------------------------------------------------- Users, audit, change execution
+
+
+class User(TimestampMixin, Base):
+    """NADIEN login. Roles rank viewer < engineer < approver < admin; device credentials are never stored here."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True)
+    full_name: Mapped[str | None] = mapped_column(String(128))
+    password_hash: Mapped[str] = mapped_column(String(256))
+    role: Mapped[str] = mapped_column(String(16), default="viewer")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AuditLog(Base):
+    """Every successful write through the API, plus change approvals and device runs."""
+
+    __tablename__ = "audit_logs"
+    __table_args__ = (Index("ix_audit_logs_at", "at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    username: Mapped[str] = mapped_column(String(64))
+    action: Mapped[str] = mapped_column(String(32))  # HTTP method or an event such as change.approve
+    target: Mapped[str] = mapped_column(String(512))
+    detail: Mapped[str | None] = mapped_column(Text)
+
+
+class ChangeRequest(TimestampMixin, Base):
+    """Scripts frozen at submit time, so what the approver reviewed is exactly what is pushed.
+
+    status: pending_approval -> approved | rejected; approved -> in_progress -> implemented | failed | rolled_back."""
+
+    __tablename__ = "change_requests"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(200))
+    service_id: Mapped[int | None] = mapped_column(ForeignKey("services.id", ondelete="SET NULL"))
+    params: Mapped[dict] = mapped_column(JSONType)  # generator inputs (vlans, vc_ids, ...) for traceability
+    sites: Mapped[list] = mapped_column(JSONType)  # [{label, device_id, hostname, host, dialect, precheck, config, ...}]
+    status: Mapped[str] = mapped_column(String(24), default="pending_approval")
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(String(64))
+    approved_by: Mapped[str | None] = mapped_column(String(64))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    review_note: Mapped[str | None] = mapped_column(Text)
+
+
+class ChangeRun(Base):
+    """One CLI session against one site: precheck, push, postcheck or rollback, with its full transcript."""
+
+    __tablename__ = "change_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    change_id: Mapped[int] = mapped_column(ForeignKey("change_requests.id", ondelete="CASCADE"), index=True)
+    site: Mapped[str] = mapped_column(String(1))
+    phase: Mapped[str] = mapped_column(String(16))
+    protocol: Mapped[str] = mapped_column(String(8))
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running | ok | failed
+    started_by: Mapped[str] = mapped_column(String(64))
+    device_user: Mapped[str] = mapped_column(String(64))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    log: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str | None] = mapped_column(Text)

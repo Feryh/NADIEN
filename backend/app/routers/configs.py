@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 
 from .. import models as m
 from ..database import get_db
-from ..services.configgen import AddressError, Addressing, as_text, generate, parse_cidr, parse_vlans
+from ..services.configgen import (AddressError, Addressing, as_text, check_vc_ids, generate, parse_cidr, parse_vc_ids,
+                                  parse_vlans)
 from ..services.network_change_gen import NetworkChangeError, NetworkChangeIn, generate_network_change, network_change_hints
 
 router = APIRouter(prefix="/configs", tags=["Config Generator"])
@@ -38,15 +39,18 @@ def addressing_params(
     bgp_asn: int | None = Query(None, ge=1, le=4294967295, description="ASN BGP perangkat (L3VPN); default dari RD"),
     policer: bool = Query(False, description="Tambahkan policer sesuai bandwidth layanan"),
     vlans: str | None = Query(None, max_length=256, description="VPLS beberapa VLAN, mis. 1480-1485,1489"),
+    vc_ids: str | None = Query(None, max_length=1200, description="VC id per VLAN bila bentrok, mis. 1480:9001,1481:9002"),
 ) -> Addressing:
     """Shared by the config generator and the MoP routes; bad addresses are a 422 before anything is built."""
     try:
         parse_cidr(a_ip)
         parse_cidr(b_ip)
         vlan_list = parse_vlans(vlans)
+        vc_id_map = parse_vc_ids(vc_ids)
+        check_vc_ids(vlan_list, vc_id_map)
     except AddressError as exc:
         raise HTTPException(422, str(exc)) from exc
-    return Addressing(a_ip or None, b_ip or None, vc_id, bgp_asn, policer, vlan_list)
+    return Addressing(a_ip or None, b_ip or None, vc_id, bgp_asn, policer, vlan_list, vc_id_map)
 
 
 def _service(db: Session, service_id: int) -> m.Service:

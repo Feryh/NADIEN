@@ -19,6 +19,8 @@ os.environ.update({
     "NADIEN_OXIDIZED_URL": "",
     "NADIEN_GITWEB_URL": "",
     "NADIEN_SCHEDULER_ENABLED": "false",
+    "NADIEN_AUTH_ENABLED": "false",  # API tests act as the local admin; test_auth.py switches it on
+    "NADIEN_SECRET_KEY": "",
     "NADIEN_CACHE_TTL_S": "0",  # each test has its own DB; a shared cache would leak results between them
 })
 
