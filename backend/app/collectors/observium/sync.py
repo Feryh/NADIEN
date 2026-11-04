@@ -403,6 +403,8 @@ def _write_utilization(db: Session, rates: dict[int, tuple[float | None, float |
     if rates:
         db.execute(update(m.Interface), [{"id": iface_id, "in_gbps": in_g, "out_gbps": out_g}
                                          for iface_id, (in_g, out_g) in rates.items()])
+    speeds = dict(db.execute(select(m.Interface.id, m.Interface.speed_gbps).where(
+        m.Interface.id.in_(select(m.Link.a_interface_id).union(select(m.Link.b_interface_id))))).tuples().all())
     for link in db.scalars(select(m.Link)):
         if link.status == "down":
             # A link discovery no longer sees often shares a port with the link that replaced it (a renamed far
@@ -411,9 +413,14 @@ def _write_utilization(db: Session, rates: dict[int, tuple[float | None, float |
             continue
         a = rates.get(link.a_interface_id or -1)
         b = rates.get(link.b_interface_id or -1)
-        if a and a[0] is not None:
+        a_ok, b_ok = bool(a and a[0] is not None), bool(b and b[0] is not None)
+        if a_ok and b_ok and _narrower(speeds.get(link.b_interface_id), speeds.get(link.a_interface_id)):
+            # A bundle whose members lead to several boxes (smartgroup210: one member to this peer, one elsewhere)
+            # carries more than this link: the narrower end only carries what goes over it.
+            a_ok = False
+        if a_ok:
             in_g, out_g = a
-        elif b and b[0] is not None:
+        elif b_ok:
             in_g, out_g = b[1], b[0]  # seen from the far end, directions swap
         else:
             continue
@@ -422,6 +429,10 @@ def _write_utilization(db: Session, rates: dict[int, tuple[float | None, float |
         link.current_gbps = round(max(in_g, out_g), 3)
         report.counts["utilization_samples"] += 1
     db.commit()
+
+
+def _narrower(speed: float | None, other: float | None) -> bool:
+    return bool(speed and other and speed < other)
 
 
 def _record_source(db: Session, report: SyncReport) -> None:
