@@ -111,7 +111,11 @@ Ini setup yang dipakai di PC development saat ini.
 
    Di Claude Code desktop, frontend juga bisa dijalankan lewat konfigurasi `frontend` di `.claude/launch.json`.
 
-3. **Git worktree** (`.claude/worktrees/...`) tidak membawa `frontend/node_modules`. Jalankan `npm install` di worktree,
+3. **Start/restart manual.** `nadien.cmd` di root project menjalankan langkah 1 dan 2 di background
+   (double-click, atau `nadien start | restart | stop | status`). Kalau Docker engine berjalan, skrip memakai
+   `docker compose`. Log ada di `data\logs\`.
+
+4. **Git worktree** (`.claude/worktrees/...`) tidak membawa `frontend/node_modules`. Jalankan `npm install` di worktree,
    atau buat junction ke `node_modules` checkout utama kalau `package-lock.json`-nya sama.
 
 ### Menghubungkan ke Observium dari lokal
