@@ -3,7 +3,7 @@
 from alembic import command
 from sqlalchemy import create_engine, inspect
 
-from app.database import alembic_config, init_schema
+from app.database import alembic_config, init_schema, migration_filter
 
 
 def _engine_with_postgis_table(tmp_path):
@@ -24,3 +24,11 @@ def test_should_keep_spatial_ref_sys_when_migrating_a_postgis_database(tmp_path)
     engine = _engine_with_postgis_table(tmp_path)
     init_schema(engine)
     assert {"spatial_ref_sys", "alembic_version", "devices"} <= set(inspect(engine).get_table_names())
+
+
+def test_should_skip_only_extension_tables_when_filtering_reflected_tables(tmp_path):
+    engine = _engine_with_postgis_table(tmp_path)
+    with engine.connect() as conn:
+        include = migration_filter(conn)
+    assert not include(None, "spatial_ref_sys", "table", True, None)
+    assert include(None, "old_table_dropped_from_models", "table", True, None)

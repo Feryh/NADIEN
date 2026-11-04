@@ -2,7 +2,7 @@ import importlib.util
 import threading
 from contextlib import contextmanager
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from alembic import command
@@ -57,14 +57,29 @@ SCHEMA_ATTEMPTS = 10
 MIGRATIONS = Path(__file__).parent / "migrations"
 _MIGRATE_LOCK = threading.Lock()  # Alembic keeps module-level state while it runs: one run per process
 BASELINE = "0001"  # the schema create_all built before migrations existed
-# Tables a database extension creates by itself (the postgis image adds spatial_ref_sys to every database):
-# not ours, so autogenerate must not drop them and they do not make a database "pre-migration".
+# Tables a database extension creates by itself (the postgis image adds spatial_ref_sys, topology.layer, tiger.*
+# to every database): not ours, so autogenerate must not drop them and they do not make a database "pre-migration".
 EXTENSION_TABLES = frozenset({"spatial_ref_sys"})
 
 
-def include_in_migrations(obj, name: str | None, type_: str, reflected: bool, compare_to) -> bool:
-    """Alembic `include_object` hook."""
-    return not (type_ == "table" and reflected and compare_to is None and name in EXTENSION_TABLES)
+def extension_tables(conn: Connection) -> set[str]:
+    """EXTENSION_TABLES plus, on PostgreSQL, every table an installed extension owns."""
+    if conn.dialect.name != "postgresql":
+        return set(EXTENSION_TABLES)
+    owned = conn.exec_driver_sql(
+        "SELECT c.relname FROM pg_depend d JOIN pg_class c ON c.oid = d.objid "
+        "WHERE d.classid = 'pg_class'::regclass AND d.deptype = 'e'").scalars()
+    return set(EXTENSION_TABLES) | set(owned)
+
+
+def migration_filter(conn: Connection) -> Callable[..., bool]:
+    """Alembic `include_object` hook that leaves extension tables alone."""
+    skip = extension_tables(conn)
+
+    def include(obj, name: str | None, type_: str, reflected: bool, compare_to) -> bool:
+        return not (type_ == "table" and reflected and compare_to is None and name in skip)
+
+    return include
 
 
 def init_schema(bind: Engine | None = None) -> None:
@@ -101,7 +116,7 @@ def _migrate(conn: Connection) -> None:
     from . import models  # noqa: F401  (late: models imports Base from here)
 
     config = alembic_config(conn)
-    tables = set(inspect(conn).get_table_names()) - EXTENSION_TABLES
+    tables = set(inspect(conn).get_table_names()) - extension_tables(conn)
     if tables and "alembic_version" not in tables:
         # A database from before migrations (create_all): replay the baseline for what it lacks, then record
         # it as being at the baseline so later migrations alter it like any other.
