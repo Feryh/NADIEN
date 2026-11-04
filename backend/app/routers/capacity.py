@@ -363,7 +363,8 @@ def _olt_rows(db: Session) -> list[dict[str, Any]]:
     uplinks: dict[int, list[s.LinkCapacity]] = defaultdict(list)
     for link in _link_rows(db):
         for mine, other in ((link.a_device_id, link.b_device_id), (link.b_device_id, link.a_device_id)):
-            if mine in olts and other not in olts and link.id in capacity:
+            # A link discovery no longer sees is not an uplink: counting it would double a renamed port.
+            if mine in olts and other not in olts and link.id in capacity and capacity[link.id].status != "down":
                 uplinks[mine].append(capacity[link.id])
     rows = []
     for device_id, d in olts.items():

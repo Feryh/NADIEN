@@ -78,6 +78,16 @@ def test_should_list_olt_when_uplink_utilization_reaches_threshold(db, client):
     assert (row["uplink_utilization_pct"], row["uplink_level"]) == (95.0, "critical")
 
 
+def test_should_count_only_live_uplinks_when_a_stale_link_shares_the_port(db, client):
+    olt = _olt(db, pon_online=[10], uplink_gbps=7.2)
+    live = db.scalars(select(m.Link)).one()
+    db.add(m.Link(name="stale duplicate", a_device_id=live.b_device_id, a_interface_id=live.b_interface_id,
+                  b_device_id=olt.id, capacity_gbps=10, current_gbps=7.2, status="down"))
+    db.commit()
+    row = client.get("/api/capacity/olts?only_hotspots=false").json()["rows"][0]
+    assert (row["uplinks"], row["uplink_current_gbps"]) == (1, 7.2)
+
+
 def test_should_skip_olt_when_gpon_and_uplink_are_below_threshold(db, client):
     _olt(db, pon_online=[10, 0, 0, 0], uplink_gbps=2.0)
     assert client.get("/api/capacity/olts").json()["total"] == 0
