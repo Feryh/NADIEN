@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
+import { Pager, usePaged } from '../components/Pager'
 
 // Port capacity: physical ports split used (oper up) / idle (admin up, oper down) / disabled (admin down),
 // in total and per device (with the ports behind each count).
@@ -112,11 +113,13 @@ export default function Ports() {
   useEffect(() => {
     const p = new URLSearchParams(filterQuery)
     p.set('sort', sort)
-    p.set('limit', '300')
+    p.set('limit', '5000')  // every device of the filter; the table pages them
     if (speed) p.set('speed', speed)
     if (q) p.set('q', q)
     api.get<{ total_devices: number; devices: DeviceRow[] }>(`/inventory/ports/devices?${p}`).then(setDevices).catch((e: Error) => setError(e.message))
   }, [filterQuery, speed, q, sort])
+
+  const paged = usePaged(devices?.devices ?? [], devices)
 
   function submitSearch(e: FormEvent) {
     e.preventDefault()
@@ -219,7 +222,7 @@ export default function Ports() {
               </tr>
             </thead>
             <tbody>
-              {devices?.devices.flatMap((d) => {
+              {paged.pageRows.flatMap((d) => {
                 const classes = Object.entries(d.speeds).sort(([a], [b]) => speedOrder(b) - speedOrder(a))
                 const rows = [
                   <tr key={d.device_id}>
@@ -268,8 +271,9 @@ export default function Ports() {
             </tbody>
           </table>
         </div>
+        <Pager paged={paged} unit="perangkat" />
         {devices && devices.total_devices > devices.devices.length && (
-          <p className="hint">Menampilkan {devices.devices.length} dari {n(devices.total_devices)} perangkat — persempit dengan filter atau pencarian.</p>
+          <p className="hint">Dimuat {n(devices.devices.length)} dari {n(devices.total_devices)} perangkat — persempit dengan filter atau pencarian.</p>
         )}
       </div>
     </div>

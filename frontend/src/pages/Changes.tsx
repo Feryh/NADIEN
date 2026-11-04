@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import { useAuth } from '../auth'
+import { Pager, usePaged } from '../components/Pager'
 
 // Change requests: frozen scripts, approval by someone else, then pre-check / push / post-check / rollback per site.
 
@@ -85,6 +86,7 @@ export default function Changes() {
     api.get<Change[]>('/changes').then(setList).catch((e: Error) => setError(e.message))
   }, [])
   useEffect(load, [load])
+  const paged = usePaged(list ?? [])
 
   return (
     <div className="capacity">
@@ -103,7 +105,7 @@ export default function Changes() {
           <table>
             <thead><tr><th>#</th><th>Change</th><th>Status</th><th>Diajukan</th><th>Approval</th></tr></thead>
             <tbody>
-              {list?.map((c) => (
+              {paged.pageRows.map((c) => (
                 <tr key={c.id} className={`clickable ${selected === c.id ? 'selected' : ''}`}
                   onClick={() => setParams({ id: String(c.id) })}>
                   <td>{c.id}</td>
@@ -117,6 +119,7 @@ export default function Changes() {
             </tbody>
           </table>
         </div>
+        <Pager paged={paged} unit="change" />
       </div>
       {selected != null && <ChangeDetail key={selected} id={selected} onChanged={load} />}
     </div>

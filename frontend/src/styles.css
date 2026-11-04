@@ -66,6 +66,24 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); }
 .api-link { font-size: 12px; padding: 8px 10px; }
 .content { flex: 1; padding: 20px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
 
+/* Collapsible sidebar: the two-letter mark of each menu item stays, labels and tags hide. */
+.sidebar { transition: width 0.15s ease; overflow: hidden; }
+.brand-text { min-width: 0; flex: 1; }
+.sidebar-toggle { flex: none; width: 28px; height: 28px; padding: 0; border-radius: 6px; font-size: 14px; line-height: 1; }
+.sidebar nav { overflow-y: auto; }
+.sidebar nav a { gap: 8px; justify-content: flex-start; }
+.nav-mark { flex: none; width: 26px; height: 22px; display: grid; place-items: center; border-radius: 5px; font-size: 10px;
+  font-weight: 700; letter-spacing: 0.02em; color: var(--muted); background: var(--panel-2); border: 1px solid var(--border); }
+.sidebar nav a.active .nav-mark { color: var(--accent); border-color: var(--accent); }
+.nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-collapsed .sidebar { width: 64px; padding: 16px 8px; }
+.sidebar-collapsed .brand { flex-direction: column; padding: 0 0 14px; }
+.sidebar-collapsed .brand-text, .sidebar-collapsed .nav-label, .sidebar-collapsed .phase,
+.sidebar-collapsed .user-meta, .sidebar-collapsed .api-link { display: none; }
+.sidebar-collapsed .sidebar nav a { justify-content: center; padding: 8px 0; }
+.sidebar-collapsed .user-box { flex-direction: column; padding: 10px 0; }
+.sidebar-collapsed .user-box button { padding: 4px 6px; font-size: 11px; }
+
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
 .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .toolbar.card { margin-bottom: 0; padding: 10px 14px; }
@@ -329,6 +347,11 @@ a.button.primary { background: var(--accent-strong); border-color: var(--accent-
   .hot-grid { grid-template-columns: 1fr; }
   .app { flex-direction: column; }
   .sidebar { width: auto; height: auto; position: static; }
+  /* On a phone the sidebar sits on top: collapsed = just the brand bar, the menu hidden. */
+  .sidebar-collapsed .sidebar { width: auto; padding: 10px 12px; }
+  .sidebar-collapsed .brand { flex-direction: row; padding: 0; }
+  .sidebar-collapsed .brand-text { display: block; }
+  .sidebar-collapsed .sidebar nav, .sidebar-collapsed .user-box { display: none; }
   .inventory { grid-template-columns: 1fr; }
   .detail-panel { width: auto; left: 12px; }
   .grid-2 { grid-template-columns: 1fr; }

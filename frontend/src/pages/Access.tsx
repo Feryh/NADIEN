@@ -2,6 +2,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import { Role, ROLE_LABELS, useAuth } from '../auth'
+import { Pager, usePaged } from '../components/Pager'
 import { fmtTime } from './Changes'
 
 // Pengaturan Akses: own account for everyone; users, SSO (OIDC) and the audit log for admins.
@@ -175,6 +176,7 @@ function UserList() {
     api.del(`/users/${u.id}`).then(load).catch((e: Error) => setError(strip(e.message)))
   }
 
+  const pagedUsers = usePaged(users)
   const status = (u: UserRow) => !u.active ? <span className="pill pill-muted">Nonaktif</span>
     : u.locked_minutes ? <span className="pill pill-bad">Terkunci {u.locked_minutes} mnt</span>
     : u.must_change_password ? <span className="pill pill-warn">Wajib ganti password</span>
@@ -188,7 +190,7 @@ function UserList() {
         <table>
           <thead><tr><th>Pengguna</th><th>Role</th><th>Customer</th><th>Status</th><th>Login terakhir</th><th /></tr></thead>
           <tbody>
-            {users.map((u) => (
+            {pagedUsers.pageRows.map((u) => (
               <tr key={u.id}>
                 <td>
                   <b>{u.username}</b> {u.auth_source === 'oidc' && <span className="pill pill-muted">SSO</span>}
@@ -220,6 +222,7 @@ function UserList() {
           </tbody>
         </table>
       </div>
+      <Pager paged={pagedUsers} unit="pengguna" />
       <form className="access-card" onSubmit={create}>
         <h3>Tambah pengguna lokal</h3>
         <div className="access-form access-form-wide">
@@ -376,6 +379,7 @@ function AuditLog() {
     }, 300)
     return () => window.clearTimeout(timer)
   }, [query])
+  const paged = usePaged(rows, query)
 
   return (
     <>
@@ -396,7 +400,7 @@ function AuditLog() {
         <table>
           <thead><tr><th>Waktu</th><th>User</th><th>Aksi</th><th>Target</th><th>Detail</th><th>IP</th></tr></thead>
           <tbody>
-            {rows.map((r) => (
+            {paged.pageRows.map((r) => (
               <tr key={r.id}>
                 <td>{fmtTime(r.at)}</td><td>{r.username}</td><td><code>{r.action}</code></td>
                 <td>{r.target}</td><td>{r.detail ?? ''}</td><td className="muted">{r.ip ?? ''}</td>
@@ -406,6 +410,7 @@ function AuditLog() {
           </tbody>
         </table>
       </div>
+      <Pager paged={paged} unit="catatan (500 terbaru)" />
     </>
   )
 }

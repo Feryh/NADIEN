@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, CapacityColor, HotspotLevel } from '../api'
+import { Pager, usePaged } from '../components/Pager'
 import { ColorBadge, fmtG, Kpi } from '../components/ui'
 
 // One device: port usage per speed, every port with the link behind it, and that link's capacity and utilization.
@@ -175,6 +176,8 @@ export default function DeviceDetail() {
     return (data?.ports ?? []).filter((p) => (!state || p.state === state) && (!speed || p.speed === speed)
       && (!onlyLinked || p.link) && (!needle || `${p.name} ${p.description ?? ''} ${p.link?.peer ?? ''}`.toLowerCase().includes(needle)))
   }, [data, state, speed, onlyLinked, q])
+  const pagedPorts = usePaged(ports, `${deviceId}|${state}|${speed}|${onlyLinked}|${q}`)
+  const pagedLinks = usePaged(data?.links ?? [], deviceId)
 
   if (error) return <div className="card"><div className="error">{error}</div><Link to="/ports">← Kapasitas Port</Link></div>
   if (!data) return <div className="card">Memuat…</div>
@@ -235,7 +238,7 @@ export default function DeviceDetail() {
             <table>
               <thead><tr><th>Port</th><th>Lawan</th><th className="num">Kapasitas</th><th className="num">Trafik</th><th>Utilisasi</th></tr></thead>
               <tbody>
-                {links.map((l) => (
+                {pagedLinks.pageRows.map((l) => (
                   <tr key={l.link_id}>
                     <td><code>{l.port ?? '–'}</code>{l.status === 'down' && <> <span className="pill pill-bad">down</span></>}</td>
                     <td>{l.peer_id != null ? <Link to={`/devices/${l.peer_id}`}>{l.peer}</Link> : '–'}
@@ -249,6 +252,7 @@ export default function DeviceDetail() {
               </tbody>
             </table>
           </div>
+          <Pager paged={pagedLinks} unit="link" />
         </div>
       </div>
 
@@ -274,7 +278,7 @@ export default function DeviceDetail() {
                 <th className="num">Kapasitas link</th><th className="num">Trafik</th><th>Utilisasi</th></tr>
             </thead>
             <tbody>
-              {ports.map((p) => (
+              {pagedPorts.pageRows.map((p) => (
                 <tr key={p.id}>
                   <td><code>{p.name}</code>{p.pon && <> <span className="pill pill-muted">PON</span></>}</td>
                   <td className="muted">{p.if_type}</td>
@@ -294,6 +298,7 @@ export default function DeviceDetail() {
             </tbody>
           </table>
         </div>
+        <Pager paged={pagedPorts} unit="interface" />
       </div>}
     </div>
   )

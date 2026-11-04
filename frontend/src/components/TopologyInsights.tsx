@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link as RouterLink } from 'react-router-dom'
 import { api } from '../api'
+import { Pager, PagerControls, usePaged, usePageSize } from './Pager'
 import { Kpi } from './ui'
 
 // The two tabs next to the topology map: naming standard report and the change log.
@@ -63,7 +64,7 @@ interface DeviceScript {
   rollback: string[]
 }
 
-const PAGE_SIZE = 100
+const ALL_ROWS = 100000  // "Semua": one request for every row of the filter
 const SEGMENT_LABEL: Record<Segment, string> = { backbone: 'Backbone', distribution: 'Distribusi', last_mile: 'Last Mile' }
 const DEVICE_PILL: Record<DeviceStatus, string> = { standard: 'pill-ok', needs_fix: 'pill-warn', legacy: 'pill-muted', non_standard: 'pill-bad' }
 const PORT_PILL: Record<PortStatus, string> = { standard: 'pill-ok', names_peer: 'pill-warn', no_peer: 'pill-bad', empty: 'pill-bad' }
@@ -127,19 +128,20 @@ export function NamingStandard() {
 function DeviceNaming({ summary }: { summary: NamingSummary }) {
   const [filters, setFilters] = useState({ status: '', area: '', q: '' })
   const [offset, setOffset] = useState(0)
+  const [pageSize, setPageSize] = usePageSize()
   const [page, setPage] = useState<Page<DeviceRow> | null>(null)
   const [script, setScript] = useState<DeviceScript | null>(null)
   const [error, setError] = useState<string | null>(null)
   const query = useMemo(() => queryOf(filters), [filters])
 
-  useEffect(() => setOffset(0), [query])
+  useEffect(() => setOffset(0), [query, pageSize])
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      api.get<Page<DeviceRow>>(`/topology/naming/devices?limit=${PAGE_SIZE}&offset=${offset}${query ? `&${query}` : ''}`)
+      api.get<Page<DeviceRow>>(`/topology/naming/devices?limit=${pageSize || ALL_ROWS}&offset=${offset}${query ? `&${query}` : ''}`)
         .then(setPage).catch((e: Error) => setError(e.message))
     }, 300)
     return () => window.clearTimeout(timer)
-  }, [query, offset])
+  }, [query, offset, pageSize])
 
   async function openScript(deviceId: number) {
     try {
@@ -185,7 +187,7 @@ function DeviceNaming({ summary }: { summary: NamingSummary }) {
           </tbody>
         </table>
       </div>
-      {page && <Pager total={page.total} offset={offset} onChange={setOffset} />}
+      {page && <ServerPager total={page.total} offset={offset} pageSize={pageSize} onOffset={setOffset} onPageSize={setPageSize} />}
       {script && <ScriptPanel script={script} onClose={() => setScript(null)} />}
     </>
   )
@@ -194,18 +196,19 @@ function DeviceNaming({ summary }: { summary: NamingSummary }) {
 function PortNaming({ summary }: { summary: NamingSummary }) {
   const [filters, setFilters] = useState({ status: '', segment: '', area: '', q: '' })
   const [offset, setOffset] = useState(0)
+  const [pageSize, setPageSize] = usePageSize()
   const [page, setPage] = useState<Page<PortRow> | null>(null)
   const [error, setError] = useState<string | null>(null)
   const query = useMemo(() => queryOf(filters), [filters])
 
-  useEffect(() => setOffset(0), [query])
+  useEffect(() => setOffset(0), [query, pageSize])
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      api.get<Page<PortRow>>(`/topology/naming/ports?limit=${PAGE_SIZE}&offset=${offset}${query ? `&${query}` : ''}`)
+      api.get<Page<PortRow>>(`/topology/naming/ports?limit=${pageSize || ALL_ROWS}&offset=${offset}${query ? `&${query}` : ''}`)
         .then(setPage).catch((e: Error) => setError(e.message))
     }, 300)
     return () => window.clearTimeout(timer)
-  }, [query, offset])
+  }, [query, offset, pageSize])
 
   return (
     <>
@@ -246,19 +249,23 @@ function PortNaming({ summary }: { summary: NamingSummary }) {
           </tbody>
         </table>
       </div>
-      {page && <Pager total={page.total} offset={offset} onChange={setOffset} />}
+      {page && <ServerPager total={page.total} offset={offset} pageSize={pageSize} onOffset={setOffset} onPageSize={setPageSize} />}
     </>
   )
 }
 
-function Pager({ total, offset, onChange }: { total: number; offset: number; onChange: (offset: number) => void }) {
-  if (total <= PAGE_SIZE) return <div className="pager muted small">{count(total)} baris</div>
+/** Rows-per-page choice and page buttons for the server-paged naming tables. */
+function ServerPager({ total, offset, pageSize, onOffset, onPageSize }: {
+  total: number
+  offset: number
+  pageSize: number
+  onOffset: (offset: number) => void
+  onPageSize: (size: number) => void
+}) {
+  const pages = pageSize ? Math.max(1, Math.ceil(total / pageSize)) : 1
   return (
-    <div className="pager">
-      <button type="button" disabled={offset === 0} onClick={() => onChange(Math.max(0, offset - PAGE_SIZE))}>‹ Sebelumnya</button>
-      <span className="muted small">{count(offset + 1)}–{count(Math.min(offset + PAGE_SIZE, total))} dari {count(total)}</span>
-      <button type="button" disabled={offset + PAGE_SIZE >= total} onClick={() => onChange(offset + PAGE_SIZE)}>Berikutnya ›</button>
-    </div>
+    <PagerControls total={total} page={pageSize ? Math.floor(offset / pageSize) : 0} pages={pages} pageSize={pageSize}
+      onPage={(page) => onOffset(page * pageSize)} onPageSize={onPageSize} />
   )
 }
 
@@ -312,11 +319,12 @@ export function TopologyChanges() {
 
   useEffect(() => {
     const since = new Date(Date.now() - days * 24 * 3600_000).toISOString()
-    const q = new URLSearchParams({ since, limit: '500' })
+    const q = new URLSearchParams({ since, limit: '1000' })
     if (kind) q.set('kind', kind)
     setRows(null)
     api.get<TopologyEventRow[]>(`/topology/events?${q}`).then(setRows).catch((e: Error) => setError(e.message))
   }, [kind, days])
+  const paged = usePaged(rows ?? [], `${kind}|${days}`)
 
   return (
     <div className="card">
@@ -340,7 +348,7 @@ export function TopologyChanges() {
         <table>
           <thead><tr><th>Waktu</th><th>Jenis</th><th>Perubahan</th><th>Detail</th></tr></thead>
           <tbody>
-            {rows?.map((r) => (
+            {paged.pageRows.map((r) => (
               <tr key={r.id}>
                 <td>{new Date(r.at).toLocaleString('id-ID')}</td>
                 <td><span className={`pill ${EVENT_PILL[r.kind]}`}>{EVENT_LABEL[r.kind]}</span></td>
@@ -355,6 +363,7 @@ export function TopologyChanges() {
           </tbody>
         </table>
       </div>
+      <Pager paged={paged} unit="perubahan" />
     </div>
   )
 }
