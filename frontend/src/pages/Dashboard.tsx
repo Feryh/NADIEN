@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api, CapacityColor, DashboardSummary, PopUtilization } from '../api'
 import { AreaMapPanel, DataHealthPanel, ServicesPanel, TrendsPanel } from '../components/DashboardPanels'
+import { LinkHotspotsPanel, OltHotspotsPanel } from '../components/HotspotPanels'
 import { CAPACITY_HEX, ColorBadge, fmtG, fmtMonths, Kpi, UtilBar } from '../components/ui'
 
 const COLORS: CapacityColor[] = ['green', 'yellow', 'red']
@@ -68,6 +69,9 @@ function Summary() {
         <Kpi label="Utilization" value={`${summary.capacity.utilization_pct}%`} sub={`${fmtG(summary.capacity.current_gbps)} traffic`} />
         <Kpi label="Customers" value={c.customers} sub={`${c.services} service aktif`} />
       </div>
+
+      <LinkHotspotsPanel />
+      <OltHotspotsPanel />
 
       <div className="grid-2">
         <div className="card">

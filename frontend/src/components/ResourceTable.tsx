@@ -1,4 +1,5 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { ENTITY_BY_KEY, Entity, Field } from '../entities'
 
@@ -196,6 +197,8 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
                 {columns.map((f) => {
                   const value = row[f.name]
                   if (f.type === 'bool') return <td key={f.name}>{value ? '✓' : '–'}</td>
+                  if (entity.endpoint === '/devices' && f.name === 'hostname')
+                    return <td key={f.name}><Link to={`/devices/${row.id}`}>{String(value)}</Link></td>
                   if (f.name.endsWith('status') && typeof value === 'string' && f.type === 'select')
                     return (
                       <td key={f.name}>

@@ -151,6 +151,9 @@ class Interface(TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(String(512))
     ipv4_address: Mapped[str | None] = mapped_column(String(64))
     optic_type: Mapped[str | None] = mapped_column(String(64))
+    # Traffic rate at the last Observium utilization sync: ports without a link (PON ports) have no samples.
+    in_gbps: Mapped[float | None] = mapped_column(Float)
+    out_gbps: Mapped[float | None] = mapped_column(Float)
 
     device: Mapped[Device] = relationship(back_populates="interfaces")
 

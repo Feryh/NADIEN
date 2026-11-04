@@ -48,6 +48,13 @@ def occupancy_pct(used: int, total: int) -> float:
     return round(used / total * 100, 1) if total else 0.0
 
 
+def port_utilization_pct(in_gbps: float | None, out_gbps: float | None, speed_gbps: float | None) -> float | None:
+    """Busier direction against the port speed; None when the rate or the speed is unknown."""
+    if not speed_gbps or (in_gbps is None and out_gbps is None):
+        return None
+    return round(max(in_gbps or 0.0, out_gbps or 0.0) / speed_gbps * 100, 1)
+
+
 MIN_TREND_DAYS = 14  # a shorter history is mostly weekly seasonality, not growth
 PEAK_PERCENTILE = 0.95
 

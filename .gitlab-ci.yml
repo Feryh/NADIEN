@@ -47,9 +47,28 @@ migrations-postgres:
     POSTGRES_USER: nadien
     POSTGRES_PASSWORD: nadien
     POSTGRES_DB: nadien
-    NADIEN_DATABASE_URL: postgresql+psycopg://nadien:nadien@postgres:5432/nadien
   script:
     - pip install -r requirements.txt
+    # The service is `postgres` on the Docker executor and `localhost` on the Kubernetes executor; the postgis
+    # image also restarts once after creating its extensions. Wait for whichever answers, then use it.
+    - |
+      export NADIEN_DATABASE_URL=$(python - <<'PY'
+      import sys, time
+      import psycopg
+      last = None
+      for attempt in range(90):
+          for host in ("postgres", "127.0.0.1"):
+              try:
+                  psycopg.connect(f"host={host} port=5432 user=nadien password=nadien dbname=nadien", connect_timeout=3).close()
+                  print(f"postgresql+psycopg://nadien:nadien@{host}:5432/nadien")
+                  sys.exit(0)
+              except psycopg.OperationalError as exc:
+                  last = exc
+          time.sleep(2)
+      sys.exit(f"PostgreSQL service did not come up: {last}")
+      PY
+      )
+    - echo "Using $NADIEN_DATABASE_URL"
     - alembic upgrade head
     - alembic check
     - alembic downgrade base
@@ -67,7 +86,9 @@ frontend:
     - npm ci
     - npm run build
 
-# Needs a runner that allows Docker-in-Docker (privileged).
+# Needs a privileged runner with service networking for Docker-in-Docker. The company runner (`integration`) is
+# unprivileged and runs services on the host network, so dind cannot start there; GitHub Actions builds both
+# images on every push. Run this by hand on a runner that allows it.
 docker:
   image: docker:27
   stage: build
@@ -75,6 +96,8 @@ docker:
   variables:
     DOCKER_TLS_CERTDIR: "/certs"
   needs: [backend, frontend]
+  when: manual
+  allow_failure: true
   script:
     - docker build -t nadien-backend:ci backend
     - docker build -t nadien-frontend:ci frontend

@@ -8,6 +8,7 @@ import CollectorSettings from './pages/CollectorSettings'
 import Collectors from './pages/Collectors'
 import ConfigGenerator from './pages/ConfigGenerator'
 import Dashboard from './pages/Dashboard'
+import DeviceDetail from './pages/DeviceDetail'
 import DigitalTwin from './pages/DigitalTwin'
 import Inventory from './pages/Inventory'
 import MopGenerator from './pages/MopGenerator'
@@ -95,6 +96,7 @@ function Shell() {
             <Route path="/inventory/:entityKey" element={<Inventory />} />
             <Route path="/topology" element={<Topology />} />
             <Route path="/ports" element={<Ports />} />
+            <Route path="/devices/:deviceId" element={<DeviceDetail />} />
             <Route path="/paths" element={<Paths />} />
             <Route path="/validation" element={<ServiceValidation />} />
             <Route path="/mop" element={<MopGenerator />} />

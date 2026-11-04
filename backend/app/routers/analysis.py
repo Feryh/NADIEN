@@ -31,8 +31,10 @@ from ..services.areas import (
     ROLE_TIER,
     UNMAPPED_AREA,
     area_for_hostnames,
+    area_for_name,
     area_for_pop,
     city_center_for_code,
+    city_for_pop,
     city_label,
     csr_parts,
     first_city_code,
@@ -52,6 +54,11 @@ from ..services.geo import KmlError, Placemark, match_devices, match_pops, read_
 router = APIRouter(tags=["Analysis"])
 
 UNASSIGNED_POP = "UNASSIGNED"
+_MISSING_LOCATION_VALUES = {"", "unknown", "n/a", "na", "none", "-", UNMAPPED_AREA.lower()}
+
+
+def _missing_location(value: str | None) -> bool:
+    return (value or "").strip().lower() in _MISSING_LOCATION_VALUES
 
 
 # --------------------------------------------------------------------------- shared context
@@ -474,6 +481,99 @@ def set_device_coordinates(rows: list[DeviceCoordinateIn], db: Session = Depends
         db.add(location)
     db.commit()
     return {"updated": len(rows), "backup": backup}
+
+
+def _pop_location_mapping(db: Session) -> dict[str, Any]:
+    pops = list(db.scalars(select(m.Pop).order_by(m.Pop.code)))
+    hostnames_by_pop: dict[int, list[str]] = defaultdict(list)
+    for pop_id, hostname in db.execute(select(m.Device.pop_id, m.Device.hostname)):
+        hostnames_by_pop[pop_id].append(hostname)
+
+    rows = []
+    area_conflicts = []
+    for pop in pops:
+        if pop.code.upper() == UNASSIGNED_POP:
+            continue
+        hostnames = hostnames_by_pop[pop.id]
+        area = (pop.region or "").strip()
+        city = (pop.city or "").strip()
+        inferred_area = None
+        inferred_city = None
+        if _missing_location(area):
+            inferred_area = area_for_pop(pop.code, None, pop.name)
+            if inferred_area == UNMAPPED_AREA:
+                inferred_area = area_for_hostnames(hostnames)
+            if inferred_area == UNMAPPED_AREA:
+                inferred_area = None
+        if _missing_location(city):
+            inferred_city = city_for_pop(pop.code, pop.name, hostnames)
+        known_area = area if not _missing_location(area) else inferred_area
+        known_city = city if not _missing_location(city) else inferred_city
+        city_area = area_for_name(known_city)
+        if known_area and city_area and known_area != city_area:
+            area_conflicts.append({"code": pop.code, "area": known_area, "city": known_city,
+                                  "city_area": city_area})
+        if inferred_area or inferred_city:
+            rows.append({
+                "code": pop.code,
+                "name": pop.name,
+                "area": inferred_area,
+                "city": inferred_city,
+            })
+
+    mappings_by_code = {row["code"]: row for row in rows}
+    area_left = []
+    city_left = []
+    for pop in pops:
+        if pop.code.upper() == UNASSIGNED_POP:
+            continue
+        planned = mappings_by_code.get(pop.code, {})
+        if _missing_location(pop.region) and not planned.get("area"):
+            area_left.append(pop.code)
+        if _missing_location(pop.city) and not planned.get("city"):
+            city_left.append(pop.code)
+    return {
+        "total_pops": sum(pop.code.upper() != UNASSIGNED_POP for pop in pops),
+        "area_updates": sum(bool(row["area"]) for row in rows),
+        "city_updates": sum(bool(row["city"]) for row in rows),
+        "mappings": rows,
+        "area_conflict_count": len(area_conflicts),
+        "area_conflicts": area_conflicts,
+        "unmapped_area_count": len(area_left),
+        "unmapped_area_pops": area_left,
+        "unmapped_city_count": len(city_left),
+        "unmapped_city_pops": city_left,
+    }
+
+
+@router.get("/areas/pop-location-mapping")
+def preview_pop_location_mapping(db: Session = Depends(get_db)):
+    """Preview blank POP area/city values inferable from curated codes, names and device hostnames."""
+    return _pop_location_mapping(db)
+
+
+@router.post("/areas/pop-location-mapping")
+def apply_pop_location_mapping(db: Session = Depends(get_db)):
+    """Fill only blank POP area/city values; leave curated fields and unresolved records untouched."""
+    jobs_runner.ensure_idle(jobs_runner.runner)
+    result = _pop_location_mapping(db)
+    by_code = {pop.code: pop for pop in db.scalars(select(m.Pop))}
+    applied_area = applied_city = 0
+    for mapping in result["mappings"]:
+        pop = by_code[mapping["code"]]
+        if mapping["area"] and _missing_location(pop.region):
+            pop.region = mapping["area"]
+            applied_area += 1
+        if mapping["city"] and _missing_location(pop.city):
+            pop.city = mapping["city"]
+            applied_city += 1
+    db.commit()
+    remaining = _pop_location_mapping(db)
+    return {
+        **remaining,
+        "applied_area": applied_area,
+        "applied_city": applied_city,
+    }
 
 
 # --------------------------------------------------------------------------- drill-down topology

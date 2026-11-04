@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.orm import Session
 
 from ... import models as m
@@ -400,6 +400,9 @@ def _write_neighbours(db, client, device_by_obs, iface_by_port, report: SyncRepo
 
 def _write_utilization(db: Session, rates: dict[int, tuple[float | None, float | None]], report: SyncReport) -> None:
     now = datetime.now(timezone.utc)
+    if rates:
+        db.execute(update(m.Interface), [{"id": iface_id, "in_gbps": in_g, "out_gbps": out_g}
+                                         for iface_id, (in_g, out_g) in rates.items()])
     for link in db.scalars(select(m.Link)):
         a = rates.get(link.a_interface_id or -1)
         b = rates.get(link.b_interface_id or -1)

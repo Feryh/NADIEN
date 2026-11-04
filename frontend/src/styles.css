@@ -459,3 +459,22 @@ a.button.primary { background: var(--accent-strong); border-color: var(--accent-
 .naming-script-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
 .naming-script pre { margin: 4px 0 0; padding: 10px; max-height: 360px; overflow: auto; background: var(--panel-2);
   border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+
+/* OLT front panel on the device page: uplink card, then PON ports as columns per slot */
+.olt-panel h2 + .hint { margin-top: -4px; }
+.olt-uplinks { display: flex; flex-direction: column; gap: 4px; margin-bottom: 16px; }
+.olt-uplink { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr) auto; align-items: center; gap: 12px;
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); }
+.olt-uplink.disabled, .olt-uplink.idle { opacity: 0.6; }
+.olt-uplink-desc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.olt-slots { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; align-items: start; }
+.olt-slot { border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.olt-slot-head { padding: 6px 10px; font-weight: 700; font-size: 12px; letter-spacing: 0.04em; background: var(--panel-2);
+  border-bottom: 1px solid var(--border); }
+.olt-pon { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 8px; padding: 3px 10px; font-size: 12px; }
+.olt-pon + .olt-pon { border-top: 1px solid var(--border); }
+.olt-pon.disabled { opacity: 0.5; }
+.olt-pon-name { font-variant-numeric: tabular-nums; }
+.olt-pon-metric { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
+.olt-pon .pill { min-width: 38px; text-align: center; }
+@media (max-width: 600px) { .olt-uplink { grid-template-columns: 1fr auto; } .olt-uplink-desc { grid-column: 1 / -1; grid-row: 2; } }
