@@ -88,6 +88,8 @@ class Settings(BaseSettings):
     hotspot_warning_pct: float = 70.0
     hotspot_critical_pct: float = 90.0
     hotspot_suspect_pct: float = 150.0  # above this the link capacity is treated as wrong data
+    # ONTs one GPON port takes at its split ratio (1:64): a PON port's occupancy is its online ONTs against this.
+    pon_max_onts: int = 64
 
     # Collector settings page (Pengaturan Collector). Values saved there override this environment.
     # Only admins can change it; set false in production to keep credentials env-only.

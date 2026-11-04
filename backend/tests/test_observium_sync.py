@@ -90,6 +90,13 @@ def test_utilization_only_updates_rates_without_touching_inventory(db):
     assert links_by_pair(db)[frozenset(("JKT-P-01", "SBY-P-01"))].current_gbps == 300
 
 
+def test_should_store_port_rate_on_interface_when_utilization_is_synced(db):
+    sync_observium(db, client())
+    sync_observium(db, client(port_rates={"1001": (37_500_000_000, 1)}), parts={"utilization"})
+    hu0 = db.scalar(select(m.Interface).where(m.Interface.name == "HundredGigE0/0/0/0"))
+    assert hu0.in_gbps == 300
+
+
 def test_config_import_promotes_member_links_to_bundle(db):
     sync_observium(db, client())
     assert frozenset(("JKT-P-01", "BDG-PE-01")) in links_by_pair(db)

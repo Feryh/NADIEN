@@ -2,7 +2,8 @@ import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 
-// Port capacity is shown per device and per port speed.
+// Port capacity: physical ports split used (oper up) / idle (admin up, oper down) / disabled (admin down),
+// in total and per device (with the ports behind each count).
 
 interface Usage {
   total: number
@@ -12,6 +13,7 @@ interface Usage {
   used_pct: number
 }
 interface Summary {
+  totals: Usage
   by_speed: { speed: string }[]
   categories: Record<string, string>
   vendors: string[]
@@ -181,6 +183,14 @@ export default function Ports() {
           oper down (siap dipakai) · <b>Disabled</b> = admin down (shutdown).
         </p>
         {error && <div className="error">{error}</div>}
+        {summary && (
+          <div className="kpis">
+            <div className="kpi card"><div className="kpi-label">Total port</div><div className="kpi-value">{n(summary.totals.total)}</div></div>
+            <div className="kpi card"><div className="kpi-label">Terpakai</div><div className="kpi-value ok">{n(summary.totals.used)}</div><div className="kpi-sub">{summary.totals.used_pct}%</div></div>
+            <div className="kpi card"><div className="kpi-label">Idle</div><div className="kpi-value warn">{n(summary.totals.idle)}</div><div className="kpi-sub">siap dipakai</div></div>
+            <div className="kpi card"><div className="kpi-label">Disabled</div><div className="kpi-value muted">{n(summary.totals.disabled)}</div><div className="kpi-sub">admin down</div></div>
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -214,7 +224,7 @@ export default function Ports() {
                 const rows = [
                   <tr key={d.device_id}>
                     <td>
-                      <Link to={`/topology?level=device&pop=${encodeURIComponent(d.pop)}&focus=${encodeURIComponent(d.hostname)}`}>{d.hostname}</Link>
+                      <Link to={`/devices/${d.device_id}`} title="Detail port, kapasitas dan utilisasi">{d.hostname}</Link>
                     </td>
                     <td>{d.pop} · {d.site}</td>
                     <td className="muted">{d.area}</td>

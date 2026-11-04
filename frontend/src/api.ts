@@ -77,6 +77,8 @@ export interface Hotspots {
     counts: Record<HotspotLevel, number>
     rows: {
       link_id: number
+      a_device_id: number | null
+      b_device_id: number | null
       a_device: string
       b_device: string
       a_pop: string | null
@@ -124,6 +126,31 @@ export interface DeviceSummary {
 export interface TopologySearch {
   pops: { pop_id: number; code: string; name: string; area: string; devices: number }[]
   devices: { device_id: number; hostname: string; pop: string; role: string; category: string; area: string }[]
+}
+
+export interface OltCapacity {
+  thresholds: { warning_pct: number; critical_pct: number; pon_max_onts: number }
+  total: number
+  rows: {
+    device_id: number
+    hostname: string
+    pop: string | null
+    vendor: string | null
+    pon_total: number
+    pon_used: number
+    onts_online: number
+    /** Online ONTs of the fullest PON port, and that against pon_max_onts (split ratio). */
+    busiest_pon_onts: number
+    busiest_pon_pct: number
+    pon_hot_ports: number
+    pon_level: HotspotLevel
+    uplinks: number
+    uplink_capacity_gbps: number
+    uplink_current_gbps: number
+    uplink_utilization_pct: number
+    uplink_level: HotspotLevel
+    uplinks_down: number
+  }[]
 }
 
 export interface LinkCapacity extends CapacityResult {

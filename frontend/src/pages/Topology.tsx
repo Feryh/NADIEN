@@ -46,51 +46,6 @@ interface EdgeData extends Totals {
   segment: Segment
 }
 
-interface MonitorItem {
-  id: string
-  label: string
-  links: number
-  down: number
-  capacity_gbps: number
-  current_gbps: number
-  reserved_gbps: number
-  committed_pct: number
-  color: CapacityColor
-  edge?: EdgeData
-  node?: NodeData
-}
-
-function monitorItems(view: View | null, shown: Set<Segment>): MonitorItem[] {
-  if (!view) return []
-  const names = new Map(view.nodes.map((n) => [n.id, n.label]))
-  const items: MonitorItem[] = view.edges.filter((edge) => shown.has(edge.segment)).map((edge) => ({
-    ...edge,
-    label: `${names.get(edge.source) ?? edge.source} ↔ ${names.get(edge.target) ?? edge.target} · ${SEGMENT_LABEL[edge.segment]}`,
-    reserved_gbps: Math.max(0, edge.capacity_gbps * edge.committed_pct / 100 - edge.current_gbps),
-    edge,
-  }))
-  for (const node of view.nodes) {
-    const internal = node.internal
-    if (!internal || !internal.links) continue
-    items.push({
-      id: `internal:${node.id}`,
-      label: `${node.label} · internal`,
-      links: internal.links,
-      down: internal.down,
-      capacity_gbps: internal.capacity_gbps,
-      current_gbps: internal.current_gbps,
-      reserved_gbps: internal.reserved_gbps,
-      committed_pct: internal.committed_pct,
-      color: internal.color,
-      node,
-    })
-  }
-  return items.sort((a, b) => {
-    const priority = (x: MonitorItem) => x.down > 0 ? 0 : x.color === 'red' ? 1 : x.color === 'yellow' ? 2 : 3
-    return priority(a) - priority(b) || b.committed_pct - a.committed_pct
-  })
-}
-
 interface NodeData {
   id: string
   kind: 'area' | 'pop' | 'device' | 'external_area' | 'external_pop'
@@ -957,10 +912,6 @@ function TopologyMap() {
     setSegmentsShown(next)
   }
 
-  function onlySegment(segment: Segment) {
-    setSegmentsShown(segmentsShown.size === 1 && segmentsShown.has(segment) ? new Set(SEGMENTS) : new Set([segment]))
-  }
-
   // A POP opens its devices; a device opens its neighbours, centred and highlighted.
   function openHit(hit: SearchHit) {
     if (hit.kind === 'pop') go({ level: 'device', pop: hit.code })
@@ -1030,16 +981,6 @@ function TopologyMap() {
       green: edges.filter((e) => e.color === 'green').length,
     }
   }, [view, segmentsShown])
-
-  const monitorGroups = useMemo(() => monitorItems(view, segmentsShown), [view, segmentsShown])
-  const monitorTotals = useMemo(() => monitorGroups.reduce((total, item) => ({
-    links: total.links + item.links,
-    down: total.down + item.down,
-    capacity: total.capacity + item.capacity_gbps,
-    committed: total.committed + item.current_gbps + item.reserved_gbps,
-    riskGroups: total.riskGroups + (item.down > 0 || item.color !== 'green' ? 1 : 0),
-  }), { links: 0, down: 0, capacity: 0, committed: 0, riskGroups: 0 }), [monitorGroups])
-  const committedPct = monitorTotals.capacity ? monitorTotals.committed / monitorTotals.capacity * 100 : 0
 
   const node = selected?.node
   const edge = selected?.edge
@@ -1166,64 +1107,6 @@ function TopologyMap() {
         </div>
       )}
       {view?.truncated && <div className="notice">Terlalu banyak tetangga — ditampilkan 400 perangkat pertama.</div>}
-
-      {view && <section className="monitor-summary card" aria-label="Ringkasan monitoring">
-        <div className="monitor-heading">
-          <div>
-            <h2>Monitoring · {level === 'area' ? 'Semua area' : level === 'pop' ? view.area : level === 'device' ? `POP ${view.pop}` : view.device}</h2>
-            <div className="muted small">Ringkasan kapasitas dan status link pada cakupan tampilan ini</div>
-          </div>
-          <span className={`monitor-util ${committedPct >= 80 ? 'critical' : committedPct >= 60 ? 'warning' : ''}`}>
-            {committedPct.toFixed(1)}% committed
-          </span>
-        </div>
-        {view.segments && <div className="segment-cards">
-          {SEGMENTS.map((s) => {
-            const seg = view.segments[s]
-            return (
-              <button key={s} type="button" className={`segment-card ${segmentsShown.has(s) ? 'on' : ''}`}
-                style={{ '--seg': SEGMENT_COLOR[s] } as React.CSSProperties} onClick={() => onlySegment(s)}
-                title={`${SEGMENT_HINT[s]} — klik untuk menampilkan hanya segmen ini (klik lagi: semua)`}>
-                <span className="segment-card-head"><span className={`segment-line ${s}`} />{SEGMENT_LABEL[s]}</span>
-                <span className="segment-card-main">
-                  <b>{seg.links.toLocaleString('id-ID')}</b> link
-                  {seg.down > 0 && <span className="pill pill-bad">{seg.down.toLocaleString('id-ID')} down</span>}
-                </span>
-                <span className="segment-card-meta">
-                  <span className={`monitor-alert-pct ${seg.color}`}>{seg.committed_pct.toFixed(0)}% committed</span>
-                  {' · '}{fmtG(seg.capacity_gbps)}
-                  {seg.capacity_unknown > 0 && <> · <span className="muted">{seg.capacity_unknown} tanpa kapasitas</span></>}
-                </span>
-              </button>
-            )
-          })}
-        </div>}
-        <div className="monitor-kpis">
-          <div><span>Link</span><b>{monitorTotals.links.toLocaleString('id-ID')}</b></div>
-          <div className={monitorTotals.down ? 'critical' : ''}><span>Link down</span><b>{monitorTotals.down.toLocaleString('id-ID')}</b></div>
-          <div className={monitorTotals.riskGroups ? 'warning' : ''}><span>Kelompok perlu perhatian</span><b>{monitorTotals.riskGroups.toLocaleString('id-ID')}</b></div>
-          <div><span>Kapasitas / trafik + reserved</span><b>{fmtG(monitorTotals.capacity)} / {fmtG(monitorTotals.committed)}</b></div>
-        </div>
-        <div className="monitor-alerts">
-          <b>Prioritas monitoring</b>
-          {monitorGroups.filter((item) => item.down > 0 || item.color !== 'green').slice(0, 5).map((item) => (
-            <button key={item.id} type="button" className="monitor-alert" onClick={() => {
-              if (item.edge) {
-                setSelected({ edge: item.edge })
-                cyRef.current?.getElementById(item.edge.id).select()
-              } else if (item.node?.kind === 'area') go({ level: 'pop', area: item.node.label })
-              else if (item.node?.kind === 'pop') go({ level: 'device', pop: item.node.label })
-            }}>
-              <span className={`monitor-dot ${item.down ? 'down' : item.color}`} />
-              <span className="monitor-alert-name">{item.label}</span>
-              {item.down > 0 && <span className="pill pill-bad">{item.down} down</span>}
-              <span className={`monitor-alert-pct ${item.color}`}>{item.committed_pct.toFixed(0)}%</span>
-            </button>
-          ))}
-          {!monitorTotals.riskGroups && <span className="muted small">Tidak ada link down atau kelompok link berwarna kuning/merah.</span>}
-          {monitorTotals.riskGroups > 5 && <span className="muted small">Menampilkan 5 dari {monitorTotals.riskGroups} kelompok prioritas.</span>}
-        </div>
-      </section>}
 
       <div className="topology-body">
         <div className="graph card">
