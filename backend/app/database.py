@@ -57,6 +57,14 @@ SCHEMA_ATTEMPTS = 10
 MIGRATIONS = Path(__file__).parent / "migrations"
 _MIGRATE_LOCK = threading.Lock()  # Alembic keeps module-level state while it runs: one run per process
 BASELINE = "0001"  # the schema create_all built before migrations existed
+# Tables a database extension creates by itself (the postgis image adds spatial_ref_sys to every database):
+# not ours, so autogenerate must not drop them and they do not make a database "pre-migration".
+EXTENSION_TABLES = frozenset({"spatial_ref_sys"})
+
+
+def include_in_migrations(obj, name: str | None, type_: str, reflected: bool, compare_to) -> bool:
+    """Alembic `include_object` hook."""
+    return not (type_ == "table" and reflected and compare_to is None and name in EXTENSION_TABLES)
 
 
 def init_schema(bind: Engine | None = None) -> None:
@@ -93,7 +101,7 @@ def _migrate(conn: Connection) -> None:
     from . import models  # noqa: F401  (late: models imports Base from here)
 
     config = alembic_config(conn)
-    tables = set(inspect(conn).get_table_names())
+    tables = set(inspect(conn).get_table_names()) - EXTENSION_TABLES
     if tables and "alembic_version" not in tables:
         # A database from before migrations (create_all): replay the baseline for what it lacks, then record
         # it as being at the baseline so later migrations alter it like any other.
