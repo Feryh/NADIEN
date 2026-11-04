@@ -61,6 +61,20 @@ def test_should_give_no_traffic_to_a_down_link_when_it_shares_a_port_with_the_li
     assert (stale.current_gbps, live.current_gbps) == (0.0, 7.8)
 
 
+def test_should_take_traffic_from_the_narrower_bundle_when_its_far_end_bundle_is_wider(db):
+    a, b = _devices(db)
+    sg210 = m.Interface(device_id=a.id, name="smartgroup210", if_type="bundle", speed_gbps=200)  # one member elsewhere
+    sg1 = m.Interface(device_id=b.id, name="smartgroup1", if_type="bundle", speed_gbps=100)
+    db.add_all([sg210, sg1])
+    db.flush()
+    link = m.Link(name="bundle", a_device_id=a.id, a_interface_id=sg210.id, b_device_id=b.id, b_interface_id=sg1.id,
+                  capacity_gbps=100, status="up", link_type="bundle")
+    db.add(link)
+    db.commit()
+    _write_utilization(db, {sg210.id: (60.0, 148.7), sg1.id: (55.0, 40.0)}, SyncReport(parts=["utilization"]))
+    assert link.current_gbps == 55.0  # smartgroup1's own traffic, not the whole smartgroup210
+
+
 def test_should_leave_down_links_out_when_listing_hot_links(db):
     a, b = _devices(db)
     db.add(m.Link(name="stale", a_device_id=a.id, b_device_id=b.id, capacity_gbps=4.295, current_gbps=6.3, status="down"))
