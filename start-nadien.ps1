@@ -12,10 +12,16 @@
     .\start-nadien.ps1 restart
     .\start-nadien.ps1 status
     .\start-nadien.ps1 stop -Mode native
+    .\start-nadien.ps1 reset-password          # admin lupa password / terkunci: cetak password sementara
+    .\start-nadien.ps1 reset-password budi
 #>
 param(
-    [ValidateSet("start", "restart", "stop", "status")]
+    [Parameter(Position = 0)]
+    [ValidateSet("start", "restart", "stop", "status", "reset-password")]
     [string]$Action = "start",
+
+    [Parameter(Position = 1)]
+    [string]$User = "",
 
     [ValidateSet("auto", "docker", "native")]
     [string]$Mode = "auto",
@@ -182,6 +188,20 @@ function Invoke-Native {
     }
 }
 
+# ------------------------------------------------------------------ password reset
+
+function Invoke-ResetPassword {
+    $userArgs = if ($User) { @($User) } else { @() }
+    if ($Mode -eq "docker") {
+        & docker compose exec backend python -m app.reset_password @userArgs
+    } else {
+        $backendDir = (& wsl.exe -d $Distro -u root -- wslpath -a ($ProjectRoot -replace '\\', '/')).Trim() + "/backend"
+        $command = "cd '$backendDir' && NADIEN_DATABASE_URL='$DatabaseUrl' ~/.nadien-venv/bin/python -m app.reset_password $User"
+        Invoke-Wsl $command
+    }
+    exit $LASTEXITCODE
+}
+
 # ------------------------------------------------------------------ main
 
 if ($Mode -eq "auto") {
@@ -193,6 +213,10 @@ if ($Mode -eq "docker") {
         Write-Error "Docker engine tidak berjalan. Start Docker Desktop, atau pakai -Mode native."
         exit 1
     }
+}
+if ($Action -eq "reset-password") {
+    Invoke-ResetPassword
+} elseif ($Mode -eq "docker") {
     Invoke-Docker
 } else {
     Invoke-Native
