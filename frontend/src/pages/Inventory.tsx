@@ -4,6 +4,7 @@ import DeviceSummary from '../components/DeviceSummary'
 import PopCoordinateImport from '../components/PopCoordinateImport'
 import PopRehome from '../components/PopRehome'
 import ResourceTable from '../components/ResourceTable'
+import PopLocationMapping from '../components/PopLocationMapping'
 import { ENTITIES, ENTITY_BY_KEY, GROUPS } from '../entities'
 
 export default function Inventory() {
@@ -29,6 +30,7 @@ export default function Inventory() {
       </nav>
       <div className="inventory-main">
         {entity.endpoint === '/devices' && <DeviceSummary />}
+        {entity.key === 'pops' && <PopLocationMapping onApplied={() => setReload((n) => n + 1)} />}
         {entity.key === 'pops' && <PopRehome onApplied={() => setReload((n) => n + 1)} />}
         {entity.key === 'pops' && <PopCoordinateImport onApplied={() => setReload((n) => n + 1)} />}
         <ResourceTable key={`${entity.key}:${reload}`} entity={entity} />

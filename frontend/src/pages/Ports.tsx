@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 
-// Port capacity: physical ports per speed, split used (oper up) / idle (admin up, oper down) / disabled (admin down).
+// Port capacity is shown per device and per port speed.
 
 interface Usage {
   total: number
@@ -11,19 +11,8 @@ interface Usage {
   disabled: number
   used_pct: number
 }
-interface SpeedRow extends Usage {
-  speed: string
-}
-interface CategoryRow extends Usage {
-  category: string
-  label: string
-  devices: number
-  by_speed: SpeedRow[]
-}
 interface Summary {
-  totals: Usage
-  by_speed: SpeedRow[]
-  by_category: CategoryRow[]
+  by_speed: { speed: string }[]
   categories: Record<string, string>
   vendors: string[]
 }
@@ -38,6 +27,28 @@ interface DeviceRow extends Usage {
   vendor: string | null
   speeds: Record<string, { used: number; idle: number; disabled: number }>
 }
+interface InterfaceRow {
+  id: number
+  name: string
+  speed_gbps: number | null
+  admin_status: string
+  oper_status: string
+  description: string | null
+}
+type PortState = 'used' | 'idle'
+
+const STANDARD_SPEEDS: [number, string][] = [
+  [0.01, '10M'], [0.1, '100M'], [1, '1G'], [2.5, '2.5G'], [10, '10G'], [25, '25G'], [40, '40G'],
+  [50, '50G'], [100, '100G'], [200, '200G'], [400, '400G'], [800, '800G'],
+]
+function speedBucket(speed: number | null): string {
+  if (speed == null || speed <= 0) return 'Unknown'
+  return STANDARD_SPEEDS.find(([nominal]) => Math.abs(speed - nominal) <= nominal * 0.02)?.[1] ?? 'Non-standar'
+}
+function speedOrder(bucket: string): number {
+  const index = STANDARD_SPEEDS.findIndex(([, label]) => label === bucket)
+  return index >= 0 ? index : bucket === 'Non-standar' ? -1 : -2
+}
 
 const CATEGORY_TABS = [
   { key: '', label: 'Semua' },
@@ -48,17 +59,6 @@ const CATEGORY_TABS = [
   { key: 'access', label: 'Access/Switch' },
   { key: 'other', label: 'Lainnya' },
 ]
-
-function UsageBar({ u }: { u: Usage }) {
-  const pct = (n: number) => (u.total ? (n / u.total) * 100 : 0)
-  return (
-    <div className="usage-bar" title={`terpakai ${u.used} · idle ${u.idle} · disabled ${u.disabled}`}>
-      <div className="used" style={{ width: `${pct(u.used)}%` }} />
-      <div className="idle" style={{ width: `${pct(u.idle)}%` }} />
-      <div className="disabled" style={{ width: `${pct(u.disabled)}%` }} />
-    </div>
-  )
-}
 
 const n = (v: number) => v.toLocaleString('id-ID')
 
@@ -77,6 +77,10 @@ export default function Ports() {
   const [sort, setSort] = useState('idle')
   const [search, setSearch] = useState(q)
   const [error, setError] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<{ deviceId: number; speed: string; state: PortState } | null>(null)
+  const [expandedInterfaces, setExpandedInterfaces] = useState<InterfaceRow[]>([])
+  const [interfaceLoading, setInterfaceLoading] = useState(false)
+  const [interfaceError, setInterfaceError] = useState<string | null>(null)
 
   const set = (key: string, value: string) => {
     const next = new URLSearchParams(params)
@@ -117,7 +121,29 @@ export default function Ports() {
     set('q', search.trim())
   }
 
-  const speeds = summary?.by_speed.map((s) => s.speed) ?? []
+  async function showInterfaces(deviceId: number, speedClass: string, state: PortState) {
+    if (expanded?.deviceId === deviceId && expanded.speed === speedClass && expanded.state === state) {
+      setExpanded(null)
+      return
+    }
+    setExpanded({ deviceId, speed: speedClass, state })
+    setExpandedInterfaces([])
+    setInterfaceError(null)
+    setInterfaceLoading(true)
+    try {
+      const interfaces = await api.get<InterfaceRow[]>(`/interfaces?device_id=${deviceId}&if_type=physical&limit=10000`)
+      setExpandedInterfaces(interfaces.filter((iface) => {
+        if (speedBucket(iface.speed_gbps) !== speedClass) return false
+        return state === 'used'
+          ? iface.admin_status !== 'down' && iface.oper_status === 'up'
+          : iface.admin_status !== 'down' && iface.oper_status !== 'up'
+      }))
+    } catch (e) {
+      setInterfaceError((e as Error).message)
+    } finally {
+      setInterfaceLoading(false)
+    }
+  }
 
   return (
     <div className="capacity">
@@ -145,76 +171,17 @@ export default function Ports() {
               <option key={v} value={v}>{v}</option>
             ))}
           </select>
+          <select value={speed} onChange={(e) => set('speed', e.target.value)}>
+            <option value="">Semua kapasitas</option>
+            {summary?.by_speed.map((s) => <option key={s.speed} value={s.speed}>{s.speed}</option>)}
+          </select>
         </div>
         <p className="hint">
           Port fisik saja (bundle/LAG dan sub-interface tidak dihitung). <b>Terpakai</b> = oper up · <b>Idle</b> = admin up tapi
           oper down (siap dipakai) · <b>Disabled</b> = admin down (shutdown).
         </p>
         {error && <div className="error">{error}</div>}
-        {summary && (
-          <div className="kpis">
-            <div className="kpi card"><div className="kpi-label">Total port</div><div className="kpi-value">{n(summary.totals.total)}</div></div>
-            <div className="kpi card"><div className="kpi-label">Terpakai</div><div className="kpi-value ok">{n(summary.totals.used)}</div><div className="kpi-sub">{summary.totals.used_pct}%</div></div>
-            <div className="kpi card"><div className="kpi-label">Idle</div><div className="kpi-value warn">{n(summary.totals.idle)}</div><div className="kpi-sub">siap dipakai</div></div>
-            <div className="kpi card"><div className="kpi-label">Disabled</div><div className="kpi-value muted">{n(summary.totals.disabled)}</div><div className="kpi-sub">admin down</div></div>
-          </div>
-        )}
       </div>
-
-      {summary && (
-        <div className="grid-2">
-          <div className="card">
-            <h2>Per kapasitas port</h2>
-            <table>
-              <thead>
-                <tr>
-                  <th>Speed</th><th className="num">Total</th><th className="num">Terpakai</th><th className="num">Idle</th>
-                  <th className="num">Disabled</th><th style={{ width: '30%' }} />
-                </tr>
-              </thead>
-              <tbody>
-                {summary.by_speed.map((s) => (
-                  <tr key={s.speed} className={`clickable ${speed === s.speed ? 'selected' : ''}`} onClick={() => set('speed', speed === s.speed ? '' : s.speed)}>
-                    <td><b>{s.speed}</b></td>
-                    <td className="num">{n(s.total)}</td>
-                    <td className="num">{n(s.used)} <span className="muted small">({s.used_pct}%)</span></td>
-                    <td className="num">{n(s.idle)}</td>
-                    <td className="num">{n(s.disabled)}</td>
-                    <td><UsageBar u={s} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <p className="hint">Klik baris speed untuk memfilter daftar perangkat di bawah.</p>
-          </div>
-
-          <div className="card">
-            <h2>Per kategori perangkat</h2>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Kategori</th><th className="num">Perangkat</th>
-                    {speeds.map((s) => <th key={s} className="num">{s}<div className="muted small">pakai / idle</div></th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {summary.by_category.map((c) => (
-                    <tr key={c.category} className="clickable" onClick={() => set('category', c.category)}>
-                      <td><b>{c.label}</b><UsageBar u={c} /></td>
-                      <td className="num">{n(c.devices)}</td>
-                      {speeds.map((s) => {
-                        const r = c.by_speed.find((x) => x.speed === s)
-                        return <td key={s} className="num">{r ? <>{n(r.used)} <span className="muted">/ {n(r.idle)}</span></> : <span className="muted">–</span>}</td>
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="card">
         <div className="toolbar">
@@ -238,31 +205,55 @@ export default function Ports() {
             <thead>
               <tr>
                 <th>Hostname</th><th>POP · Site</th><th>Area</th><th>Kategori</th><th>Vendor</th>
-                <th className="num">Total</th><th className="num">Terpakai</th><th className="num">Idle</th><th className="num">Disabled</th>
-                <th>Per speed (pakai/idle)</th>
+                <th>Kapasitas (terpakai/idle)</th>
               </tr>
             </thead>
             <tbody>
-              {devices?.devices.map((d) => (
-                <tr key={d.device_id}>
-                  <td>
-                    <Link to={`/topology?level=device&pop=${encodeURIComponent(d.pop)}&focus=${encodeURIComponent(d.hostname)}`}>{d.hostname}</Link>
-                  </td>
-                  <td>{d.pop} · {d.site}</td>
-                  <td className="muted">{d.area}</td>
-                  <td>{summary?.categories[d.category] ?? d.category}</td>
-                  <td>{d.vendor ?? '–'}</td>
-                  <td className="num">{d.total}</td>
-                  <td className="num">{d.used} <span className="muted small">({d.used_pct}%)</span></td>
-                  <td className="num"><b>{d.idle}</b></td>
-                  <td className="num muted">{d.disabled}</td>
-                  <td className="small">
-                    {Object.entries(d.speeds).map(([s, c]) => <span key={s} className="speed-chip">{s} {c.used}/{c.idle}</span>)}
-                  </td>
-                </tr>
-              ))}
+              {devices?.devices.flatMap((d) => {
+                const classes = Object.entries(d.speeds).sort(([a], [b]) => speedOrder(b) - speedOrder(a))
+                const rows = [
+                  <tr key={d.device_id}>
+                    <td>
+                      <Link to={`/topology?level=device&pop=${encodeURIComponent(d.pop)}&focus=${encodeURIComponent(d.hostname)}`}>{d.hostname}</Link>
+                    </td>
+                    <td>{d.pop} · {d.site}</td>
+                    <td className="muted">{d.area}</td>
+                    <td>{summary?.categories[d.category] ?? d.category}</td>
+                    <td>{d.vendor ?? '–'}</td>
+                    <td>
+                      {classes.map(([speedClass, counts], index) => <span key={speedClass}>
+                        {index > 0 && <span className="muted"> ; </span>}
+                        <b>{speedClass}</b> ({' '}
+                        <button type="button" className="port-count-link" onClick={() => showInterfaces(d.device_id, speedClass, 'used')} title={`Lihat port ${speedClass} yang terpakai`}>{n(counts.used)}</button>
+                        /{' '}
+                        <button type="button" className="port-count-link" onClick={() => showInterfaces(d.device_id, speedClass, 'idle')} title={`Lihat port ${speedClass} yang idle`}>{n(counts.idle)}</button>
+                        )
+                      </span>)}
+                    </td>
+                  </tr>,
+                ]
+                if (expanded?.deviceId === d.device_id) {
+                  const selectedClass = classes.find(([speedClass]) => speedClass === expanded.speed)
+                  rows.push(
+                    <tr key={`${d.device_id}-interfaces-${expanded.speed}-${expanded.state}`}>
+                      <td colSpan={6}>
+                        <b>{d.hostname} · {expanded.speed} · {expanded.state === 'used' ? 'Terpakai' : 'Idle'}</b>
+                        {interfaceLoading && <div className="muted">Memuat interface…</div>}
+                        {interfaceError && <div className="error">{interfaceError}</div>}
+                        {!interfaceLoading && !interfaceError && <div className="interface-list">
+                          {expandedInterfaces.length ? expandedInterfaces.map((iface) => (
+                            <span key={iface.id} className="speed-chip" title={iface.description ?? undefined}>{iface.name}</span>
+                          )) : <span className="muted">Tidak ada interface pada status ini</span>}
+                        </div>}
+                        {selectedClass && <span className="muted small">{` · ${n(selectedClass[1][expanded.state])} interface`}</span>}
+                      </td>
+                    </tr>,
+                  )
+                }
+                return rows
+              })}
               {devices && !devices.devices.length && (
-                <tr><td colSpan={10} className="empty">Tidak ada perangkat untuk filter ini</td></tr>
+                <tr><td colSpan={6} className="empty">Tidak ada perangkat untuk filter ini</td></tr>
               )}
             </tbody>
           </table>
