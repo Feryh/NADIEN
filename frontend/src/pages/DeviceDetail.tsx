@@ -67,12 +67,12 @@ interface DeviceCapacity {
     onts_online: number
     max_onts: number
     busiest_onts: number
-    busiest_pct: number
+    busiest_pct: number | null
     hot_ports: number
-    level: HotspotLevel
+    level: HotspotLevel | null
   } | null
   /** OLT front panel: uplink port ids, then PON port ids per slot in port order. */
-  olt_layout: { uplinks: number[]; slots: { slot: number; ports: number[] }[] } | null
+  olt_layout: { uplinks: number[]; slots: { slot: number; label: string; ports: number[] }[] } | null
   links: PortLink[]
   ports: Port[]
 }
@@ -132,11 +132,12 @@ function OltPanel({ layout, ports }: { layout: NonNullable<DeviceCapacity['olt_l
       <div className="olt-slots">
         {layout.slots.map((slot) => (
           <div key={slot.slot} className="olt-slot">
-            <div className="olt-slot-head">SLOT {slot.slot}</div>
+            <div className="olt-slot-head">{slot.label}</div>
             {slot.ports.map((id) => {
               const p = byId.get(id)
               if (!p) return null
-              const number = p.name.match(/(\d+)\s*$/)?.[1] ?? p.name
+              // Slot1/Port10 and Dasan port10-FX-1000 both carry the port number after "port".
+              const number = p.name.match(/port(\d+)/i)?.[1] ?? p.name
               return (
                 <div key={id} className={`olt-pon ${p.state}`} title={`${p.name} · ${p.description ?? ''}`}>
                   <span className="olt-pon-name">GPON {number}</span>
@@ -200,8 +201,10 @@ export default function DeviceDetail() {
           <Kpi label="Terpakai" value={n(totals.used)} sub={totals.total ? `${(totals.used / totals.total * 100).toFixed(1)}%` : undefined} />
           <Kpi label="Idle" value={n(totals.idle)} sub="siap dipakai" />
           <Kpi label="Link" value={n(links.length)} sub={`${hotLinks} ≥ ${data.thresholds.warning_pct}% utilisasi`} />
-          {pon && <Kpi label="Port GPON terpadat" value={<span className={`pill ${LEVEL_CLASS[pon.level]}`}>{pon.busiest_pct.toFixed(1)}%</span>}
-            sub={`${n(pon.busiest_onts)}/${n(pon.max_onts)} ONT · ${n(pon.hot_ports)} dari ${n(pon.total)} PON ≥ ${data.thresholds.warning_pct}% · ${n(pon.onts_online)} ONT online`} />}
+          {pon && (pon.busiest_pct != null && pon.level
+            ? <Kpi label="Port GPON terpadat" value={<span className={`pill ${LEVEL_CLASS[pon.level]}`}>{pon.busiest_pct.toFixed(1)}%</span>}
+              sub={`${n(pon.busiest_onts)}/${n(pon.max_onts)} ONT · ${n(pon.hot_ports)} dari ${n(pon.total)} PON ≥ ${data.thresholds.warning_pct}% · ${n(pon.onts_online)} ONT online`} />
+            : <Kpi label="Port GPON" value={n(pon.total)} sub="OLT ini tidak melaporkan jumlah ONT" />)}
         </div>
       </div>
 

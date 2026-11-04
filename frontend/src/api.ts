@@ -141,9 +141,10 @@ export interface OltCapacity {
     onts_online: number
     /** Online ONTs of the fullest PON port, and that against pon_max_onts (split ratio). */
     busiest_pon_onts: number
-    busiest_pon_pct: number
+    /** null: the OLT reports no ONT counters (Dasan), occupancy unknown. */
+    busiest_pon_pct: number | null
     pon_hot_ports: number
-    pon_level: HotspotLevel
+    pon_level: HotspotLevel | null
     uplinks: number
     uplink_capacity_gbps: number
     uplink_current_gbps: number

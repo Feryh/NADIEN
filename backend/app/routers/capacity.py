@@ -332,12 +332,12 @@ def _olt_rows(db: Session) -> list[dict[str, Any]]:
     vendors = dict(db.execute(select(m.Device.id, m.Vendor.name).join(m.Vendor, m.Vendor.id == m.Device.vendor_id)
                               .where(m.Device.role == "olt")).tuples().all())
     pon: dict[int, PonUsage] = defaultdict(PonUsage)
-    for device_id, name, admin, oper, description in db.execute(
+    for device_id, name, admin, oper, description, speed in db.execute(
             select(m.Interface.device_id, m.Interface.name, m.Interface.admin_status, m.Interface.oper_status,
-                   m.Interface.description)
+                   m.Interface.description, m.Interface.speed_gbps)
             .join(m.Device, m.Device.id == m.Interface.device_id)
             .where(m.Device.role == "olt", m.Interface.if_type == "physical")):
-        if is_pon_port(name, description):
+        if is_pon_port(name, description, speed):
             pon[device_id].add(admin, oper, description)
     capacity = {c.link_id: c for c in all_link_capacity(db)}
     uplinks: dict[int, list[s.LinkCapacity]] = defaultdict(list)
@@ -355,7 +355,7 @@ def _olt_rows(db: Session) -> list[dict[str, Any]]:
             "device_id": device_id, "hostname": d.hostname, "pop": pops.get(d.pop_id), "vendor": vendors.get(device_id),
             "pon_total": usage.total, "pon_used": usage.used, "onts_online": usage.onts,
             "busiest_pon_onts": usage.busiest_onts, "busiest_pon_pct": usage.busiest_pct, "pon_hot_ports": usage.hot_ports,
-            "pon_level": pon_level(usage.busiest_pct),
+            "pon_level": pon_level(usage.busiest_pct) if usage.busiest_pct is not None else None,
             "uplinks": len(ups), "uplink_capacity_gbps": total.capacity_gbps, "uplink_current_gbps": total.current_gbps,
             "uplink_utilization_pct": uplink_pct, "uplink_level": hotspot_level(uplink_pct),
             "uplinks_down": sum(1 for u in ups if u.status == "down"),
@@ -375,7 +375,7 @@ def olt_capacity(only_hotspots: bool = True, limit: int = Query(200, ge=1, le=50
 
     def urgency(r: dict[str, Any]) -> float:
         uplink = r["uplink_utilization_pct"] if r["uplink_level"] in hot else 0.0
-        return max(min(r["busiest_pon_pct"], 100.0), uplink)
+        return max(min(r["busiest_pon_pct"] or 0.0, 100.0), uplink)
 
     rows = sorted(rows, key=lambda r: (-urgency(r), -r["pon_hot_ports"]))
     return {"thresholds": {"warning_pct": settings.hotspot_warning_pct, "critical_pct": settings.hotspot_critical_pct,
@@ -446,7 +446,7 @@ def device_capacity(device_id: int, db: Session = Depends(get_db)):
                    for b, c in sorted(usage.items(), key=lambda kv: bucket_sort_key(kv[0]))],
         "pon": {"total": pon.total, "used": pon.used, "onts_online": pon.onts, "max_onts": settings.pon_max_onts,
                 "busiest_onts": pon.busiest_onts, "busiest_pct": pon.busiest_pct, "hot_ports": pon.hot_ports,
-                "level": pon_level(pon.busiest_pct)} if device.role == "olt" else None,
+                "level": pon_level(pon.busiest_pct) if pon.busiest_pct is not None else None} if device.role == "olt" else None,
         "olt_layout": olt_layout(ports) if device.role == "olt" else None,
         "links": links,
         "ports": ports,
@@ -456,7 +456,7 @@ def device_capacity(device_id: int, db: Session = Depends(get_db)):
 def _port_row(i: m.Interface, on_olt: bool, link: dict[str, Any] | None) -> dict[str, Any]:
     from .analysis import _port_state  # late import: analysis is the heavier module
 
-    is_pon = on_olt and i.if_type == "physical" and is_pon_port(i.name, i.description)
+    is_pon = on_olt and i.if_type == "physical" and is_pon_port(i.name, i.description, i.speed_gbps)
     onts = onts_online(i.description) if is_pon else None
     pon_pct = pon_port_occupancy(onts) if onts is not None else None
     bandwidth_pct = port_utilization_pct(i.in_gbps, i.out_gbps, i.speed_gbps)

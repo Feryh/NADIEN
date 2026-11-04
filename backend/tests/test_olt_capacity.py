@@ -100,8 +100,8 @@ def test_should_lay_out_olt_ports_as_uplinks_and_pon_slots_when_device_is_an_olt
     names = {p["id"]: p["name"] for p in body["ports"]}
     layout = body["olt_layout"]
     assert [names[i] for i in layout["uplinks"]] == ["xgei_1/10/1"]  # management port left out
-    assert [(s["slot"], [names[i] for i in s["ports"]]) for s in layout["slots"]] == [
-        (1, ["Slot1/Port1", "Slot1/Port2", "Slot1/Port3"]), (2, ["Slot2/Port1"])]
+    assert [(s["label"], [names[i] for i in s["ports"]]) for s in layout["slots"]] == [
+        ("SLOT 1", ["Slot1/Port1", "Slot1/Port2", "Slot1/Port3"]), ("SLOT 2", ["Slot2/Port1"])]
 
 
 def test_should_show_pon_bandwidth_when_port_rate_was_synced(db, client):
@@ -111,6 +111,37 @@ def test_should_show_pon_bandwidth_when_port_rate_was_synced(db, client):
     db.commit()
     port = next(p for p in client.get(f"/api/capacity/devices/{olt.id}").json()["ports"] if p["name"] == "Slot1/Port1")
     assert (port["utilization_pct"], port["utilization_level"]) == (80.0, "warning")
+
+
+def test_should_recognise_dasan_pon_ports_when_they_are_the_2_5g_panel_ports():
+    assert is_pon_port("port36-FX-1000", "PON Port OLT", 2.5)
+    assert is_pon_port("port1-FX-1000", "FAT06-TBT-F05-D04", 2.488)
+    assert not is_pon_port("port13-FX-1000", None, 1.0)  # a 1G uplink on the same panel
+    assert not is_pon_port("port42-FX-10G", None, 10.0)
+
+
+def test_should_report_unknown_occupancy_when_pon_ports_have_no_ont_counters():
+    usage = PonUsage()
+    usage.add("up", "up", "PON Port OLT")
+    assert (usage.total, usage.used, usage.busiest_pct) == (1, 1, None)
+
+
+def test_should_lay_out_dasan_pon_ports_on_one_panel_when_device_is_a_dasan_olt(db, client):
+    pop = m.Pop(code="JKT", name="Jakarta")
+    db.add(pop)
+    db.flush()
+    olt = m.Device(hostname="OLT3-V8240-JKT-CRV", pop_id=pop.id, role="olt")
+    db.add(olt)
+    db.flush()
+    for name, speed in (("port10-FX-1000", 2.5), ("port2-FX-1000", 2.5), ("port42-FX-10G", 10.0), ("br1", 0.1)):
+        db.add(m.Interface(device_id=olt.id, name=name, speed_gbps=speed, admin_status="up", oper_status="up"))
+    db.commit()
+    body = client.get(f"/api/capacity/devices/{olt.id}").json()
+    names = {p["id"]: p["name"] for p in body["ports"]}
+    layout = body["olt_layout"]
+    assert [(s["label"], [names[i] for i in s["ports"]]) for s in layout["slots"]] == [("PON", ["port2-FX-1000", "port10-FX-1000"])]
+    assert [names[i] for i in layout["uplinks"]] == ["port42-FX-10G"]
+    assert body["pon"]["busiest_pct"] is None
 
 
 def test_should_answer_404_when_device_detail_is_missing(client):

@@ -92,7 +92,9 @@ export function OltHotspotsPanel() {
               <tr key={r.device_id}>
                 <td><Link to={`/devices/${r.device_id}`}>{r.hostname}</Link> <span className="muted small">{r.vendor ?? ''}</span></td>
                 <td className="muted">{r.pop ?? '–'}</td>
-                <td><Pct value={r.busiest_pon_pct} level={r.pon_level} /> <span className="muted small">{r.busiest_pon_onts} ONT</span></td>
+                <td>{r.busiest_pon_pct != null && r.pon_level
+                  ? <><Pct value={r.busiest_pon_pct} level={r.pon_level} /> <span className="muted small">{r.busiest_pon_onts} ONT</span></>
+                  : <span className="muted small" title="OLT tidak melaporkan jumlah ONT">tanpa data ONT</span>}</td>
                 <td className="num">{r.pon_hot_ports} <span className="muted small">/ {r.pon_total}</span></td>
                 <td className="num">{r.onts_online.toLocaleString('id-ID')}</td>
                 <td className="num">{r.uplinks ? `${r.uplinks} × · ${fmtG(r.uplink_capacity_gbps)}` : '–'}
