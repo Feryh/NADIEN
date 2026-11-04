@@ -81,6 +81,10 @@ export interface Hotspots {
       b_device_id: number | null
       a_device: string
       b_device: string
+      /** Port at each end of the link; bundle: either end is a LAG (Bundle-Ether, Eth-Trunk, ae, …). */
+      a_port: string | null
+      b_port: string | null
+      bundle: boolean
       a_pop: string | null
       b_pop: string | null
       status: string

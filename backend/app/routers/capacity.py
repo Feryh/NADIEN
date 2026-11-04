@@ -295,18 +295,38 @@ def _node_rows(db: Session, level: str) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------- hotspots
 
 
+_NO_ENDS: dict[str, Any] = {"a_device_id": None, "b_device_id": None, "a_port": None, "b_port": None, "bundle": False}
+
+
+def _link_ends(db: Session) -> dict[int, dict[str, Any]]:
+    """Per link: device ids and the port at each end, and whether it is a bundle (LAG), so a hot link can be
+    checked on the device straight away."""
+    rows = db.execute(select(m.Link.id, m.Link.a_device_id, m.Link.a_interface_id, m.Link.b_device_id,
+                             m.Link.b_interface_id)).all()
+    ports = {i.id: i for i in db.execute(select(m.Interface.id, m.Interface.name, m.Interface.if_type)
+                                         .where(m.Interface.id.in_(select(m.Link.a_interface_id).union(
+                                             select(m.Link.b_interface_id)))))}
+    ends = {}
+    for r in rows:
+        a, b = ports.get(r.a_interface_id), ports.get(r.b_interface_id)
+        ends[r.id] = {"a_device_id": r.a_device_id, "b_device_id": r.b_device_id,
+                      "a_port": a.name if a else None, "b_port": b.name if b else None,
+                      "bundle": any(p is not None and p.if_type == "bundle" for p in (a, b))}
+    return ends
+
+
 @router.get("/hotspots")
 def hotspots(limit: int = Query(100, ge=1, le=2000), db: Session = Depends(get_db)):
     """Busiest links by utilization (warning ≥ 70%, critical ≥ 90%) and devices by port occupancy."""
     from .analysis import device_port_usage  # late import: analysis is the heavier module
 
     links = sorted(all_link_capacity(db), key=lambda l: -l.utilization_pct)
-    ends = {r.id: (r.a_device_id, r.b_device_id) for r in _link_rows(db)}
-    link_rows = [{"link_id": l.link_id, "a_device_id": ends.get(l.link_id, (None, None))[0],
-                  "b_device_id": ends.get(l.link_id, (None, None))[1], "a_device": l.a_device, "b_device": l.b_device, "a_pop": l.a_pop,
-                  "b_pop": l.b_pop, "status": l.status, "capacity_gbps": l.capacity_gbps, "current_gbps": l.current_gbps,
-                  "utilization_pct": l.utilization_pct, "level": hotspot_level(l.utilization_pct),
-                  "months_to_threshold": l.months_to_threshold} for l in links if l.capacity_gbps > 0]
+    ends = _link_ends(db)
+    link_rows = [{"link_id": l.link_id, **ends.get(l.link_id, _NO_ENDS), "a_device": l.a_device, "b_device": l.b_device,
+                  "a_pop": l.a_pop, "b_pop": l.b_pop, "status": l.status, "capacity_gbps": l.capacity_gbps,
+                  "current_gbps": l.current_gbps, "utilization_pct": l.utilization_pct,
+                  "level": hotspot_level(l.utilization_pct), "months_to_threshold": l.months_to_threshold}
+                 for l in links if l.capacity_gbps > 0 and l.status != "down"]  # a down link carries nothing
     devices = sorted(device_port_usage(db), key=lambda d: (-d["used_pct"], -d["used"]))
     device_rows = [{**d, "level": hotspot_level(d["used_pct"])} for d in devices if d["total"] > 0]
 

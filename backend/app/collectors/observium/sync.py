@@ -404,6 +404,11 @@ def _write_utilization(db: Session, rates: dict[int, tuple[float | None, float |
         db.execute(update(m.Interface), [{"id": iface_id, "in_gbps": in_g, "out_gbps": out_g}
                                          for iface_id, (in_g, out_g) in rates.items()])
     for link in db.scalars(select(m.Link)):
+        if link.status == "down":
+            # A link discovery no longer sees often shares a port with the link that replaced it (a renamed far
+            # end): the far end's traffic belongs to that live link, not to this one.
+            link.current_gbps = 0.0
+            continue
         a = rates.get(link.a_interface_id or -1)
         b = rates.get(link.b_interface_id or -1)
         if a and a[0] is not None:

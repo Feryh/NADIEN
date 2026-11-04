@@ -245,9 +245,17 @@ class _Discovery:
         for pair in adj.member_pairs:
             ends = [self.ifaces[i].speed_gbps for i in pair]
             if any(s is None for s in ends):
-                return None
+                speeds = []
+                break
             speeds.append(min(ends))
-        return sum(speeds) if speeds else None
+        members = sum(speeds) if speeds else None
+        if adj.link_type != "bundle":
+            return members
+        # A bundle's own SNMP speed counts every active member; LLDP or the config often show only some of them
+        # (port-channel30 = 40G with one of its four members known). The smaller end bounds the bundle.
+        bundle_ends = [adj.a.speed_gbps, adj.b.speed_gbps]
+        bundle = min(bundle_ends) if all(s and s > 0 for s in bundle_ends) else None
+        return max(v for v in (members, bundle) if v is not None) if members or bundle else None
 
 
 EVENT_RETENTION_DAYS = 90

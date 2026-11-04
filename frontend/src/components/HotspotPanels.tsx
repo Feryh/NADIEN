@@ -21,12 +21,17 @@ export function LinkHotspotsPanel() {
   const [data, setData] = useState<Hotspots | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [shown, setShown] = useState(PAGE)
+  const [kind, setKind] = useState<'' | 'bundle' | 'physical'>('')
+  const [q, setQ] = useState('')
 
   useEffect(() => {
     api.get<Hotspots>('/capacity/hotspots?limit=2000').then(setData).catch((e: Error) => setError(e.message))
   }, [])
 
-  const rows = (data?.links.rows ?? []).filter((r) => HOT.includes(r.level))
+  const needle = q.trim().toLowerCase()
+  const rows = (data?.links.rows ?? []).filter((r) => HOT.includes(r.level)
+    && (!kind || (kind === 'bundle') === r.bundle)
+    && (!needle || [r.a_device, r.b_device, r.a_port, r.b_port, r.a_pop, r.b_pop].some((v) => v?.toLowerCase().includes(needle))))
   return (
     <div className="card">
       <div className="toolbar">
@@ -35,24 +40,37 @@ export function LinkHotspotsPanel() {
           {data.links.counts.critical} kritis (≥ {data.thresholds.critical_pct}%) · {data.links.counts.warning} waspada
           {data.links.counts.suspect ? ` · ${data.links.counts.suspect} kapasitas mencurigakan tidak ditampilkan` : ''}
         </span>}
+        <div className="spacer" />
+        <input className="search" placeholder="Cari perangkat, interface, POP…" value={q} onChange={(e) => { setQ(e.target.value); setShown(PAGE) }} />
+        <select value={kind} onChange={(e) => { setKind(e.target.value as '' | 'bundle' | 'physical'); setShown(PAGE) }}>
+          <option value="">Bundle & fisik</option>
+          <option value="bundle">Bundle (LAG) saja</option>
+          <option value="physical">Port fisik saja</option>
+        </select>
       </div>
       {error && <div className="error">{error}</div>}
       <div className="table-wrap">
         <table>
-          <thead><tr><th>Link</th><th>POP</th><th className="num">Kapasitas</th><th className="num">Trafik</th><th>Utilisasi</th></tr></thead>
+          <thead>
+            <tr><th>Perangkat A</th><th>Interface A</th><th>Perangkat B</th><th>Interface B</th><th>Tipe</th>
+              <th className="num">Kapasitas</th><th className="num">Trafik</th><th>Utilisasi</th></tr>
+          </thead>
           <tbody>
             {rows.slice(0, shown).map((r) => (
               <tr key={r.link_id}>
-                <td><Device id={r.a_device_id} name={r.a_device} /> ↔ <Device id={r.b_device_id} name={r.b_device} />
+                <td><Device id={r.a_device_id} name={r.a_device} /><div className="muted small">{r.a_pop ?? ''}</div></td>
+                <td>{r.a_port ? <code>{r.a_port}</code> : <span className="muted">–</span>}</td>
+                <td><Device id={r.b_device_id} name={r.b_device} /><div className="muted small">{r.b_pop ?? ''}</div></td>
+                <td>{r.b_port ? <code>{r.b_port}</code> : <span className="muted">–</span>}</td>
+                <td>{r.bundle ? <span className="pill pill-muted">Bundle</span> : <span className="muted small">Fisik</span>}
                   {r.status === 'down' && <> <span className="pill pill-bad">down</span></>}</td>
-                <td className="muted">{r.a_pop ?? '–'}{r.b_pop && r.b_pop !== r.a_pop ? ` ↔ ${r.b_pop}` : ''}</td>
                 <td className="num">{fmtG(r.capacity_gbps)}</td>
                 <td className="num">{fmtG(r.current_gbps)}</td>
                 <td><Pct value={r.utilization_pct} level={r.level} /></td>
               </tr>
             ))}
-            {data && !rows.length && <tr><td colSpan={5} className="empty">Tidak ada link di atas threshold</td></tr>}
-            {!data && !error && <tr><td colSpan={5} className="empty">Memuat…</td></tr>}
+            {data && !rows.length && <tr><td colSpan={8} className="empty">Tidak ada link di atas threshold untuk filter ini</td></tr>}
+            {!data && !error && <tr><td colSpan={8} className="empty">Memuat…</td></tr>}
           </tbody>
         </table>
       </div>
