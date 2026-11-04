@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import ValidationReport, { StatusBadge, ValidationResult } from '../components/ValidationReport'
+import { Pager, usePaged } from '../components/Pager'
 import { fmtG } from '../components/ui'
 
 // Phase 5 — Service Validation: every service that is not terminated, checked before activation.
@@ -44,6 +45,7 @@ export default function ServiceValidation() {
     if (selected == null) return
     api.get<Detail>(`/validation/services/${selected}`).then(setDetail).catch((e: Error) => setError(e.message))
   }, [selected])
+  const paged = usePaged(data?.services ?? [], filter)
 
   return (
     <div className="capacity">
@@ -78,7 +80,7 @@ export default function ServiceValidation() {
               <tr><th>Hasil</th><th>Circuit</th><th>Layanan</th><th className="num">Bandwidth</th><th>Status</th><th>Temuan utama</th></tr>
             </thead>
             <tbody>
-              {data?.services.map((s) => (
+              {paged.pageRows.map((s) => (
                 <tr key={s.service_id} className={`clickable ${selected === s.service_id ? 'selected' : ''}`}
                     onClick={() => setParams({ service: String(s.service_id) })}>
                   <td><StatusBadge status={s.status} /></td>
@@ -95,6 +97,7 @@ export default function ServiceValidation() {
             </tbody>
           </table>
         </div>
+        <Pager paged={paged} unit="layanan" />
       </div>
 
       {selected != null && (

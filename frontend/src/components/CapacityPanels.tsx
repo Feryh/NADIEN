@@ -1,6 +1,7 @@
 import { ReactNode, useEffect, useMemo, useState } from 'react'
 import { Link as RouterLink } from 'react-router-dom'
 import { api, HotspotLevel, Hotspots, NodeForecast } from '../api'
+import { Pager, usePaged } from './Pager'
 import { ColorBadge, fmtG, fmtMonths } from './ui'
 
 const LEVEL_LABEL: Record<HotspotLevel, string> = { critical: 'Critical', warning: 'Warning', normal: 'Normal', suspect: 'Cek data' }
@@ -17,15 +18,18 @@ export function HotspotsPanel({ onOpenLink }: { onOpenLink: (linkId: number) => 
   const [showSuspect, setShowSuspect] = useState(false)
 
   useEffect(() => {
-    api.get<Hotspots>('/capacity/hotspots?limit=300').then(setData).catch((e: Error) => setError(e.message))
+    api.get<Hotspots>('/capacity/hotspots?limit=2000').then(setData).catch((e: Error) => setError(e.message))
   }, [])
+
+  const visible = (level: HotspotLevel) => (level === 'suspect' ? showSuspect : !onlyHot || level !== 'normal')
+  const links = (data?.links.rows ?? []).filter((r) => visible(r.level))
+  const devices = (data?.devices.rows ?? []).filter((r) => visible(r.level))
+  const pagedLinks = usePaged(links, `${onlyHot}|${showSuspect}`)
+  const pagedDevices = usePaged(devices, `${onlyHot}|${showSuspect}`)
 
   if (error) return <div className="error">{error}</div>
   if (!data) return <div className="muted">Memuat hotspot…</div>
   const { warning_pct: warn, critical_pct: crit, suspect_pct: suspect } = data.thresholds
-  const visible = (level: HotspotLevel) => (level === 'suspect' ? showSuspect : !onlyHot || level !== 'normal')
-  const links = data.links.rows.filter((r) => visible(r.level))
-  const devices = data.devices.rows.filter((r) => visible(r.level))
 
   return (
     <>
@@ -55,7 +59,7 @@ export function HotspotsPanel({ onOpenLink }: { onOpenLink: (linkId: number) => 
                 <tr><th /><th>Link</th><th className="num">Trafik</th><th className="num">Kapasitas</th><th className="num">Ke 80%</th></tr>
               </thead>
               <tbody>
-                {links.map((l) => (
+                {pagedLinks.pageRows.map((l) => (
                   <tr key={l.link_id} className="clickable" onClick={() => onOpenLink(l.link_id)}>
                     <td><LevelBadge level={l.level}>{l.utilization_pct.toFixed(0)}%</LevelBadge></td>
                     <td>
@@ -72,6 +76,7 @@ export function HotspotsPanel({ onOpenLink }: { onOpenLink: (linkId: number) => 
               </tbody>
             </table>
           </div>
+          <Pager paged={pagedLinks} unit="link" />
         </div>
         <div>
           <h3>Perangkat dengan port terpadat</h3>
@@ -85,7 +90,7 @@ export function HotspotsPanel({ onOpenLink }: { onOpenLink: (linkId: number) => 
                 <tr><th /><th>Perangkat</th><th className="num">Terpakai</th><th className="num">Sisa</th></tr>
               </thead>
               <tbody>
-                {devices.map((d) => (
+                {pagedDevices.pageRows.map((d) => (
                   <tr key={d.device_id}>
                     <td><LevelBadge level={d.level}>{d.used_pct.toFixed(0)}%</LevelBadge></td>
                     <td>
@@ -100,6 +105,7 @@ export function HotspotsPanel({ onOpenLink }: { onOpenLink: (linkId: number) => 
               </tbody>
             </table>
           </div>
+          <Pager paged={pagedDevices} unit="perangkat" />
         </div>
       </div>
     </>
@@ -125,8 +131,9 @@ export function NodeForecastPanel() {
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase()
     const all = data?.nodes ?? []
-    return (needle ? all.filter((n) => n.label.toLowerCase().includes(needle) || (n.pop ?? '').toLowerCase().includes(needle)) : all).slice(0, 500)
+    return needle ? all.filter((n) => n.label.toLowerCase().includes(needle) || (n.pop ?? '').toLowerCase().includes(needle)) : all
   }, [data, q])
+  const paged = usePaged(rows, `${level}|${sort}|${q}`)
 
   return (
     <>
@@ -169,7 +176,7 @@ export function NodeForecastPanel() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((n) => (
+              {paged.pageRows.map((n) => (
                 <tr key={n.key}>
                   <td><ColorBadge color={n.color}>{n.utilization_pct.toFixed(0)}%</ColorBadge></td>
                   <td>{n.label}{level === 'device' && <div className="muted small">{n.pop}</div>}</td>
@@ -189,7 +196,7 @@ export function NodeForecastPanel() {
               ))}
             </tbody>
           </table>
-          <div className="muted small">{data.total.toLocaleString()} {level === 'pop' ? 'POP' : 'perangkat'}{data.total > rows.length ? ` (ditampilkan ${rows.length})` : ''}</div>
+          <Pager paged={paged} unit={level === 'pop' ? 'POP' : 'perangkat'} />
         </div>
       )}
     </>

@@ -12,6 +12,7 @@ import {
 } from 'recharts'
 import { api, CapacityColor, CapacityResult, LinkCapacity, LinkCapacityDetail } from '../api'
 import { HotspotsPanel, NodeForecastPanel } from '../components/CapacityPanels'
+import { Pager, usePaged } from '../components/Pager'
 import { CAPACITY_HEX, ColorBadge, fmtG, fmtMonths, UtilBar } from '../components/ui'
 
 const GROWTH_SOURCE_LABEL = { manual: 'manual', trend: 'tren', input: 'input', none: '—' }
@@ -80,8 +81,9 @@ function LinkTable({ selectedId, onOpen }: { selectedId: number | null; onOpen: 
       .catch((e: Error) => setError(e.message))
   }, [])
 
-  // Thousands of links: render the first 1000 of the current filter (sorted soonest-to-exhaust).
-  const rows = useMemo(() => (filter ? links.filter((l) => l.color === filter) : links).slice(0, 1000), [links, filter])
+  // Thousands of links (sorted soonest-to-exhaust): paged, "Semua" renders every one.
+  const rows = useMemo(() => (filter ? links.filter((l) => l.color === filter) : links), [links, filter])
+  const paged = usePaged(rows, filter)
 
   return (
     <>
@@ -121,7 +123,7 @@ function LinkTable({ selectedId, onOpen }: { selectedId: number | null; onOpen: 
               </tr>
             </thead>
             <tbody>
-              {rows.map((l) => (
+              {paged.pageRows.map((l) => (
                 <tr
                   key={l.link_id}
                   className={`clickable ${selectedId === l.link_id ? 'selected' : ''}`}
@@ -158,9 +160,7 @@ function LinkTable({ selectedId, onOpen }: { selectedId: number | null; onOpen: 
             </tbody>
           </table>
         </div>
-        {links.length > rows.length && (
-          <div className="muted small">Ditampilkan {rows.length.toLocaleString()} dari {links.length.toLocaleString()} link (urut paling cepat habis).</div>
-        )}
+        <Pager paged={paged} unit="link (urut paling cepat habis)" />
     </>
   )
 }

@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { api, CapacityColor, DashboardSummary, PopUtilization } from '../api'
 import { AreaMapPanel, DataHealthPanel, ServicesPanel, TrendsPanel } from '../components/DashboardPanels'
 import { LinkHotspotsPanel, OltHotspotsPanel } from '../components/HotspotPanels'
+import { Pager, usePaged } from '../components/Pager'
 import { CAPACITY_HEX, ColorBadge, fmtG, fmtMonths, Kpi, UtilBar } from '../components/ui'
 
 const COLORS: CapacityColor[] = ['green', 'yellow', 'red']
@@ -48,6 +49,7 @@ function Summary() {
       })
       .catch((e: Error) => setError(e.message))
   }, [])
+  const pagedPops = usePaged(pops)
 
   if (error) return <div className="error">Backend tidak bisa dihubungi: {error}</div>
   if (!summary) return <div className="muted">Memuat…</div>
@@ -152,7 +154,7 @@ function Summary() {
             </tr>
           </thead>
           <tbody>
-            {pops.map((p) => (
+            {pagedPops.pageRows.map((p) => (
               <tr key={p.pop_id}>
                 <td>
                   <b>{p.code}</b> <span className="muted">{p.name}</span>
@@ -169,6 +171,7 @@ function Summary() {
             ))}
           </tbody>
         </table>
+        <Pager paged={pagedPops} unit="POP" />
       </div>
     </>
   )

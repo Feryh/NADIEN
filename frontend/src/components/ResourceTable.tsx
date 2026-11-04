@@ -2,22 +2,10 @@ import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from 
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { ENTITY_BY_KEY, Entity, Field } from '../entities'
+import { Pager, usePaged } from './Pager'
 
 type Row = Record<string, unknown> & { id: number }
 
-// Rows per page; 0 = all. The choice is remembered per browser.
-const PAGE_SIZES = [50, 100, 0]
-const PAGE_SIZE_KEY = 'nadien.inventory.pageSize'
-
-function storedPageSize(): number {
-  try {
-    const raw = localStorage.getItem(PAGE_SIZE_KEY)
-    const value = raw === null ? NaN : Number(raw)  // Number(null) is 0, which means "all"
-    return PAGE_SIZES.includes(value) ? value : 50
-  } catch {
-    return 50
-  }
-}
 // Rows loaded per request (backend cap). Larger tables (300k+ interfaces) are searched server-side.
 const FETCH_LIMIT = 10000
 
@@ -34,8 +22,6 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
   const [rows, setRows] = useState<Row[]>([])
   const [refs, setRefs] = useState<Record<string, Row[]>>({})
   const [q, setQ] = useState('')
-  const [page, setPage] = useState(0)
-  const [pageSize, setPageSize] = useState(storedPageSize)
   const [editing, setEditing] = useState<Row | 'new' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -67,7 +53,6 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
   }, [entity, refKeys, serverQuery])
 
   useEffect(() => {
-    setPage(0)
     setEditing(null)
     load()
   }, [load])
@@ -105,18 +90,8 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
     return rows.filter((r) => columns.some((f) => cellText(f, r[f.name]).toLowerCase().includes(needle)))
   }, [rows, q, columns, cellText])
 
-  const pageRows = pageSize ? filtered.slice(page * pageSize, (page + 1) * pageSize) : filtered
-  const pages = pageSize ? Math.max(1, Math.ceil(filtered.length / pageSize)) : 1
-
-  function changePageSize(size: number) {
-    setPageSize(size)
-    setPage(0)
-    try {
-      localStorage.setItem(PAGE_SIZE_KEY, String(size))
-    } catch {
-      /* private window / storage blocked: the choice just isn't remembered */
-    }
-  }
+  const paged = usePaged(filtered, `${entity.key}|${q}|${serverQuery}`)
+  const pageRows = paged.pageRows
 
   async function remove(row: Row) {
     if (!confirm(`Hapus ${entity.label} "${row[entity.display]}"?`)) return
@@ -142,10 +117,7 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
           className="search"
           placeholder={truncated || serverQuery ? 'Cari (Enter = cari di server)…' : 'Cari…'}
           value={q}
-          onChange={(e) => {
-            setQ(e.target.value)
-            setPage(0)
-          }}
+          onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') setServerQuery(q.trim())
           }}
@@ -230,30 +202,7 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
         </table>
       </div>
 
-      <div className="pager">
-        <span className="muted">{filtered.length.toLocaleString()} baris</span>
-        <label className="check">
-          Tampilkan
-          <select value={pageSize} onChange={(e) => changePageSize(Number(e.target.value))}>
-            {PAGE_SIZES.map((size) => (
-              <option key={size} value={size}>{size ? `${size} baris` : 'Semua'}</option>
-            ))}
-          </select>
-        </label>
-        {pages > 1 && (
-          <>
-            <button disabled={page === 0} onClick={() => setPage(page - 1)}>
-              ‹
-            </button>
-            <span>
-              {page + 1} / {pages}
-            </span>
-            <button disabled={page >= pages - 1} onClick={() => setPage(page + 1)}>
-              ›
-            </button>
-          </>
-        )}
-      </div>
+      <Pager paged={paged} />
 
       {editing && (
         <FormModal

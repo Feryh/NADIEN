@@ -118,7 +118,7 @@ def naming_summary(db: Session = Depends(get_db)):
 @router.get("/naming/devices")
 def naming_devices(status: Literal["standard", "needs_fix", "legacy", "non_standard"] | None = None,
                    area: str | None = Query(None, max_length=64), q: str | None = Query(None, max_length=100),
-                   limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0),
+                   limit: int = Query(100, ge=1, le=100000), offset: int = Query(0, ge=0),
                    db: Session = Depends(get_db)):
     rows = _filter_devices(db, status, area, q)
     return {"total": len(rows), "rows": rows[offset:offset + limit]}
@@ -128,7 +128,7 @@ def naming_devices(status: Literal["standard", "needs_fix", "legacy", "non_stand
 def naming_ports(status: Literal["standard", "names_peer", "no_peer", "empty"] | None = None,
                  segment: Literal["backbone", "distribution", "last_mile"] | None = None,
                  area: str | None = Query(None, max_length=64), q: str | None = Query(None, max_length=100),
-                 limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0),
+                 limit: int = Query(100, ge=1, le=100000), offset: int = Query(0, ge=0),
                  db: Session = Depends(get_db)):
     rows = _filter_ports(db, status, segment, area, q)
     return {"total": len(rows), "rows": rows[offset:offset + limit]}

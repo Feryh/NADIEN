@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthGate, Role, ROLE_LABELS, useAuth } from './auth'
 import Access from './pages/Access'
@@ -18,28 +19,29 @@ import Ports from './pages/Ports'
 import ServiceValidation from './pages/ServiceValidation'
 import Topology from './pages/Topology'
 
-type NavItem = { to: string; label: string; tag: string; role?: Role }
+/** mark: two letters shown for the item when the sidebar is collapsed. */
+type NavItem = { to: string; label: string; mark: string; tag: string; role?: Role }
 
 const NAV: NavItem[] = [
-  { to: '/', label: 'Dashboard', tag: 'P8' },
-  { to: '/inventory', label: 'Inventory', tag: 'P1' },
-  { to: '/ports', label: 'Kapasitas Port', tag: 'P1' },
-  { to: '/topology', label: 'Topology', tag: 'P2' },
-  { to: '/capacity', label: 'Capacity Planning', tag: 'P3' },
-  { to: '/paths', label: 'Customer Path', tag: 'P4' },
-  { to: '/validation', label: 'Service Validation', tag: 'P5' },
-  { to: '/mop', label: 'MoP Generator', tag: 'P6' },
-  { to: '/configs', label: 'Config Generator', tag: 'P7' },
-  { to: '/changes', label: 'Change & Eksekusi', tag: 'P7' },
-  { to: '/ai', label: 'AI Assistant', tag: 'P9' },
-  { to: '/twin', label: 'Digital Twin', tag: 'P10' },
-  { to: '/collectors', label: 'Collectors', tag: 'P1' },
-  { to: '/settings', label: 'Pengaturan Collector', tag: 'P1', role: 'admin' },
-  { to: '/access', label: 'Pengaturan Akses', tag: 'Akses' },
+  { to: '/', label: 'Dashboard', mark: 'DB', tag: 'P8' },
+  { to: '/inventory', label: 'Inventory', mark: 'IN', tag: 'P1' },
+  { to: '/ports', label: 'Kapasitas Port', mark: 'KP', tag: 'P1' },
+  { to: '/topology', label: 'Topology', mark: 'TP', tag: 'P2' },
+  { to: '/capacity', label: 'Capacity Planning', mark: 'CP', tag: 'P3' },
+  { to: '/paths', label: 'Customer Path', mark: 'PA', tag: 'P4' },
+  { to: '/validation', label: 'Service Validation', mark: 'SV', tag: 'P5' },
+  { to: '/mop', label: 'MoP Generator', mark: 'MG', tag: 'P6' },
+  { to: '/configs', label: 'Config Generator', mark: 'CG', tag: 'P7' },
+  { to: '/changes', label: 'Change & Eksekusi', mark: 'CE', tag: 'P7' },
+  { to: '/ai', label: 'AI Assistant', mark: 'AI', tag: 'P9' },
+  { to: '/twin', label: 'Digital Twin', mark: 'DT', tag: 'P10' },
+  { to: '/collectors', label: 'Collectors', mark: 'CO', tag: 'P1' },
+  { to: '/settings', label: 'Pengaturan Collector', mark: 'PC', tag: 'P1', role: 'admin' },
+  { to: '/access', label: 'Pengaturan Akses', mark: 'AK', tag: 'Akses' },
 ]
 const CUSTOMER_NAV: NavItem[] = [
-  { to: '/', label: 'Layanan Saya', tag: 'Portal' },
-  { to: '/access', label: 'Akun Saya', tag: 'Akses' },
+  { to: '/', label: 'Layanan Saya', mark: 'LS', tag: 'Portal' },
+  { to: '/access', label: 'Akun Saya', mark: 'AK', tag: 'Akses' },
 ]
 
 export default function App() {
@@ -50,24 +52,50 @@ export default function App() {
   )
 }
 
+const COLLAPSED_KEY = 'nadien.sidebar.collapsed'
+
+function storedCollapsed(): boolean {
+  try {
+    return localStorage.getItem(COLLAPSED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
 function Shell() {
   const { user, authEnabled, can, logout } = useAuth()
   const customer = user.role === 'customer'
   const nav = customer ? CUSTOMER_NAV : NAV.filter((n) => !n.role || can(n.role))
+  const [collapsed, setCollapsed] = useState(storedCollapsed)
+
+  function toggle() {
+    setCollapsed(!collapsed)
+    try {
+      localStorage.setItem(COLLAPSED_KEY, collapsed ? '0' : '1')
+    } catch {
+      /* storage blocked: the sidebar just opens expanded next time */
+    }
+  }
+
   return (
-    <div className="app">
+    <div className={`app ${collapsed ? 'sidebar-collapsed' : ''}`}>
       <aside className="sidebar">
         <div className="brand">
           <div className="logo">N</div>
-          <div>
+          <div className="brand-text">
             <div className="brand-name">NADIEN</div>
             <div className="brand-sub">Network Access Design, Implementation &amp; Engineering</div>
           </div>
+          <button type="button" className="sidebar-toggle" onClick={toggle} aria-expanded={!collapsed}
+            title={collapsed ? 'Buka menu' : 'Ciutkan menu'} aria-label={collapsed ? 'Buka menu' : 'Ciutkan menu'}>
+            {collapsed ? '»' : '«'}
+          </button>
         </div>
         <nav>
           {nav.map((n) => (
-            <NavLink key={n.to} to={n.to} end={n.to === '/'}>
-              <span>{n.label}</span>
+            <NavLink key={n.to} to={n.to} end={n.to === '/'} title={collapsed ? n.label : undefined}>
+              <span className="nav-mark" aria-hidden="true">{n.mark}</span>
+              <span className="nav-label">{n.label}</span>
               <span className="phase">{n.tag}</span>
             </NavLink>
           ))}

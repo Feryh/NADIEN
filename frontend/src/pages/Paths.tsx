@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
+import { Pager, usePaged } from '../components/Pager'
 import { fmtG } from '../components/ui'
 import ValidationReport, { ValidationResult } from '../components/ValidationReport'
 
@@ -159,6 +160,7 @@ export default function Paths() {
     api.get<{ id: number; name: string }[]>('/customers?limit=10000').then(setCustomers).catch(() => undefined)
     loadServices()
   }, [loadServices])
+  const pagedServices = usePaged(services)
 
   const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [k]: e.target.value })
 
@@ -418,7 +420,7 @@ export default function Paths() {
               <tr><th>Circuit</th><th>Layanan</th><th className="num">Bandwidth</th><th>Status</th><th>Jalur</th><th /></tr>
             </thead>
             <tbody>
-              {services.map((s) => (
+              {pagedServices.pageRows.map((s) => (
                 <tr key={s.service_id}>
                   <td><b>{s.circuit_id}</b></td>
                   <td>{s.service_type.toUpperCase()} · {s.protection}</td>
@@ -441,6 +443,7 @@ export default function Paths() {
             </tbody>
           </table>
         </div>
+        <Pager paged={pagedServices} unit="service" />
       </div>
     </div>
   )
