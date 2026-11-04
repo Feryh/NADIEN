@@ -86,8 +86,9 @@ frontend:
     - npm ci
     - npm run build
 
-# Needs a runner that allows Docker-in-Docker (privileged). Not every company runner does, and GitHub Actions
-# already builds both images, so a failure here is reported without blocking the merge request.
+# Needs a privileged runner with service networking for Docker-in-Docker. The company runner (`integration`) is
+# unprivileged and runs services on the host network, so dind cannot start there; GitHub Actions builds both
+# images on every push. Run this by hand on a runner that allows it.
 docker:
   image: docker:27
   stage: build
@@ -95,6 +96,7 @@ docker:
   variables:
     DOCKER_TLS_CERTDIR: "/certs"
   needs: [backend, frontend]
+  when: manual
   allow_failure: true
   script:
     - docker build -t nadien-backend:ci backend
