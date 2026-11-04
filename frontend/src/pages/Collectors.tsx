@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api'
 
 interface BackupList {
@@ -30,12 +31,22 @@ const PHASES: Record<string, string> = {
   discovery: 'membangun topologi',
   utilization: 'menyimpan utilisasi',
   configs: 'membaca config',
+  list: 'membaca daftar repo gitweb',
 }
 
 interface CollectorStatus {
   observium: { url: string; configured: boolean; auth: string | null; last_sync_at: string | null; last_status: string | null }
   rancid: { source: string | null; configured: boolean }
   oxidized: { url: string | null; configured: boolean }
+  gitweb: {
+    url: string | null
+    configured: boolean
+    files: number
+    devices_from_gitweb: number
+    last_synced_at: string | null
+    schedule: { enabled: boolean; daily_at: string | null; timezone: string }
+  }
+  rrd: { mode: 'api' | 'local' | 'ssh'; path: string; configured: boolean; mapped_ports: number }
   parts: string[]
 }
 
@@ -45,6 +56,9 @@ const VENDORS = [
   { value: 'vrp', label: 'Huawei VRP' },
   { value: 'junos', label: 'Juniper Junos' },
   { value: 'sros', label: 'Nokia SR OS' },
+  { value: 'zte', label: 'ZTE ZXCTN / M6000' },
+  { value: 'fiberhome', label: 'FiberHome R8xx' },
+  { value: 'ios', label: 'Cisco IOS / NX-OS' },
 ]
 
 async function postText<T>(path: string, text: string): Promise<T> {
@@ -135,6 +149,8 @@ export default function Collectors() {
   }
 
   const query = vendor ? `?vendor=${vendor}` : ''
+  const [rrdDays, setRrdDays] = useState('90')
+  const rrdReady = !!status?.rrd.configured && (status?.rrd.mapped_ports ?? 0) > 0
 
   return (
     <div className="capacity">
@@ -144,6 +160,7 @@ export default function Collectors() {
           <span className={`pill ${status?.observium.configured ? 'pill-ok' : 'pill-bad'}`}>
             {status?.observium.configured ? `credentials: ${status.observium.auth}` : 'credentials belum di-set'}
           </span>
+          <Link to="/settings" className="small">Pengaturan →</Link>
           <div className="spacer" />
           <button disabled={!!busy || jobRunning} onClick={() => startJob('/collectors/observium/sync?parts=utilization')}>
             Utilisasi saja
@@ -166,8 +183,112 @@ export default function Collectors() {
         </p>
         {!status?.observium.configured && (
           <p className="hint">
-            Set di <code>backend/.env</code>: <code>NADIEN_OBSERVIUM_TOKEN=…</code> (disarankan: token read-only, dibatasi IP) atau{' '}
-            <code>NADIEN_OBSERVIUM_USER</code> + <code>NADIEN_OBSERVIUM_PASSWORD</code>, lalu restart backend.
+            Isi URL dan token/login Observium di <Link to="/settings">Pengaturan Collector</Link> (tanpa restart), atau di{' '}
+            <code>backend/.env</code>: <code>NADIEN_OBSERVIUM_TOKEN=…</code> atau <code>NADIEN_OBSERVIUM_USER</code> +{' '}
+            <code>NADIEN_OBSERVIUM_PASSWORD</code>.
+          </p>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="toolbar">
+          <h2>Histori utilisasi (RRD Observium)</h2>
+          <span className={`pill ${status?.rrd.configured ? 'pill-ok' : 'pill-bad'}`}>
+            {status?.rrd.configured
+              ? status.rrd.mode === 'api'
+                ? 'via API Observium'
+                : `via ${status.rrd.mode}`
+              : status?.rrd.mode === 'api'
+                ? 'kredensial Observium belum di-set'
+                : 'akses SSH belum di-set'}
+          </span>
+          <span className={`pill ${status?.rrd.mapped_ports ? 'pill-ok' : 'pill-muted'}`}>
+            {status?.rrd.mapped_ports ?? 0} port ter-mapping
+          </span>
+          <div className="spacer" />
+          <select value={rrdDays} onChange={(e) => setRrdDays(e.target.value)} disabled={jobRunning}>
+            <option value="7">7 hari</option>
+            <option value="30">30 hari</option>
+            <option value="90">90 hari</option>
+          </select>
+          <button
+            className="primary"
+            disabled={!!busy || jobRunning || !rrdReady}
+            onClick={() => startJob(`/collectors/observium/rrd?days=${rrdDays}`)}
+          >
+            Ambil histori RRD
+          </button>
+        </div>
+        {status?.rrd.mode === 'api' ? (
+          <p className="hint">
+            Peak harian in/out tiap link diambil dari RRD Observium lewat <code>graph.php?format=json</code>, dengan login API yang
+            sama (tanpa SSH). 7 hari terakhir memakai data 5 menit (peak akurat). Hari yang lebih lama memakai rata-rata 2 jam, jadi
+            peak-nya sedikit lebih rendah dari aslinya. Satu link kira-kira 0,3 detik, jadi seluruh link sekitar 45 menit. Hasilnya
+            menggantikan sampel di rentang itu dan dipakai untuk tren 7 / 30 / 90 hari di halaman Capacity. Tidak dibuat backup.
+          </p>
+        ) : (
+          <p className="hint">
+            Peak harian (RRA MAX) in/out tiap link dibaca langsung dari file RRD Observium (<code>{status?.rrd.path}</code>) dengan{' '}
+            <code>rrdtool xport</code>, menggantikan sampel di rentang itu. Hasilnya dipakai untuk tren 7 / 30 / 90 hari di halaman
+            Capacity. Tidak dibuat backup (hanya menulis sampel utilisasi).
+          </p>
+        )}
+        {!status?.rrd.configured && status?.rrd.mode !== 'api' && (
+          <p className="hint">
+            Set di <code>backend/.env</code>: <code>NADIEN_OBSERVIUM_SSH_USER</code> + <code>NADIEN_OBSERVIUM_SSH_KEY_FILE</code>{' '}
+            (atau <code>_PASSWORD</code>) — akun read-only ke server Observium yang bisa membaca{' '}
+            <code>/opt/observium/rrd</code> dan menjalankan <code>rrdtool</code>. Host key server harus sudah ada di{' '}
+            <code>known_hosts</code>. Lalu restart backend.
+          </p>
+        )}
+        {status?.rrd.configured && !status.rrd.mapped_ports && (
+          <p className="hint">Belum ada mapping port → file RRD (ifIndex). Jalankan Full sync Observium dulu.</p>
+        )}
+        <p className="hint">
+          Catatan: RRD port Observium punya batas DS 100 Gbps; trafik di atas itu (link 400G) tersimpan sebagai NaN dan hari itu
+          terlewat. Link yang kemungkinan terpotong dilaporkan di <code>possibly_clipped</code>.
+        </p>
+      </div>
+
+      <div className="card">
+        <div className="toolbar">
+          <h2>RANCID gitweb (semua repo)</h2>
+          <span className={`pill ${status?.gitweb.configured ? 'pill-ok' : 'pill-bad'}`}>
+            {status?.gitweb.configured ? 'siap' : 'belum di-set'}
+          </span>
+          {status?.gitweb.schedule.enabled && (
+            <span className="pill pill-ok">
+              otomatis tiap hari {status.gitweb.schedule.daily_at} ({status.gitweb.schedule.timezone})
+            </span>
+          )}
+          <div className="spacer" />
+          <button
+            disabled={!!busy || jobRunning || !status?.gitweb.configured}
+            onClick={() => startJob('/collectors/configs/gitweb/sync?full=true')}
+            title="Baca ulang semua file, bukan hanya yang berubah"
+          >
+            Sync penuh
+          </button>
+          <button
+            className="primary"
+            disabled={!!busy || jobRunning || !status?.gitweb.configured}
+            onClick={() => startJob('/collectors/configs/gitweb/sync')}
+          >
+            Ambil perubahan terbaru
+          </button>
+        </div>
+        <p className="hint">
+          {status?.gitweb.url && <code>{status.gitweb.url}</code>} · semua repo RANCID (CSR, METRO, ROUTER, BNG, CGN, OLT, …). Hanya file
+          yang berubah sejak sync terakhir yang diunduh. Perangkat yang tidak ada di Observium (mis. CSR) dibuat dari config-nya;
+          perangkat di repo CSR-* selalu ber-role <b>CSR</b>. Config OLT dilaporkan sebagai tidak didukung.
+          {status?.gitweb.configured &&
+            ` ${status.gitweb.files.toLocaleString()} file tercatat · ${status.gitweb.devices_from_gitweb.toLocaleString()} perangkat hanya dari gitweb` +
+              (status.gitweb.last_synced_at ? ` · terakhir ${new Date(status.gitweb.last_synced_at).toLocaleString()}` : '')}
+        </p>
+        {!status?.gitweb.configured && (
+          <p className="hint">
+            Isi URL gitweb (mis. <code>http://172.17.12.232/gitweb/</code>) dan jadwal harian di{' '}
+            <Link to="/settings">Pengaturan Collector</Link>, atau <code>NADIEN_GITWEB_URL</code> di <code>backend/.env</code>.
           </p>
         )}
       </div>

@@ -1,21 +1,33 @@
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import select
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import models as m
 from ..backup import BackupError, backup_dir, create_backup, is_backupable, list_backups
 from ..collectors import jobs
 from ..collectors.configs import parse_config
+from ..collectors.configs.gitweb import GitwebClient, GitwebError
 from ..collectors.configs.oxidized import OxidizedClient, os_hint
 from ..collectors.configs.rancid import RancidError, open_from_settings
 from ..collectors.observium.client import ObserviumClient, ObserviumError
+from ..collectors.observium.rrd import RrdError
+from ..collectors.observium.rrd import open_source as open_rrd_source
 from ..collectors.runner import JobBusy, ensure_idle, runner
 from ..collectors.observium.sync import ALL_PARTS, SOURCE_NAME
 from ..config import settings
 from ..database import get_db
+from ..services import collector_settings
 from ..services.topology import norm_host
 
-router = APIRouter(prefix="/collectors", tags=["Collectors"])
+def _current_settings() -> None:
+    # Values saved in Pengaturan Collector may have been changed by another worker/replica.
+    collector_settings.refresh()
+
+
+router = APIRouter(prefix="/collectors", tags=["Collectors"], dependencies=[Depends(_current_settings)])
 
 MAX_CONFIG_BYTES = 5_000_000
 
@@ -39,8 +51,70 @@ def status(db: Session = Depends(get_db)):
             "configured": bool(settings.rancid_path or (settings.rancid_ssh_host and settings.rancid_ssh_user)),
         },
         "oxidized": {"url": settings.oxidized_url, "configured": bool(settings.oxidized_url)},
+        "gitweb": {
+            "url": settings.gitweb_url,
+            "configured": bool(settings.gitweb_url),
+            "files": db.scalar(select(func.count()).select_from(m.GitwebFile)) or 0,
+            "devices_from_gitweb": db.scalar(select(func.count(func.distinct(m.GitwebFile.device_id)))
+                                             .where(m.GitwebFile.created_device.is_(True))) or 0,
+            "last_synced_at": db.scalar(select(func.max(m.GitwebFile.synced_at))),
+            "schedule": {
+                "enabled": settings.scheduler_enabled and bool(settings.gitweb_daily_at),
+                "daily_at": settings.gitweb_daily_at,
+                "timezone": settings.schedule_timezone,
+            },
+        },
+        "rrd": {
+            "mode": settings.observium_rrd_source,
+            "path": settings.observium_rrd_path,
+            "configured": {
+                "api": bool(settings.observium_token or (settings.observium_user and settings.observium_password)),
+                "ssh": bool(settings.observium_ssh_user),
+                "local": True,
+            }[settings.observium_rrd_source],
+            "mapped_ports": db.scalar(select(func.count()).select_from(m.ObserviumPort)) or 0,
+        },
         "parts": sorted(ALL_PARTS),
     }
+
+
+class SettingsIn(BaseModel):
+    values: dict[str, Any] = Field(default_factory=dict, description="Key -> new value; '' on a secret keeps it")
+    clear: list[str] = Field(default_factory=list, description="Keys to remove (back to backend/.env)")
+
+
+@router.get("/settings")
+def get_settings(db: Session = Depends(get_db)):
+    """Connection settings with their source (ui / env / default). Secrets are never returned."""
+    return collector_settings.describe(db)
+
+
+@router.put("/settings")
+def put_settings(payload: SettingsIn, db: Session = Depends(get_db)):
+    try:
+        collector_settings.update(db, payload.values, payload.clear)
+    except collector_settings.SettingsError as exc:
+        code = 403 if "dimatikan" in str(exc) else 422
+        raise HTTPException(code, str(exc)) from exc
+    return collector_settings.describe(db)
+
+
+@router.post("/settings/test")
+def test_connection(target: str = Query(..., pattern="^(observium|gitweb)$")):
+    """Try the saved settings: one Observium API call / the gitweb repository list. Read-only."""
+    try:
+        if target == "observium":
+            with ObserviumClient() as client:
+                data = client._get("/devices/", {"pagesize": 1, "pageno": 1})
+            return {"ok": True, "detail": f"Terhubung ke {settings.observium_url}: {data.get('count', '?')} perangkat"}
+        client = GitwebClient()
+        try:
+            repos = client.repos()
+        finally:
+            client.close()
+        return {"ok": True, "detail": f"Terhubung ke {settings.gitweb_url}: {len(repos)} repo RANCID"}
+    except (ObserviumError, GitwebError) as exc:
+        return {"ok": False, "detail": str(exc)}
 
 
 def _start(kind: str, fn) -> dict:
@@ -82,6 +156,24 @@ def observium_sync(
     return _start(kind, job)
 
 
+@router.post("/observium/rrd", status_code=202)
+def observium_rrd(days: int = Query(90, ge=7, le=365)):
+    """Start a background job: daily peak in/out for every link from Observium's RRD files over the
+    last `days` days (replaces the link's samples in that window). Poll /collectors/jobs/current."""
+    try:
+        source = open_rrd_source()  # credentials / SSH access checked now, not inside the job
+    except RrdError as exc:
+        raise HTTPException(400 if "not configured" in str(exc) else 502, str(exc)) from exc
+
+    def job(db: Session, progress) -> dict:
+        try:
+            return jobs.run_rrd(db, days, source=source, progress=progress)
+        finally:
+            source.close()
+
+    return _start("observium-rrd", job)
+
+
 async def _read_text(request: Request) -> str:
     body = await request.body()
     if len(body) > MAX_CONFIG_BYTES:
@@ -109,6 +201,19 @@ def rancid_sync(discover: bool = True):
     except RancidError as exc:
         raise HTTPException(400 if "not configured" in str(exc) else 502, str(exc)) from exc
     return _start("rancid", lambda db, progress: jobs.run_rancid(db, discover, opened, progress))
+
+
+@router.post("/configs/gitweb/sync", status_code=202)
+def gitweb_sync(full: bool = Query(False, description="Re-read every file, not only those changed since the last run"),
+                discover: bool = True):
+    """Start a background job: configs of every RANCID repo in gitweb. Only files whose blob changed
+    since the last run are downloaded; devices missing from the inventory (CSR) are created."""
+    try:
+        client = GitwebClient()
+    except GitwebError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    kind = "gitweb-full" if full else "gitweb"
+    return _start(kind, lambda db, progress: jobs.run_gitweb(db, full, discover, client, progress))
 
 
 @router.post("/configs/oxidized/sync", status_code=202)

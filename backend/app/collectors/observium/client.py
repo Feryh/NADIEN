@@ -26,7 +26,7 @@ class ObserviumClient:
         timeout: float | None = None,
         transport: httpx.BaseTransport | None = None,  # injected by tests
     ):
-        base_url = (base_url or settings.observium_url).rstrip("/")
+        base_url = (base_url or settings.observium_url).rstrip("/").removesuffix("/api/v0")
         token = token or settings.observium_token
         user = user or settings.observium_user
         password = password or settings.observium_password
@@ -35,20 +35,23 @@ class ObserviumClient:
                 "Observium credentials missing: set NADIEN_OBSERVIUM_TOKEN "
                 "or NADIEN_OBSERVIUM_USER + NADIEN_OBSERVIUM_PASSWORD"
             )
-        self._http = httpx.Client(
-            base_url=f"{base_url}/api/v0",
+        common: dict[str, Any] = dict(
             headers={"Authorization": f"Bearer {token}"} if token else None,
             auth=None if token else (user, password),
             verify=settings.observium_verify_tls if verify is None else verify,
             timeout=timeout or settings.observium_timeout_s,
             transport=transport,
         )
+        self._http = httpx.Client(base_url=f"{base_url}/api/v0", **common)
+        # graph.php sits beside the API, not under /api/v0.
+        self._web = httpx.Client(base_url=base_url, **common)
         # Response shape per entity (top-level keys, reported count, rows returned) — kept for
         # diagnostics, because Observium versions differ in what some endpoints return.
         self.meta: dict[str, dict[str, Any]] = {}
 
     def close(self) -> None:
         self._http.close()
+        self._web.close()
 
     def __enter__(self) -> "ObserviumClient":
         return self
@@ -71,6 +74,24 @@ class ObserviumClient:
         if data.get("status") not in (None, "ok"):
             raise ObserviumError(f"Observium {path}: {data.get('message') or data.get('status')}")
         return data
+
+    def graph_json(self, **params: Any) -> dict[str, Any]:
+        """graph.php with format=json: the rrdtool series behind a graph instead of the PNG."""
+        try:
+            resp = self._web.get("/graph.php", params={**params, "format": "json"})
+        except httpx.HTTPError as exc:
+            raise ObserviumError(f"Observium unreachable: {exc}") from exc
+        if resp.status_code == 401:
+            raise ObserviumError("Observium rejected the credentials (401)")
+        if resp.status_code >= 400:
+            raise ObserviumError(f"graph.php returned HTTP {resp.status_code}")
+        # An unknown port or missing RRD comes back as an empty body or Observium's error PNG.
+        if "json" not in resp.headers.get("content-type", "") or not resp.content.strip():
+            raise ObserviumError("graph.php returned no data (port without RRD?)")
+        try:
+            return resp.json()
+        except ValueError as exc:
+            raise ObserviumError(f"graph.php returned invalid JSON: {exc}") from exc
 
     def fetch(self, entity: str, page_size: int | None = None, **params: Any) -> list[dict[str, Any]]:
         """All rows of an entity collection (`devices`, `ports`, `neighbours`, `address`, ...)."""

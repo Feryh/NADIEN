@@ -6,6 +6,7 @@ missing, loopback, IS-IS NET and SRv6 locator. Interfaces only present in the co
 created when they carry something useful (description, IP, bundle role).
 """
 
+import re
 from collections import Counter
 
 from sqlalchemy import select
@@ -17,13 +18,22 @@ from ..observium.parsers import SKIP_PORT
 from .base import ParsedConfig
 
 
+# Logical interfaces in vendor configs that are never ports: VLAN/bridge interfaces, tunnels, virtual
+# templates, DCN channels and GPON ONUs (one per customer). Creating them would inflate port counts.
+LOGICAL_PORT = re.compile(
+    r"^(vlan|bvi|bdi|vbdif|vbui|supervlan|virtual-|ve-group|te_tunnel|tunnel-te|pw-ether|dcn-|gpon[-_]onu|nve|"
+    r"vsi|vxlan|bridge|dialer|mgmt_eth|qx)", re.IGNORECASE)
+
+
 def _classify(name: str, is_bundle: bool) -> str:
     if is_bundle:
         return "bundle"
     return "subinterface" if "." in name else "physical"
 
 
-def apply_config(db: Session, device: m.Device, cfg: ParsedConfig) -> dict:
+def apply_config(db: Session, device: m.Device, cfg: ParsedConfig, create_ports: bool = True) -> dict:
+    """`create_ports=False` (device monitored by an NMS): only ports the NMS already reported are
+    filled in, plus LAG parents; the NMS stays the source of truth for which physical ports exist."""
     counts: Counter = Counter()
     warnings: list[str] = []
     if cfg.hostname and norm_host(cfg.hostname) != norm_host(device.hostname):
@@ -52,8 +62,9 @@ def apply_config(db: Session, device: m.Device, cfg: ParsedConfig) -> dict:
     for p in cfg.interfaces.values():
         if SKIP_PORT.match(p.name):  # loopback/mgmt: kept on the device record, not as Metro ports
             continue
+        known = norm_if(p.name) in index
         useful = p.description or p.ipv4 or p.bundle or p.is_bundle
-        if not useful and norm_if(p.name) not in index:
+        if not known and (not useful or LOGICAL_PORT.match(p.name) or not (create_ports or p.is_bundle)):
             continue
         iface = get_or_create(p.name, p.is_bundle)
         if p.is_bundle and iface.if_type != "bundle":

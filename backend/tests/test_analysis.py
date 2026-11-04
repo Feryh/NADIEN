@@ -161,13 +161,34 @@ def test_device_level(net):
     api, d = net
     view = api.get("/api/topology/view", params={"level": "device", "pop": "JKT"}).json()
     kinds = {n["id"]: n["kind"] for n in view["nodes"]}
-    assert kinds["site:ABW"] == "site" and kinds["site:CSF"] == "site" and kinds["pop:BKS"] == "external_pop"
+    assert kinds["pop:BKS"] == "external_pop"
     devs = [n for n in view["nodes"] if n["kind"] == "device"]
     assert devs[0]["label"] == "JKT-ABW-P1-NCS" and devs[0]["tier"] == 0  # core first
+    assert {d["site"] for d in devs} == {"site:ABW", "site:CSF"} and devs[0]["pop"] == "JKT"
     red = next(e for e in view["edges"] if e["capacity_gbps"] == 10 and e["current_gbps"] == 9)
     assert red["color"] == "red"
     assert api.get("/api/topology/view", params={"level": "device", "pop": "NOPE"}).status_code == 404
     assert api.get("/api/topology/view", params={"level": "pop"}).status_code == 422
+
+
+def test_neighbor_level(net):
+    api, d = net
+    p1 = d["JKT-ABW-P1-NCS"].id
+    one = api.get("/api/topology/view", params={"level": "neighbors", "device_id": p1}).json()
+    labels = {n["label"] for n in one["nodes"]}
+    assert labels == {"JKT-ABW-P1-NCS", "JKT-ABW-OLT1-HW", "BKS-LBJ-PE1-HW"}
+    assert next(n for n in one["nodes"] if n["center"])["label"] == "JKT-ABW-P1-NCS"
+    assert len(one["edges"]) == 2 and one["pop"] == "JKT"
+    two = api.get("/api/topology/view", params={"level": "neighbors", "device_id": p1, "depth": 2}).json()
+    assert {n["label"] for n in two["nodes"]} == labels | {"JKT-CSF-ME1-HW", "BDG-DGO-PE1-HW"}
+    assert api.get("/api/topology/view", params={"level": "neighbors"}).status_code == 422
+
+
+def test_pop_tier(net):
+    api, _ = net
+    view = api.get("/api/topology/view", params={"level": "pop", "area": "Jabodetabek"}).json()
+    tiers = {n["label"]: n.get("tier") for n in view["nodes"] if n["kind"] == "pop"}
+    assert tiers == {"JKT": 0, "BKS": 1}  # JKT has a P router, BKS only a PE
 
 
 def test_port_summary_and_devices(net):

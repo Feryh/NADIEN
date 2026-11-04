@@ -21,11 +21,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, insert, select
 from sqlalchemy.orm import Session
 
 from ... import models as m
 from ...config import settings
+from ...services.areas import FUNCTION_TOKENS, is_city_code
 from ...services.topology import discover_links, legacy_host_key, norm_host, norm_if
 from .client import ObserviumClient
 from .parsers import (
@@ -43,7 +44,7 @@ from .parsers import (
 
 ALL_PARTS = frozenset({"inventory", "neighbours", "utilization"})
 PORT_FIELDS = (
-    "port_id,device_id,ifName,ifDescr,ifAlias,port_label_short,ifType,ifSpeed,ifHighSpeed,ifMtu,"
+    "port_id,device_id,ifIndex,ifName,ifDescr,ifAlias,port_label_short,ifType,ifSpeed,ifHighSpeed,ifMtu,"
     "ifAdminStatus,ifOperStatus,ifInOctets_rate,ifOutOctets_rate,deleted"
 )
 PAGE_SIZE = 5000
@@ -156,9 +157,12 @@ class _Writer:
             self.report.counts["devices_created"] += 1
         else:
             self.report.counts["devices_updated"] += 1
-            # Not curated: parked in UNASSIGNED, or in a POP an older parser wrongly named after a role.
+            # Not curated: parked in UNASSIGNED, in a POP an older parser named after a role or function
+            # word (OLT, NAP), or in a non-city POP while the hostname names a registered city code.
             current = next((p for p in self.pops.values() if p.id == device.pop_id), None)
-            misplaced = current is None or current.code == UNASSIGNED or is_role_word(current.code)
+            misplaced = (current is None or current.code == UNASSIGNED or is_role_word(current.code)
+                         or current.code in FUNCTION_TOKENS
+                         or (not is_city_code(current.code) and is_city_code(rec.pop_code)))
             if rec.pop_code and misplaced and (current is None or current.code != rec.pop_code):
                 device.pop_id = self.pop(rec).id
                 self.report.counts["devices_pop_assigned"] += 1
@@ -231,7 +235,9 @@ def sync_observium(
     # Devices are always fetched: they map Observium ids to inventory devices for every part.
     step("devices")
     device_by_obs: dict[str, m.Device] = {}
+    obs_hostname: dict[str, str] = {}
     for rec in _device_records(client.fetch("devices"), set(writer.pops), report):
+        obs_hostname[rec.observium_id] = rec.observium_hostname
         if write_inventory:
             device_by_obs[rec.observium_id] = writer.device(rec)
         elif norm_host(rec.hostname) in writer.devices:
@@ -243,12 +249,14 @@ def sync_observium(
     step("ports")
     iface_by_port: dict[str, m.Interface] = {}
     rates_by_port: dict[str, tuple[float | None, float | None]] = {}
+    rrd_ref: dict[str, tuple[int | None, str]] = {}  # observium port id -> (ifIndex, Observium hostname)
     pending = 0
     for row in client.fetch("ports", page_size=PAGE_SIZE, fields=PORT_FIELDS):
         rec = parse_port(row)
         device = device_by_obs.get(str(row.get("device_id")))
         if rec is None or device is None:
             continue
+        rrd_ref[rec.observium_id] = (rec.if_index, obs_hostname.get(rec.observium_device_id, ""))
         if write_inventory:
             iface = writer.interface(device, rec)
             pending += 1
@@ -265,6 +273,7 @@ def sync_observium(
     db.flush()  # ids for the last batch of new interfaces
     rates = {iface_by_port[p].id: r for p, r in rates_by_port.items()}
     report.counts["ports_seen"] = len(iface_by_port)
+    _write_rrd_map(db, iface_by_port, rrd_ref)
 
     if write_inventory:
         step("addresses")
@@ -294,6 +303,23 @@ def sync_observium(
     _record_source(db, report)
     report.duration_s = time.monotonic() - started
     return report
+
+
+def _write_rrd_map(db: Session, iface_by_port: dict[str, m.Interface],
+                   rrd_ref: dict[str, tuple[int | None, str]]) -> None:
+    """Remember where each interface's RRD lives (rebuilt every sync — ifIndex can change on reboot)."""
+    rows, seen = [], set()
+    for port_id, iface in iface_by_port.items():
+        if_index, hostname = rrd_ref.get(port_id, (None, ""))
+        if iface.id in seen or not hostname:
+            continue
+        seen.add(iface.id)
+        rows.append({"interface_id": iface.id, "observium_port_id": int(port_id), "if_index": if_index,
+                     "observium_hostname": hostname})
+    db.execute(delete(m.ObserviumPort))
+    for i in range(0, len(rows), WRITE_BATCH):
+        db.execute(insert(m.ObserviumPort), rows[i:i + WRITE_BATCH])
+    db.commit()
 
 
 def _write_neighbours(db, client, device_by_obs, iface_by_port, report: SyncReport) -> None:

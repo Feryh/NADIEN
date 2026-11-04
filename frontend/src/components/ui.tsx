@@ -46,6 +46,7 @@ export function UtilBar({ capacity, current, reserved }: { capacity: number; cur
 
 export function fmtG(v: number | null | undefined): string {
   if (v == null) return '–'
+  if (v > 0 && v < 1) return `${Number((v * 1000).toFixed(0))}M`  // sub-gigabit (10M/100M ports)
   return v >= 1000 ? `${(v / 1000).toFixed(2)}T` : `${Number(v.toFixed(1))}G`
 }
 

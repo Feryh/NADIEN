@@ -1,9 +1,14 @@
+import { useState } from 'react'
 import { useParams, NavLink, Navigate } from 'react-router-dom'
+import DeviceSummary from '../components/DeviceSummary'
+import PopCoordinateImport from '../components/PopCoordinateImport'
+import PopRehome from '../components/PopRehome'
 import ResourceTable from '../components/ResourceTable'
 import { ENTITIES, ENTITY_BY_KEY, GROUPS } from '../entities'
 
 export default function Inventory() {
   const { entityKey } = useParams()
+  const [reload, setReload] = useState(0)  // remount the table after POPs were rearranged
   const entity = entityKey ? ENTITY_BY_KEY[entityKey] : undefined
   if (!entity) return <Navigate to={`/inventory/${ENTITIES[0].key}`} replace />
 
@@ -22,7 +27,12 @@ export default function Inventory() {
           </div>
         ))}
       </nav>
-      <ResourceTable key={entity.key} entity={entity} />
+      <div className="inventory-main">
+        {entity.endpoint === '/devices' && <DeviceSummary />}
+        {entity.key === 'pops' && <PopRehome onApplied={() => setReload((n) => n + 1)} />}
+        {entity.key === 'pops' && <PopCoordinateImport onApplied={() => setReload((n) => n + 1)} />}
+        <ResourceTable key={`${entity.key}:${reload}`} entity={entity} />
+      </div>
     </div>
   )
 }

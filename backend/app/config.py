@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,6 +36,21 @@ class Settings(BaseSettings):
     # When both report the same local port, LLDP wins. MNDP/ISDP are never used.
     observium_include_cdp: bool = True
 
+    # Observium RRD history (daily peaks per port) for utilization trends.
+    # "api": graph.php JSON with the REST API login (no extra access). "ssh" / "local": rrdtool xport
+    # of the exact daily MAX archive on the Observium server, over SSH or when NADIEN runs there.
+    observium_rrd_source: Literal["api", "ssh", "local"] = "api"
+    observium_graph_workers: int = 6  # parallel graph.php requests; each one runs rrdtool on Observium
+    observium_rrd_path: str = "/opt/observium/rrd"
+    observium_ssh_host: str | None = None  # default: the host of NADIEN_OBSERVIUM_URL
+    observium_ssh_port: int = 22
+    observium_ssh_user: str | None = None
+    observium_ssh_key_file: str | None = None
+    observium_ssh_password: str | None = None
+    observium_ssh_known_hosts: str | None = None
+    # Growth used for exhaustion forecasts: least-squares trend over this many days of samples.
+    trend_window_days: int = 90
+
     # RANCID config archive used by Observium (Observium's API does not expose configs).
     # Either a local/mounted path, or SFTP to the Observium server with a read-only SSH account.
     rancid_path: str | None = None
@@ -50,6 +67,67 @@ class Settings(BaseSettings):
     oxidized_url: str | None = None
     oxidized_user: str | None = None
     oxidized_password: str | None = None
+
+    # RANCID repositories published through gitweb (all repos: CSR, METRO, OLT, BNG, ...). Backup source
+    # for configs, and the only source for devices Observium does not monitor (cell-site routers).
+    gitweb_url: str | None = None  # e.g. http://172.17.12.232/gitweb/
+    gitweb_user: str | None = None
+    gitweb_password: str | None = None
+    gitweb_verify_tls: bool = True
+    gitweb_workers: int = 8  # parallel blob downloads
+    gitweb_exclude_repos: list[str] = []
+    gitweb_create_devices: bool = True
+
+    # In-process daily scheduler. With several replicas each day's run is claimed once in the DB;
+    # set false where an external scheduler (Kubernetes CronJob, cron) runs the CLI instead.
+    scheduler_enabled: bool = True
+    schedule_timezone: str = "Asia/Jakarta"
+    gitweb_daily_at: str | None = "02:30"  # HH:MM; empty disables the daily gitweb update
+
+    # Link hotspots (utilization of the busiest links/ports): warning and critical levels.
+    hotspot_warning_pct: float = 70.0
+    hotspot_critical_pct: float = 90.0
+    hotspot_suspect_pct: float = 150.0  # above this the link capacity is treated as wrong data
+
+    # Collector settings page (Pengaturan Collector). Values saved there override this environment.
+    # Only admins can change it; set false in production to keep credentials env-only.
+    settings_ui_enabled: bool = True
+    # Key for the secrets saved from that page (Fernet, urlsafe base64). Without it a key file is created
+    # next to the backups; with several replicas set the same key everywhere (see docs/LAUNCH.md).
+    secret_key: str | None = None
+
+    # AI assistant (Phase 9). A local Ollama provider is created on first start when none exists;
+    # hosted providers (Claude, OpenAI, Azure OpenAI, ...) are added from the AI Assistant page.
+    ai_seed_local: bool = True
+    ai_ollama_url: str = "http://localhost:11434"
+    ai_default_model: str = "llama3.1:8b"
+    ai_context_chars: int = 12000  # network data sent with each question (local models have small contexts)
+
+    # Login and roles. With auth off (tests, single-user dev) every request acts as a local admin.
+    auth_enabled: bool = True
+    session_hours: float = 12.0
+    # Built-in local admin, created on first start when there are no users. Without a password here a random
+    # one is printed once in the server log. Either way it must be changed at first login.
+    admin_username: str = "admin"
+    admin_password: str | None = None
+    password_min_length: int = 10
+    login_max_attempts: int = 5  # failed logins before the account is locked for login_lock_minutes
+    login_lock_minutes: int = 15
+    ingest_token: str | None = None  # Bearer token for external systems posting to /api/integrations
+
+    # Pushing changes to devices (SSH/telnet). Engineers type their own device credentials per run; they are
+    # never stored. A jump host, when set, is reached with the same credentials unless a jump user is given.
+    device_jump_host: str | None = None
+    device_jump_port: int = 22
+    device_jump_user: str | None = None
+    device_timeout_s: float = 30.0
+    # Host keys seen on first connect are kept here and enforced afterwards (default: next to the backups).
+    device_known_hosts: str | None = None
+
+    # Read-model cache for heavy views (topology, capacity, dashboard); cleared on every write.
+    cache_ttl_s: float = 60.0
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
 
 
 settings = Settings()

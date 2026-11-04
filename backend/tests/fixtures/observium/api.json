@@ -16,7 +16,7 @@
             "hardware": "VMware", "version": "6.1", "location": "Jakarta DC Cyber", "status": "1", "disabled": "0"}
   },
   "ports": {
-    "1001": {"port_id": "1001", "device_id": "101", "ifName": "HundredGigE0/0/0/0", "ifType": "ethernetCsmacd", "ifHighSpeed": "400000", "ifSpeed": "4294967295",
+    "1001": {"port_id": "1001", "device_id": "101", "ifIndex": "21", "ifName": "HundredGigE0/0/0/0", "ifType": "ethernetCsmacd", "ifHighSpeed": "400000", "ifSpeed": "4294967295",
              "ifMtu": "9216", "ifAdminStatus": "up", "ifOperStatus": "up", "ifAlias": "TO-SBY-P-01", "ifInOctets_rate": "31250000000", "ifOutOctets_rate": "25000000000", "deleted": "0"},
     "1002": {"port_id": "1002", "device_id": "101", "ifName": "HundredGigE0/0/0/1", "ifType": "ethernetCsmacd", "ifHighSpeed": "100000",
              "ifMtu": "9216", "ifAdminStatus": "up", "ifOperStatus": "up", "ifAlias": "", "ifInOctets_rate": "7500000000", "ifOutOctets_rate": "5000000000", "deleted": "0"},
@@ -32,7 +32,7 @@
              "ifMtu": "1514", "ifAdminStatus": "down", "ifOperStatus": "down", "ifAlias": "", "deleted": "0"},
     "1008": {"port_id": "1008", "device_id": "101", "ifName": "HundredGigE0/0/0/9", "ifType": "ethernetCsmacd", "ifHighSpeed": "100000",
              "ifAdminStatus": "up", "ifOperStatus": "up", "deleted": "1"},
-    "2001": {"port_id": "2001", "device_id": "102", "ifName": "et-0/0/0", "ifType": "ethernetCsmacd", "ifHighSpeed": "400000",
+    "2001": {"port_id": "2001", "device_id": "102", "ifIndex": "540", "ifName": "et-0/0/0", "ifType": "ethernetCsmacd", "ifHighSpeed": "400000",
              "ifMtu": "9216", "ifAdminStatus": "up", "ifOperStatus": "up", "ifAlias": "TO-JKT-P-01", "ifInOctets_rate": "25000000000", "ifOutOctets_rate": "31250000000", "deleted": "0"},
     "2002": {"port_id": "2002", "device_id": "102", "ifName": "et-0/0/1", "ifType": "ethernetCsmacd", "ifHighSpeed": "100000",
              "ifMtu": "9216", "ifAdminStatus": "up", "ifOperStatus": "up", "ifAlias": "TO-SMG-PE-01", "ifInOctets_rate": "", "ifOutOctets_rate": "", "deleted": "0"},

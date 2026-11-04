@@ -17,9 +17,11 @@ from ..config import settings
 from ..services.topology import discover_links
 from .configs.apply import apply_config
 from .configs.base import ParsedConfig
+from .configs.gitweb import GitwebClient, apply_changes, list_changes
 from .configs.oxidized import OxidizedClient, sync_oxidized
 from .configs.rancid import FileSystem, open_from_settings, sync_rancid
 from .observium.client import ObserviumClient
+from .observium.rrd import RrdSource, open_source, sync_rrd
 from .observium.sync import sync_observium
 
 CHANGES_INVENTORY = {"inventory", "neighbours"}
@@ -75,6 +77,17 @@ def run_observium(
     return {"backup": backup, **report}
 
 
+def run_rrd(db: Session, days: int = 90, source: "RrdSource | None" = None, progress: Progress = _noop) -> dict:
+    """Daily peaks from Observium RRDs. No backup: like utilization-only syncs it only adds samples."""
+    own = source is None
+    source = source or open_source()
+    try:
+        return {"backup": {"status": "skipped", "detail": "utilization only"}, **sync_rrd(db, source, days, progress)}
+    finally:
+        if own:
+            source.close()
+
+
 def run_rancid(
     db: Session,
     discover: bool = True,
@@ -89,6 +102,26 @@ def run_rancid(
         return {"backup": backup, **sync_rancid(db, fs, base, source, discover)}
     finally:
         fs.close()
+
+
+def run_gitweb(db: Session, full: bool = False, discover: bool = True, client: GitwebClient | None = None,
+               progress: Progress = _noop) -> dict:
+    """RANCID configs from gitweb. Lists changed files first and takes the backup only when there is
+    something to write, so the daily run does not rotate useful backups out on quiet days."""
+    own = client is None
+    client = client or GitwebClient()  # fails on missing configuration before a backup slot is used
+    try:
+        progress("list")
+        sync, work = list_changes(client, db, full, progress)
+        if not work:
+            return {"backup": {"status": "skipped", "detail": "no changes in gitweb"},
+                    "source": client.base_url, "full": full, **sync.report.as_dict()}
+        progress("backup")
+        backup = backup_before(db, "gitweb")
+        return {"backup": backup, **apply_changes(sync, work, discover)}
+    finally:
+        if own:
+            client.close()
 
 
 def run_oxidized(db: Session, discover: bool = True, client: OxidizedClient | None = None,

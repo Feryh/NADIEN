@@ -25,6 +25,7 @@ from ... import models as m
 from ...config import settings
 from ...services.topology import discover_links, norm_host
 from .apply import apply_config
+from .base import ParsedConfig
 from .detect import parse_config
 from .oxidized import os_hint
 
@@ -33,9 +34,15 @@ CONTENT_TYPE = re.compile(r"^[!#]\s*RANCID-CONTENT-TYPE:\s*(\S+)", re.M)
 RANCID_TYPES = [
     (r"xr", "iosxr"),
     (r"juniper|junos", "junos"),
-    (r"huawei|vrp", "vrp"),
+    (r"^(huawei|vrp)", "vrp"),
     (r"sros|sr-os|alu|nokia|timos", "sros"),
+    (r"^zte", "zte"),
+    (r"^fiberhomemetro$", "fiberhome"),
+    (r"^(cisco|ios|nxos)", "ios"),
 ]
+# OLT shelves: GPON/board configs without router interfaces. Text detection would misread them
+# (a Huawei OLT has `sysname` like VRP), so they are reported as unsupported instead of parsed.
+UNSUPPORTED_TYPES = {"huaweiolt", "fiberhome", "zteolt", "fiberhomeolt"}
 SKIP_FILES = {"router.db", ".cvsignore"}
 SKIP_DIRS = {"CVS", ".git", ".svn", "logs", "old", "bin", "etc", "lib", "share"}
 MAX_DEPTH = 4
@@ -51,7 +58,16 @@ def rancid_hint(text: str) -> str | None:
     if not match:
         return None
     kind = match.group(1).lower()
+    if kind in UNSUPPORTED_TYPES:
+        return None
     return next((parser for pattern, parser in RANCID_TYPES if re.search(pattern, kind)), None)
+
+
+def parse_rancid(text: str, fallback_hint: str | None = None) -> ParsedConfig:
+    """Parse a RANCID file; raises ValueError for OLT types and text no parser recognises."""
+    if rancid_type(text) in UNSUPPORTED_TYPES:
+        raise ValueError(f"RANCID type {rancid_type(text)} is not a router config")
+    return parse_config(text, rancid_hint(text) or fallback_hint)
 
 
 def rancid_type(text: str) -> str | None:
@@ -195,9 +211,8 @@ def sync_rancid(db: Session, fs: FileSystem, base: str, source: str = "", discov
             continue
         try:
             text = fs.read(f.path)
-            hint = rancid_hint(text) or os_hint(device, vendors)
             try:
-                cfg = parse_config(text, hint)
+                cfg = parse_rancid(text, os_hint(device, vendors))
             except ValueError:
                 unsupported.append(f"{f.name} (RANCID type: {rancid_type(text) or 'unknown'})")
                 continue

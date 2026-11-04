@@ -1,0 +1,34 @@
+# Production override (Harvester VM or any Linux server): docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Or put COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml in .env next to this file.
+# Needs Docker Compose >= 2.24 (`!reset`). Secrets: POSTGRES_PASSWORD in ./.env, NADIEN_* in ./backend/.env.
+services:
+  db:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    # Sized for ~50 concurrent users: 4 API workers x (pool 8 + overflow 12) = 80 connections at most.
+    command: >
+      postgres -c max_connections=150 -c shared_buffers=2GB -c effective_cache_size=6GB
+      -c work_mem=32MB -c maintenance_work_mem=512MB -c random_page_cost=1.1
+    ports: !reset []
+    restart: unless-stopped
+
+  backend:
+    environment:
+      NADIEN_DATABASE_URL: postgresql+psycopg://nadien:${POSTGRES_PASSWORD}@db:5432/nadien
+      NADIEN_BACKUP_DIR: /backups
+      NADIEN_SEED_DEMO: "false"
+      WEB_CONCURRENCY: "4"
+      NADIEN_DB_POOL_SIZE: "8"
+      NADIEN_DB_MAX_OVERFLOW: "12"
+      NADIEN_CACHE_TTL_S: "60"
+    ports: !reset []
+    volumes:
+      - ./backups:/backups
+      # Only for RRD over SSH / RANCID SFTP: read-only key + known_hosts.
+      # - ./ssh:/root/.ssh:ro
+    restart: unless-stopped
+
+  frontend:
+    # Behind the host reverse proxy (HTTPS). Use "80:80" when the VM is only reachable internally.
+    ports: !reset ["127.0.0.1:8080:80"]
+    restart: unless-stopped

@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from ...services.areas import FUNCTION_TOKENS, csr_parts, first_city_code, is_city_code
 from ...services.topology import strip_domain
 
 # Observium `os` -> (vendor, OS family). Unknown OSes fall back to the row's own `vendor` field.
@@ -92,6 +93,7 @@ class DeviceRecord:
     role: str
     mgmt_ip: str | None
     status: str
+    observium_hostname: str = ""  # Observium's own hostname: the RRD directory name
 
 
 def _tokens(hostname: str) -> list[str]:
@@ -106,12 +108,27 @@ def is_role_word(code: str) -> bool:
     return _role_word(code.upper()) is not None
 
 
+def role_from_hostname(hostname: str) -> str | None:
+    """Role written in the hostname, or None when no token names one."""
+    if csr_parts(hostname):  # BAL-BA-BLI-0004-ME1-ZTE: a cell-site router despite its ME1 token
+        return "csr"
+    return next((role for token in _tokens(hostname) if (role := _role_word(token))), None)
+
+
 def guess_role(hostname: str) -> str:
-    for token in _tokens(hostname):
-        role = _role_word(token)
-        if role:
-            return role
-    return "pe"
+    return role_from_hostname(hostname) or "pe"
+
+
+def pop_from_tokens(hostname: str, regex_code: str | None) -> str | None:
+    """A registered city code anywhere in the hostname wins over a first token that is not one
+    (VRR-MPLS-JKT-BSD -> JKT, not VRR). Without any registered code the first token stays (BKT-GGP-BNG1-M4
+    -> BKT: a real city the dictionary does not list yet), unless it is a function word (NAP, CGN, ...)."""
+    if regex_code and is_city_code(regex_code):
+        return regex_code
+    found = first_city_code(hostname)
+    if found:
+        return found
+    return None if regex_code in FUNCTION_TOKENS else regex_code
 
 
 def infer_pop(hostname: str, known_codes: set[str]) -> str | None:
@@ -120,17 +137,18 @@ def infer_pop(hostname: str, known_codes: set[str]) -> str | None:
     A token that is already a known POP code wins (left to right: the POP precedes the site);
     otherwise the first purely alphabetic 3–4 letter token that is not a role word.
     """
-    tokens = _tokens(hostname)
-    for token in tokens:
-        if _role_word(token):  # never a POP, even if an older sync created a POP named "OLT"
-            continue
+    found = first_city_code(hostname)  # CGW-NAP-BDG-BBU -> BDG, never the function word NAP
+    if found:
+        return found
+    tokens = [t for t in _tokens(hostname) if not _role_word(t) and t not in FUNCTION_TOKENS]
+    for token in tokens:  # role words are never a POP, even if an older sync created a POP named "OLT"
         if token in known_codes:
             return token
         base = token.rstrip("0123456789")  # JKT2 -> JKT
         if base != token and base in known_codes:
             return base
     for token in tokens:
-        if token.isalpha() and 3 <= len(token) <= 4 and _role_word(token) is None:
+        if token.isalpha() and 3 <= len(token) <= 4:
             return token
     return None
 
@@ -149,6 +167,11 @@ def parse_device(row: dict[str, Any], pop_regex: str) -> DeviceRecord | None:
     pop_code = match.group(1).upper() if match else None
     if pop_code and _role_word(pop_code):  # "OLT-..." / "CGW-...": a role, not a POP
         pop_code = None
+    cell_site = csr_parts(hostname)
+    if cell_site:  # the first token is the island group (BAL, SUM); the city is the POP
+        pop_code = cell_site[2]
+    else:
+        pop_code = pop_from_tokens(hostname, pop_code)
 
     os_name = (row.get("os") or "").lower()
     vendor, os_family = OS_VENDOR.get(os_name, (row.get("vendor") or None, row.get("os") or None))
@@ -170,6 +193,7 @@ def parse_device(row: dict[str, Any], pop_regex: str) -> DeviceRecord | None:
         role=guess_role(hostname),
         mgmt_ip=row.get("ip") or None,
         status="decommissioned" if disabled else ("active" if up else "maintenance"),
+        observium_hostname=(row.get("hostname") or "").strip(),
     )
 
 
@@ -189,6 +213,7 @@ class PortRecord:
     description: str | None
     in_gbps: float | None
     out_gbps: float | None
+    if_index: int | None = None  # RRD file is port-<ifIndex>.rrd
 
 
 def classify_port(name: str, if_type: str) -> str:
@@ -231,6 +256,7 @@ def parse_port(row: dict[str, Any]) -> PortRecord | None:
         description=(row.get("ifAlias") or "").strip()[:MAX_DESCRIPTION] or None,
         in_gbps=_rate_gbps(row, "ifInOctets_rate"),
         out_gbps=_rate_gbps(row, "ifOutOctets_rate"),
+        if_index=_int(row.get("ifIndex")),
     )
 
 

@@ -4,7 +4,19 @@ import { ENTITY_BY_KEY, Entity, Field } from '../entities'
 
 type Row = Record<string, unknown> & { id: number }
 
-const PAGE_SIZE = 100
+// Rows per page; 0 = all. The choice is remembered per browser.
+const PAGE_SIZES = [50, 100, 0]
+const PAGE_SIZE_KEY = 'nadien.inventory.pageSize'
+
+function storedPageSize(): number {
+  try {
+    const raw = localStorage.getItem(PAGE_SIZE_KEY)
+    const value = raw === null ? NaN : Number(raw)  // Number(null) is 0, which means "all"
+    return PAGE_SIZES.includes(value) ? value : 50
+  } catch {
+    return 50
+  }
+}
 // Rows loaded per request (backend cap). Larger tables (300k+ interfaces) are searched server-side.
 const FETCH_LIMIT = 10000
 
@@ -22,6 +34,7 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
   const [refs, setRefs] = useState<Record<string, Row[]>>({})
   const [q, setQ] = useState('')
   const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState(storedPageSize)
   const [editing, setEditing] = useState<Row | 'new' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -91,8 +104,18 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
     return rows.filter((r) => columns.some((f) => cellText(f, r[f.name]).toLowerCase().includes(needle)))
   }, [rows, q, columns, cellText])
 
-  const pageRows = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
-  const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const pageRows = pageSize ? filtered.slice(page * pageSize, (page + 1) * pageSize) : filtered
+  const pages = pageSize ? Math.max(1, Math.ceil(filtered.length / pageSize)) : 1
+
+  function changePageSize(size: number) {
+    setPageSize(size)
+    setPage(0)
+    try {
+      localStorage.setItem(PAGE_SIZE_KEY, String(size))
+    } catch {
+      /* private window / storage blocked: the choice just isn't remembered */
+    }
+  }
 
   async function remove(row: Row) {
     if (!confirm(`Hapus ${entity.label} "${row[entity.display]}"?`)) return
@@ -205,7 +228,15 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
       </div>
 
       <div className="pager">
-        <span className="muted">{filtered.length} baris</span>
+        <span className="muted">{filtered.length.toLocaleString()} baris</span>
+        <label className="check">
+          Tampilkan
+          <select value={pageSize} onChange={(e) => changePageSize(Number(e.target.value))}>
+            {PAGE_SIZES.map((size) => (
+              <option key={size} value={size}>{size ? `${size} baris` : 'Semua'}</option>
+            ))}
+          </select>
+        </label>
         {pages > 1 && (
           <>
             <button disabled={page === 0} onClick={() => setPage(page - 1)}>
@@ -263,14 +294,34 @@ function FormModal(props: {
   const { entity, row, refs, onClose, onSaved } = props
   const editable = entity.fields.filter((f) => !f.readonly)
   const [values, setValues] = useState<Record<string, string | boolean>>(() =>
-    Object.fromEntries(editable.map((f) => [f.name, toInput(f, row ? row[f.name] : f.type === 'select' ? f.options?.[0] : null)])),
+    Object.fromEntries(
+      editable.map((f) => [f.name, toInput(f, row ? row[f.name] : f.type === 'select' && !f.blankDefault ? f.options?.[0] : null)]),
+    ),
   )
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  // POP code already taken by another POP: offer to merge this POP into it instead of renaming.
+  const [mergeTarget, setMergeTarget] = useState<string | null>(null)
+
+  async function merge() {
+    if (!row || !mergeTarget) return
+    if (!confirm(`Gabungkan POP ${row.code} ke ${mergeTarget}? Semua perangkat & referensi pindah ke ${mergeTarget}, ` +
+                 `lalu POP ${row.code} dihapus. Data ${mergeTarget} yang sudah terisi tidak ditimpa.`)) return
+    setSaving(true)
+    try {
+      await api.post(`/pops/${row.id}/merge`, { target_code: mergeTarget })
+      onSaved()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault()
     setError(null)
+    setMergeTarget(null)
     let payload: Record<string, unknown>
     try {
       payload = Object.fromEntries(editable.map((f) => [f.name, fromInput(f, values[f.name])]))
@@ -284,7 +335,10 @@ function FormModal(props: {
       else await api.post(entity.endpoint, payload)
       onSaved()
     } catch (err) {
-      setError((err as Error).message)
+      const message = (err as Error).message
+      setError(message)
+      const newCode = String(payload.code ?? '')
+      if (entity.key === 'pops' && row && message.startsWith('409') && newCode && newCode !== row.code) setMergeTarget(newCode)
     } finally {
       setSaving(false)
     }
@@ -308,6 +362,8 @@ function FormModal(props: {
               input = (
                 <select value={String(value)} onChange={(e) => set(f.name, e.target.value)} required={f.required}>
                   {!f.required && <option value="">—</option>}
+                  {/* A stored value outside the list (custom area) stays selectable, so saving never wipes it. */}
+                  {value && !f.options?.includes(String(value)) && <option value={String(value)}>{String(value)}</option>}
                   {f.options?.map((o) => (
                     <option key={o} value={o}>
                       {o}
@@ -354,6 +410,12 @@ function FormModal(props: {
           })}
         </div>
         {error && <div className="error">{error}</div>}
+        {mergeTarget && row && (
+          <div className="notice">
+            POP {mergeTarget} sudah ada. Kalau {String(row.code)} sebenarnya POP yang sama,{' '}
+            <button type="button" onClick={merge} disabled={saving}>Gabungkan {String(row.code)} ke {mergeTarget}</button>
+          </div>
+        )}
         <div className="modal-actions">
           <button type="button" onClick={onClose}>
             Batal

@@ -1,0 +1,109 @@
+# Two backends from one image:
+#   nadien-api    — stateless, scaled out for users (reads, edits, discovery). No scheduler.
+#   nadien-worker — one pod with the backup volume (Harvester volumes are ReadWriteOnce): collector
+#                   syncs (/api/collectors, /api/backups are routed here by the frontend nginx), the
+#                   daily gitweb schedule and pre-sync pg_dump backups.
+# Job state is in the database, so both agree on what is running.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nadien-api
+spec:
+  selector: { app: nadien-api }
+  ports: [{ port: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nadien-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: nadien-api }
+  template:
+    metadata:
+      labels: { app: nadien-api }
+    spec:
+      containers:
+        - name: api
+          image: nadien-backend
+          envFrom:
+            - configMapRef: { name: nadien-config }
+            - secretRef: { name: nadien-env }
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: nadien-db, key: POSTGRES_PASSWORD } }
+            - name: NADIEN_DATABASE_URL  # $(VAR) expands only here, after the variable is defined
+              value: postgresql+psycopg://nadien:$(POSTGRES_PASSWORD)@nadien-db:5432/nadien
+            - { name: WEB_CONCURRENCY, value: "2" }
+            - { name: NADIEN_DB_POOL_SIZE, value: "8" }
+            - { name: NADIEN_DB_MAX_OVERFLOW, value: "12" }
+            - { name: NADIEN_SCHEDULER_ENABLED, value: "false" }
+          ports: [{ containerPort: 8000 }]
+          readinessProbe:
+            httpGet: { path: /api/health, port: 8000 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/health, port: 8000 }
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { memory: 3Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nadien-worker
+spec:
+  selector: { app: nadien-worker }
+  ports: [{ port: 8000 }]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nadien-backups
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: harvester
+  resources:
+    requests: { storage: 100Gi }  # 15 pg_dump backups
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nadien-worker
+spec:
+  replicas: 1
+  strategy: { type: Recreate }  # the RWO backup volume cannot attach to two pods during a rollout
+  selector:
+    matchLabels: { app: nadien-worker }
+  template:
+    metadata:
+      labels: { app: nadien-worker }
+    spec:
+      containers:
+        - name: worker
+          image: nadien-backend
+          envFrom:
+            - configMapRef: { name: nadien-config }
+            - secretRef: { name: nadien-env }
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: nadien-db, key: POSTGRES_PASSWORD } }
+            - name: NADIEN_DATABASE_URL
+              value: postgresql+psycopg://nadien:$(POSTGRES_PASSWORD)@nadien-db:5432/nadien
+            - { name: WEB_CONCURRENCY, value: "1" }
+            - { name: NADIEN_SCHEDULER_ENABLED, value: "true" }
+          ports: [{ containerPort: 8000 }]
+          readinessProbe:
+            httpGet: { path: /api/health, port: 8000 }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { memory: 4Gi }  # a full Observium sync holds ~300k ports in memory
+          volumeMounts:
+            - { name: backups, mountPath: /backups }
+      volumes:
+        - name: backups
+          persistentVolumeClaim: { claimName: nadien-backups }
