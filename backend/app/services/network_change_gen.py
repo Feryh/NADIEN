@@ -2,7 +2,7 @@
 
 import ipaddress
 import re
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
