@@ -75,6 +75,27 @@ def test_should_take_traffic_from_the_narrower_bundle_when_its_far_end_bundle_is
     assert link.current_gbps == 55.0  # smartgroup1's own traffic, not the whole smartgroup210
 
 
+def test_should_record_one_link_when_lldp_names_a_fiberhome_port_slot_colon_port_from_the_far_end(db):
+    pop = m.Pop(code="BDG", name="Bandung")
+    db.add(pop)
+    db.flush()
+    olt = m.Device(hostname="BDG-LMB-OLT1-FH", pop_id=pop.id, role="olt")
+    me = m.Device(hostname="BDG-CMH-ME1-6120HS", pop_id=pop.id, role="agg")
+    db.add_all([olt, me])
+    db.flush()
+    db.add_all([m.Interface(device_id=olt.id, name="SFP+ 9/1", speed_gbps=10, oper_status="up"),
+                m.Interface(device_id=me.id, name="xgei-1/1/0/6", speed_gbps=10, oper_status="up"),
+                # Both LLDP directions: the OLT names its port SFP+ 9/1, the ME1 hears it as 9:1.
+                m.LldpNeighbor(device_id=olt.id, local_interface="SFP+ 9/1", remote_system_name=me.hostname,
+                               remote_port_id="xgei-1/1/0/6"),
+                m.LldpNeighbor(device_id=me.id, local_interface="xgei-1/1/0/6", remote_system_name=olt.hostname,
+                               remote_port_id="9:1")])
+    db.commit()
+    discover_links(db)
+    links = db.scalars(select(m.Link)).all()
+    assert [(l.name, l.capacity_gbps) for l in links] == [("BDG-LMB-OLT1-FH:SFP+ 9/1 <> BDG-CMH-ME1-6120HS:xgei-1/1/0/6", 10)]
+
+
 def test_should_leave_down_links_out_when_listing_hot_links(db):
     a, b = _devices(db)
     db.add(m.Link(name="stale", a_device_id=a.id, b_device_id=b.id, capacity_gbps=4.295, current_gbps=6.3, status="down"))

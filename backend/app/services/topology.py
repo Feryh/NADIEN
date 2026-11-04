@@ -51,6 +51,7 @@ def norm_if(name: str) -> str:
 
 
 _SPLIT = re.compile(r"[^a-z0-9]+")
+_SLOT_PORT = re.compile(r"(\d+):(\d+)")  # FiberHome port id in neighbours' LLDP (9:1 = SFP+ 9/1)
 
 
 def host_key(name: str) -> str:
@@ -112,6 +113,10 @@ class _Discovery:
     def iface(self, device: Device, name: str) -> Interface:
         key = (device.id, norm_if(name))
         found = self.if_index.get(key)
+        if found is None or found.speed_gbps is None:
+            # The bare `slot:port` name is only a stand-in when no real port of that name exists (an earlier run
+            # created it from LLDP): the twin the NMS reports wins.
+            found = self.slot_port_twin(device, name) or found
         if found is None:
             found = Interface(device_id=device.id, name=name.strip(), if_type="physical", oper_status="up")
             self.db.add(found)
@@ -121,6 +126,24 @@ class _Discovery:
             self.created_ids.add(found.id)
             self.stats["interfaces_created"] += 1
         return found
+
+    def slot_port_twin(self, device: Device, name: str) -> Interface | None:
+        """FiberHome ports reach neighbours' LLDP as `slot:port` (9:1) while the NMS names them `SFP+ 9/1`: the one
+        port of the device ending in that slot/port, so both LLDP directions land on the same port."""
+        match = _SLOT_PORT.fullmatch(name.strip())
+        if not match:
+            return None
+        tail = re.compile(rf"(?:^|[\s_-]){match.group(1)}/{match.group(2)}$")
+        twins = [i for i in self.ports_of(device.id) if i.name != name.strip() and tail.search(i.name.strip())]
+        return twins[0] if len(twins) == 1 else None
+
+    def ports_of(self, device_id: int) -> list[Interface]:
+        if self._ports_by_device is None:
+            self._ports_by_device = {}
+            for iface in self.ifaces.values():
+                if iface.if_type != "subinterface":
+                    self._ports_by_device.setdefault(iface.device_id, []).append(iface)
+        return self._ports_by_device.get(device_id, [])
 
     def add(self, a: Interface, b: Interface, source: str) -> None:
         member_pair = frozenset((a.id, b.id))
@@ -213,14 +236,9 @@ class _Discovery:
 
     def named_port(self, device_id: int, description: str) -> Interface | None:
         """Port of `device_id` written in the description, longest name wins (xgei-1/1/0/10 over /1)."""
-        if self._ports_by_device is None:
-            self._ports_by_device = {}
-            for iface in self.ifaces.values():
-                if iface.if_type != "subinterface":
-                    self._ports_by_device.setdefault(iface.device_id, []).append(iface)
         text = norm_if(description)
         best: Interface | None = None
-        for iface in self._ports_by_device.get(device_id, []):
+        for iface in self.ports_of(device_id):
             name = norm_if(iface.name)
             if len(name) >= 4 and _names_port(text, name) and (best is None or len(name) > len(norm_if(best.name))):
                 best = iface
