@@ -408,3 +408,54 @@ a.button.primary { background: var(--accent-strong); border-color: var(--accent-
 .portal-stats > div { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; }
 .portal-stats b { font-size: 22px; }
 .portal-stats span { color: var(--muted); font-size: 12px; }
+
+/* Topology tabs, display bar, segment cards, legend and live markers */
+.topology-page { display: flex; flex-direction: column; min-height: 0; }
+.topology-tabs { margin-top: 0; }
+.display-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 8px 14px; }
+.inline-field { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.inline-field > span { color: var(--muted); }
+.segment-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.segment-chip { display: inline-flex; align-items: center; gap: 6px; opacity: 0.55; }
+.segment-chip.on { opacity: 1; border-color: var(--seg); }
+.segment-line { display: inline-block; width: 22px; height: 0; flex: none; border-top: 3px solid #818cf8; }
+.segment-line.backbone { border-top-color: #818cf8; border-top-width: 4px; }
+.segment-line.distribution { border-top-color: #2dd4bf; }
+.segment-line.last_mile { border-top-color: #f59e0b; border-top-style: dotted; }
+.segment-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; }
+.segment-card { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 9px 11px; text-align: left;
+  border-left: 3px solid var(--seg); opacity: 0.6; }
+.segment-card.on { opacity: 1; background: var(--panel-2); }
+.segment-card-head { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.segment-card-main { display: flex; align-items: center; gap: 6px; }
+.segment-card-main b { font-size: 16px; font-variant-numeric: tabular-nums; }
+.segment-card-meta { font-size: 11px; color: var(--muted); }
+.live-toggle { display: inline-flex; align-items: center; gap: 6px; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.live-toggle.on .live-dot { background: var(--ok); box-shadow: 0 0 0 3px #22c55e33; }
+.live-note { margin: 0; }
+.legend-toggle { position: absolute; right: 12px; bottom: 10px; z-index: 3; }
+.topology-legend { position: absolute; right: 12px; bottom: 10px; z-index: 3; width: 250px; max-height: calc(100% - 20px); overflow: auto;
+  padding: 10px 12px; font-size: 12px; background: #0b1120e6; border: 1px solid var(--border); border-radius: 8px; }
+.topology-legend section + section { margin-top: 8px; }
+.topology-legend h4 { margin: 0 0 4px; font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.topology-legend ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.topology-legend li { display: flex; align-items: center; gap: 8px; }
+.topology-legend ul.legend-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; }
+.legend-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.legend-head button { padding: 0 6px; line-height: 1.4; }
+.legend-dot { width: 10px; height: 10px; flex: none; border-radius: 50%; }
+.legend-dot.fresh { border: 2px solid #4ade80; box-shadow: 0 0 0 3px #4ade8055; }
+.legend-dot.estimated { border: 2px dashed #e2e8f0; }
+.legend-bar { width: 22px; height: 4px; flex: none; border-radius: 2px; }
+.legend-bar.dashed { height: 0; border-top: 3px dashed #64748b; border-radius: 0; }
+.legend-bar.went-down { background: #94a3b8; box-shadow: 0 0 0 3px #ef44448c; }
+@media (max-width: 600px) { .topology-legend { width: calc(100% - 24px); } }
+
+/* Naming standard and change log tabs */
+.naming-page { display: flex; flex-direction: column; gap: 12px; }
+.naming-script { margin-top: 12px; }
+.naming-script h3 { margin: 0; }
+.naming-script-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.naming-script pre { margin: 4px 0 0; padding: 10px; max-height: 360px; overflow: auto; background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }

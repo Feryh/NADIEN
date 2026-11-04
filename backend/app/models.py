@@ -576,3 +576,19 @@ class ChangeRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     log: Mapped[str] = mapped_column(Text, default="")
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class TopologyEvent(Base):
+    """What changed in the topology, for the live map and its change log: links that appeared, went down or
+    came back. New devices are read from devices.created_at instead (they are created in several places)."""
+
+    __tablename__ = "topology_events"
+    __table_args__ = (Index("ix_topology_events_at", "at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    kind: Mapped[str] = mapped_column(String(24))  # link_added | link_down | link_up | discovery
+    link_id: Mapped[int | None] = mapped_column(ForeignKey("links.id", ondelete="SET NULL"))
+    device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id", ondelete="SET NULL"))
+    title: Mapped[str] = mapped_column(String(255))
+    detail: Mapped[str | None] = mapped_column(Text)

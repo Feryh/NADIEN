@@ -46,6 +46,7 @@ from ..services.areas import (
     speed_bucket,
 )
 from ..services.capacity import capacity_color, occupancy_pct
+from ..services.segments import SEGMENTS, link_segment
 from ..services.geo import KmlError, Placemark, match_devices, match_pops, read_placemarks
 
 router = APIRouter(tags=["Analysis"])
@@ -143,10 +144,12 @@ class _Agg:
     capacity: float = 0.0
     current: float = 0.0
     reserved: float = 0.0
+    unknown: int = 0  # links whose capacity is not known (0): never counted as "green"
 
     def add(self, link: Any) -> None:
         self.links += 1
         self.down += link.status == "down"
+        self.unknown += not link.capacity_gbps
         self.capacity += link.capacity_gbps or 0
         self.current += link.current_gbps or 0
         self.reserved += link.reserved_gbps or 0
@@ -161,6 +164,7 @@ class _Agg:
             "utilization_pct": round(self.current / self.capacity * 100, 1) if self.capacity else 0.0,
             "committed_pct": round(committed, 1),
             "color": capacity_color(committed),
+            "capacity_unknown": self.unknown,
         }
 
 
@@ -169,8 +173,19 @@ def _links(db: Session):
                              m.Link.current_gbps, m.Link.reserved_gbps, m.Link.status)).all()
 
 
-def _edges(aggs: dict[tuple[str, str], _Agg]) -> list[dict[str, Any]]:
-    return [{"id": f"{a}|{b}", "source": a, "target": b, **agg.as_dict()} for (a, b), agg in aggs.items()]
+def _edges(aggs: dict[tuple[str, str, str], _Agg]) -> list[dict[str, Any]]:
+    """One edge per node pair and link function, so each segment can be shown, filtered and monitored alone."""
+    return [{"id": f"{a}|{b}|{segment}", "source": a, "target": b, "segment": segment, **agg.as_dict()}
+            for (a, b, segment), agg in aggs.items()]
+
+
+def _segment_of(ctx: "_Ctx", link: Any) -> str:
+    return link_segment(ctx.devices[link.a_device_id].role, ctx.devices[link.b_device_id].role)
+
+
+def _segments(totals: dict[str, _Agg]) -> dict[str, dict[str, Any]]:
+    """Monitoring summary per link function for everything in the view's scope (internal links included)."""
+    return {segment: totals[segment].as_dict() for segment in SEGMENTS}
 
 
 def _pair(a: str, b: str) -> tuple[str, str]:
@@ -532,17 +547,20 @@ def _neighbor_level(ctx: _Ctx, links, device_id: int, depth: int) -> dict:
                     included.add(other)
                     nxt.add(other)
         frontier = nxt
-    edges: dict[tuple[str, str], _Agg] = defaultdict(_Agg)
+    edges: dict[tuple[str, str, str], _Agg] = defaultdict(_Agg)
+    totals: dict[str, _Agg] = defaultdict(_Agg)
     for link in links:
         if link.a_device_id in included and link.b_device_id in included and link.a_device_id != link.b_device_id:
-            edges[_pair(f"dev:{link.a_device_id}", f"dev:{link.b_device_id}")].add(link)
+            segment = _segment_of(ctx, link)
+            edges[(*_pair(f"dev:{link.a_device_id}", f"dev:{link.b_device_id}"), segment)].add(link)
+            totals[segment].add(link)
     center = ctx.devices[device_id]
     nodes = [_device_node(ctx, ctx.devices[i], i == device_id)
              for i in sorted(included, key=lambda i: (ROLE_TIER.get(ctx.devices[i].role, 4), ctx.devices[i].hostname))]
     _place_devices(ctx, nodes)
     return {"level": "neighbors", "device": center.hostname, "device_id": device_id, "depth": depth,
             "pop": ctx.pop_code(device_id), "area": ctx.area_of_device(device_id), "truncated": truncated,
-            "nodes": nodes, "edges": _edges(edges)}
+            "nodes": nodes, "edges": _edges(edges), "segments": _segments(totals)}
 
 
 def _median(values: list[float]) -> float:
@@ -598,15 +616,18 @@ def _estimate_positions(known: dict[str, tuple[float, float]], neighbours: dict[
 
 def _area_level(ctx: _Ctx, links) -> dict:
     inner: dict[str, _Agg] = defaultdict(_Agg)
-    trunks: dict[tuple[str, str], _Agg] = defaultdict(_Agg)
+    trunks: dict[tuple[str, str, str], _Agg] = defaultdict(_Agg)
+    totals: dict[str, _Agg] = defaultdict(_Agg)
     for link in links:
         if link.a_device_id not in ctx.devices or link.b_device_id not in ctx.devices:
             continue
+        segment = _segment_of(ctx, link)
+        totals[segment].add(link)
         a, b = ctx.area_of_device(link.a_device_id), ctx.area_of_device(link.b_device_id)
         if a == b:
             inner[a].add(link)
         else:
-            trunks[_pair(f"area:{a}", f"area:{b}")].add(link)
+            trunks[(*_pair(f"area:{a}", f"area:{b}"), segment)].add(link)
     pops_per_area: Counter = Counter(ctx.area_of_pop.values())
     devices_per_area: Counter = Counter(ctx.area_of_device(d) for d in ctx.devices)
     names = [a for a in AREA_ORDER if pops_per_area[a]] + sorted(set(pops_per_area) - set(AREA_ORDER))
@@ -620,7 +641,7 @@ def _area_level(ctx: _Ctx, links) -> dict:
             "devices": devices_per_area[name], "internal": inner[name].as_dict(),
             "lon": lon, "lat": lat, "pops_located": located[name],
         })
-    return {"level": "area", "nodes": nodes, "edges": _edges(trunks)}
+    return {"level": "area", "nodes": nodes, "edges": _edges(trunks), "segments": _segments(totals)}
 
 
 def _pop_level(ctx: _Ctx, links, area: str) -> dict:
@@ -628,7 +649,8 @@ def _pop_level(ctx: _Ctx, links, area: str) -> dict:
     if not in_area:
         raise HTTPException(404, f"No POPs in area '{area}'")
     inner: dict[int, _Agg] = defaultdict(_Agg)
-    edges: dict[tuple[str, str], _Agg] = defaultdict(_Agg)
+    edges: dict[tuple[str, str, str], _Agg] = defaultdict(_Agg)
+    totals: dict[str, _Agg] = defaultdict(_Agg)
     external: Counter = Counter()
     for link in links:
         if link.a_device_id not in ctx.devices or link.b_device_id not in ctx.devices:
@@ -637,15 +659,17 @@ def _pop_level(ctx: _Ctx, links, area: str) -> dict:
         a_in, b_in = pa in in_area, pb in in_area
         if not (a_in or b_in):
             continue
+        segment = _segment_of(ctx, link)
+        totals[segment].add(link)
         if a_in and b_in:
             if pa == pb:
                 inner[pa].add(link)
             else:
-                edges[_pair(f"pop:{ctx.pops[pa].code}", f"pop:{ctx.pops[pb].code}")].add(link)
+                edges[(*_pair(f"pop:{ctx.pops[pa].code}", f"pop:{ctx.pops[pb].code}"), segment)].add(link)
         else:
             local, remote = (pa, pb) if a_in else (pb, pa)
             remote_area = ctx.area_of_pop.get(remote, UNMAPPED_AREA)
-            edges[_pair(f"pop:{ctx.pops[local].code}", f"area:{remote_area}")].add(link)
+            edges[(*_pair(f"pop:{ctx.pops[local].code}", f"area:{remote_area}"), segment)].add(link)
             external[remote_area] += 1
 
     devices_per_pop: dict[int, list[Any]] = defaultdict(list)
@@ -671,7 +695,7 @@ def _pop_level(ctx: _Ctx, links, area: str) -> dict:
         nodes.append({"id": f"area:{remote_area}", "kind": "external_area", "label": remote_area, "links": count,
                       "lat": lat, "lon": lon})
     _place_pops(nodes, edges, centers.get(area))
-    return {"level": "pop", "area": area, "nodes": nodes, "edges": _edges(edges)}
+    return {"level": "pop", "area": area, "nodes": nodes, "edges": _edges(edges), "segments": _segments(totals)}
 
 
 def _place_pops(nodes: list[dict], edges: dict, center: tuple[float, float] | None) -> None:
@@ -682,7 +706,7 @@ def _place_pops(nodes: list[dict], edges: dict, center: tuple[float, float] | No
             node["lat"], node["lon"], node["estimated"] = spot[0], spot[1], True
     known = {n["id"]: (n["lat"], n["lon"]) for n in nodes if n.get("lat") is not None and n.get("lon") is not None}
     neighbours: dict[str, set[str]] = defaultdict(set)
-    for a, b in edges:
+    for a, b, _segment in edges:
         neighbours[a].add(b)
         neighbours[b].add(a)
     missing = [n["id"] for n in nodes if n["kind"] == "pop" and n["id"] not in known]
@@ -698,18 +722,21 @@ def _device_level(ctx: _Ctx, links, pop_code: str) -> dict:
     if pop is None:
         raise HTTPException(404, f"POP '{pop_code}' not found")
     local = {d.id: d for d in ctx.devices.values() if d.pop_id == pop.id}
-    edges: dict[tuple[str, str], _Agg] = defaultdict(_Agg)
+    edges: dict[tuple[str, str, str], _Agg] = defaultdict(_Agg)
+    totals: dict[str, _Agg] = defaultdict(_Agg)
     external: dict[str, set[int]] = defaultdict(set)
     for link in links:
         a_in, b_in = link.a_device_id in local, link.b_device_id in local
         if not (a_in or b_in) or link.a_device_id not in ctx.devices or link.b_device_id not in ctx.devices:
             continue
+        segment = _segment_of(ctx, link)
+        totals[segment].add(link)
         if a_in and b_in:
-            edges[_pair(f"dev:{link.a_device_id}", f"dev:{link.b_device_id}")].add(link)
+            edges[(*_pair(f"dev:{link.a_device_id}", f"dev:{link.b_device_id}"), segment)].add(link)
         else:
             mine, theirs = (link.a_device_id, link.b_device_id) if a_in else (link.b_device_id, link.a_device_id)
             remote_pop = ctx.pop_code(theirs)
-            edges[_pair(f"dev:{mine}", f"pop:{remote_pop}")].add(link)
+            edges[(*_pair(f"dev:{mine}", f"pop:{remote_pop}"), segment)].add(link)
             external[remote_pop].add(theirs)
 
     nodes = [_device_node(ctx, d)
@@ -723,7 +750,8 @@ def _device_level(ctx: _Ctx, links, pop_code: str) -> dict:
         })
     _place_devices(ctx, nodes)
     return {"level": "device", "pop": pop.code, "pop_name": pop.name, "pop_id": pop.id, "region": pop.region,
-            "area": ctx.area_of_pop.get(pop.id, UNMAPPED_AREA), "nodes": nodes, "edges": _edges(edges)}
+            "area": ctx.area_of_pop.get(pop.id, UNMAPPED_AREA), "nodes": nodes, "edges": _edges(edges),
+            "segments": _segments(totals)}
 
 
 # --------------------------------------------------------------------------- search & POP area

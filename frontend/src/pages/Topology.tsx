@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link as RouterLink, useSearchParams } from 'react-router-dom'
 import { api, CapacityColor, DiscoveryResult } from '../api'
 import { BasemapShape, Box, declutter, loadBasemap, project } from '../components/basemap'
+import { NamingStandard, TopologyChanges } from '../components/TopologyInsights'
+import TopologyLegend from '../components/TopologyLegend'
 import { PopAreaEditor, SearchHit, TopologySearchBox } from '../components/TopologyTools'
 import { CAPACITY_HEX, fmtG } from '../components/ui'
 
@@ -13,10 +15,20 @@ import { CAPACITY_HEX, fmtG } from '../components/ui'
 //   neighbors — one device and everything within 1–2 hops, same role rows
 type Level = 'area' | 'pop' | 'device' | 'neighbors'
 
-interface EdgeData {
-  id: string
-  source: string
-  target: string
+export type Segment = 'backbone' | 'distribution' | 'last_mile'
+export const SEGMENTS: Segment[] = ['backbone', 'distribution', 'last_mile']
+export const SEGMENT_LABEL: Record<Segment, string> = { backbone: 'Backbone', distribution: 'Distribusi', last_mile: 'Last Mile' }
+export const SEGMENT_COLOR: Record<Segment, string> = { backbone: '#818cf8', distribution: '#2dd4bf', last_mile: '#f59e0b' }
+const SEGMENT_HINT: Record<Segment, string> = {
+  backbone: 'P/DCI/PE/BNG ↔ P/DCI/PE/BNG',
+  distribution: 'Metro/Agg ↔ Agg/PE/BNG/P',
+  last_mile: 'ke OLT, CSR, atau switch akses',
+}
+// Line weight per function: the backbone reads first, last mile recedes.
+const SEGMENT_WEIGHT: Record<Segment, number> = { backbone: 1.25, distribution: 1, last_mile: 0.7 }
+const UNKNOWN_HEX = '#94a3b8'
+
+interface Totals {
   links: number
   down: number
   capacity_gbps: number
@@ -24,6 +36,14 @@ interface EdgeData {
   utilization_pct: number
   committed_pct: number
   color: CapacityColor
+  capacity_unknown: number
+}
+
+interface EdgeData extends Totals {
+  id: string
+  source: string
+  target: string
+  segment: Segment
 }
 
 interface MonitorItem {
@@ -40,11 +60,12 @@ interface MonitorItem {
   node?: NodeData
 }
 
-function monitorItems(view: View | null): MonitorItem[] {
+function monitorItems(view: View | null, shown: Set<Segment>): MonitorItem[] {
   if (!view) return []
-  const items: MonitorItem[] = view.edges.map((edge) => ({
+  const names = new Map(view.nodes.map((n) => [n.id, n.label]))
+  const items: MonitorItem[] = view.edges.filter((edge) => shown.has(edge.segment)).map((edge) => ({
     ...edge,
-    label: `${edge.source} ↔ ${edge.target}`,
+    label: `${names.get(edge.source) ?? edge.source} ↔ ${names.get(edge.target) ?? edge.target} · ${SEGMENT_LABEL[edge.segment]}`,
     reserved_gbps: Math.max(0, edge.capacity_gbps * edge.committed_pct / 100 - edge.current_gbps),
     edge,
   }))
@@ -82,7 +103,7 @@ interface NodeData {
   sites?: number
   links?: number
   categories?: Record<string, number>
-  internal?: Omit<EdgeData, 'id' | 'source' | 'target'> & { reserved_gbps: number }
+  internal?: Totals & { reserved_gbps: number }
   lat?: number | null
   lon?: number | null
   site?: string
@@ -115,6 +136,7 @@ interface View {
   truncated?: boolean
   nodes: NodeData[]
   edges: EdgeData[]
+  segments: Record<Segment, Totals>
 }
 
 type Pos = { x: number; y: number }
@@ -148,6 +170,32 @@ const STYLE = [
       'text-valign': 'bottom',
       'text-margin-y': 6,
       'background-color': '#334155',
+      // Labels disappear when zoomed out too far to read them, instead of piling up.
+      'min-zoomed-font-size': 7,
+    },
+  },
+  {
+    // Tier band: a labelled box around one row of the schematic (Core, PE/BNG, Metro, Akses).
+    selector: 'node[kind="band"]',
+    style: {
+      shape: 'round-rectangle',
+      'background-color': 'data(bandColor)',
+      'background-opacity': 0.06,
+      'border-color': 'data(bandColor)',
+      'border-opacity': 0.35,
+      'border-width': 1,
+      'border-style': 'dashed',
+      label: 'data(display)',
+      'text-valign': 'top',
+      'text-halign': 'center',
+      'text-margin-y': -4,
+      'font-size': 12,
+      'font-weight': 'bold',
+      color: 'data(bandColor)',
+      'text-transform': 'uppercase',
+      padding: '22px',
+      'min-zoomed-font-size': 5,
+      events: 'no',
     },
   },
   {
@@ -228,11 +276,17 @@ const STYLE = [
       'text-background-opacity': 0.9,
       'text-background-padding': '2px',
       'text-rotation': 'autorotate',
+      'line-style': 'data(lineStyle)',
+      'min-zoomed-font-size': 7,
       opacity: 0.75,
     },
   },
   { selector: 'edge.labeled, edge:selected', style: { label: 'data(display)', opacity: 1 } },
   { selector: 'edge[allDown = 1]', style: { 'line-style': 'dashed', 'line-color': '#64748b' } },
+  // Live updates: what appeared since the page last loaded, and links that just went down.
+  { selector: 'node.fresh', style: { 'border-color': '#4ade80', 'border-width': 5, 'underlay-color': '#4ade80', 'underlay-opacity': 0.35, 'underlay-padding': 8 } },
+  { selector: 'edge.fresh', style: { 'underlay-color': '#4ade80', 'underlay-opacity': 0.45, 'underlay-padding': 5, opacity: 1 } },
+  { selector: 'edge.went-down', style: { 'underlay-color': '#ef4444', 'underlay-opacity': 0.55, 'underlay-padding': 6, opacity: 1 } },
   { selector: '.faded', style: { opacity: 0.08 } },
   { selector: '.hit', style: { 'border-color': '#facc15', 'border-width': 4 } },
   { selector: 'node:selected', style: { 'overlay-color': '#38bdf8', 'overlay-opacity': 0.25, 'overlay-padding': 6 } },
@@ -285,9 +339,8 @@ function areaLayout(view: View): Record<string, Pos> {
  * neighbours in the rows above/below (barycentre heuristic, a few sweeps), then long rows wrap.
  * Other POPs (external) form the top row.
  */
-function layeredLayout(view: View): Record<string, Pos> {
+function layeredLayout(view: View, rowGap = 70): Record<string, Pos> {
   // Devices/POPs by role tier; other POPs/areas (external) form the top "uplink" row.
-  const rowOf = (n: NodeData) => (n.kind === 'device' || n.kind === 'pop' ? (n.tier ?? 4) : -1)
   const rows = new Map<number, NodeData[]>()
   for (const n of view.nodes) {
     const r = rowOf(n)
@@ -335,22 +388,75 @@ function layeredLayout(view: View): Record<string, Pos> {
       const offset = ((widest - inLine) * dx) / 2
       pos[n.id] = { x: offset + (i % perLine) * dx, y: y + line * 85 }
     })
-    y += Math.ceil(row.length / perLine) * 85 + 70
+    y += Math.ceil(row.length / perLine) * 85 + rowGap
   }
   return pos
 }
 
-function buildElements(view: View): ElementDefinition[] {
+export type ColorMode = 'utilization' | 'segment'
+export type LabelMode = 'full' | 'short'
+
+interface BuildOptions {
+  bands: boolean
+  colorMode: ColorMode
+  labelMode: LabelMode
+}
+
+const BAND_LABEL: Record<number, string> = {
+  [-1]: 'Terhubung ke luar', 0: 'Core · P / DCI', 1: 'Edge · PE / BNG', 2: 'Distribusi · Metro / Agg', 3: 'Akses · OLT / CSR / Switch', 4: 'Lainnya',
+}
+const POP_BAND_LABEL: Record<number, string> = {
+  [-1]: 'Area lain', 0: 'POP core', 1: 'POP edge', 2: 'POP distribusi', 3: 'POP akses', 4: 'POP lainnya',
+}
+
+/** Row a node sits in on the schematic: other POPs/areas (external) on top, then by role tier. */
+function rowOf(n: NodeData): number {
+  return n.kind === 'device' || n.kind === 'pop' ? (n.tier ?? 4) : -1
+}
+
+/** Hostname without the POP it is drawn in (JKT-NDC-P1-8201 in POP JKT -> NDC-P1-8201). */
+function shortName(label: string, pop?: string): string {
+  if (!pop) return label
+  const prefix = `${pop.toUpperCase()}-`
+  if (label.toUpperCase().startsWith(prefix) && label.length > prefix.length) return label.slice(prefix.length)
+  return label.replace(new RegExp(`-${pop}(?=-|$)`, 'i'), '')
+}
+
+function edgeColor(e: EdgeData, mode: ColorMode): string {
+  if (mode === 'segment') return SEGMENT_COLOR[e.segment]
+  return e.capacity_gbps > 0 ? CAPACITY_HEX[e.color] : UNKNOWN_HEX
+}
+
+function edgeDisplay(e: EdgeData): string {
+  const count = e.links > 1 ? `${e.links}× · ` : ''
+  if (!(e.capacity_gbps > 0)) return `${count}kapasitas ?`
+  return `${count}${fmtG(e.capacity_gbps)} · ${e.committed_pct.toFixed(0)}%`
+}
+
+function buildElements(view: View, options: BuildOptions): ElementDefinition[] {
   const maxDevices = Math.max(1, ...view.nodes.map((n) => n.devices ?? 0))
+  const bands: ElementDefinition[] = []
+  if (options.bands) {
+    const labels = view.level === 'pop' ? POP_BAND_LABEL : BAND_LABEL
+    for (const row of new Set(view.nodes.map(rowOf))) {
+      bands.push({
+        data: { id: `band:${row}`, kind: 'band', display: labels[row], bandColor: row < 0 ? '#94a3b8' : TIER_COLOR[row] },
+        selectable: false,
+        grabbable: false,
+      })
+    }
+  }
   const nodes: ElementDefinition[] = view.nodes.map((n) => {
     const scale = Math.sqrt((n.devices ?? 0) / maxDevices)
+    const display = n.kind === 'device' && options.labelMode === 'short' ? shortName(n.label, n.pop) : nodeDisplay(n)
     return {
       data: {
         ...n,
-        display: nodeDisplay(n),
+        ...(options.bands ? { parent: `band:${rowOf(n)}` } : {}),
+        display,
         roleColor: ROLE_COLOR[n.role ?? ''] ?? '#64748b',
         tierColor: TIER_COLOR[n.tier ?? 4],
-        w: n.kind === 'area' ? 170 + 60 * scale : n.kind === 'pop' ? Math.max(60, n.label.length * 10 + 24) : Math.max(70, n.label.length * 7 + 26),
+        w: n.kind === 'area' ? 170 + 60 * scale : n.kind === 'pop' ? Math.max(60, n.label.length * 10 + 24) : Math.max(70, display.length * 7 + 26),
         h: 70 + 40 * scale,
       },
     }
@@ -358,13 +464,14 @@ function buildElements(view: View): ElementDefinition[] {
   const edges: ElementDefinition[] = view.edges.map((e) => ({
     data: {
       ...e,
-      display: `${e.links > 1 ? `${e.links}× · ` : ''}${fmtG(e.capacity_gbps)} · ${e.committed_pct.toFixed(0)}%`,
-      colorHex: CAPACITY_HEX[e.color],
-      width: edgeWidth(e.capacity_gbps),
+      display: edgeDisplay(e),
+      colorHex: edgeColor(e, options.colorMode),
+      width: edgeWidth(e.capacity_gbps) * SEGMENT_WEIGHT[e.segment],
+      lineStyle: e.segment === 'last_mile' ? 'dotted' : 'solid',
       allDown: e.down === e.links ? 1 : 0,
     },
   }))
-  return [...nodes, ...edges]
+  return [...bands, ...nodes, ...edges]
 }
 
 // Map layout: pixels per degree, the on-screen size of nodes relative to their normal size (they stay
@@ -436,7 +543,7 @@ function mapLayout(cy: Core, view: View) {
     home.set(n.id, n.lat != null && n.lon != null ? project(n.lat, n.lon, pxPerDegree) : project(-12.5, 96 + 7 * parked++, pxPerDegree))
   }
   if (view.level === 'device' || view.level === 'neighbors') ringExternal(view, home)
-  const elements = buildElements(view)
+  const elements = buildElements(view, { bands: false, colorMode: 'utilization', labelMode: 'full' })
   const widthOf = new Map(elements.filter((e) => !e.data.source).map((e) => [e.data.id as string, e.data.w as number]))
   // Nodes keep a fixed size on screen, so how much they overlap depends on the zoom the view fits at,
   // and that zoom depends on how far they were pushed apart: settle it in a few rounds.
@@ -465,26 +572,89 @@ function mapLayout(cy: Core, view: View) {
   } as cytoscape.LayoutOptions).run()
 }
 
-function runLayout(cy: Core, view: View, onMap: boolean) {
+/** Schematic views with tier bands: every level except the area overview and the map. */
+function usesBands(level: Level, onMap: boolean): boolean {
+  return !onMap && level !== 'area'
+}
+
+/**
+ * `keep`: positions of nodes from before a live refresh, so the drawing does not jump around; nodes that are new
+ * get their place from the layout. Band nodes are never positioned: they wrap their rows.
+ */
+function runLayout(cy: Core, view: View, onMap: boolean, keep?: Map<string, Pos>) {
   if (onMap) return mapLayout(cy, view)
   if (view.level === 'area') {
     const pos = areaLayout(view)
-    cy.layout({ name: 'preset', padding: 50, positions: (n: cytoscape.NodeSingular) => pos[n.id()] } as cytoscape.LayoutOptions).run()
+    cy.layout({ name: 'preset', padding: 50, positions: (n: cytoscape.NodeSingular) => keep?.get(n.id()) ?? pos[n.id()] } as cytoscape.LayoutOptions).run()
     return
   }
-  const auto = layeredLayout(view)
+  const auto = layeredLayout(view, 120)
   const saved: Record<string, Pos> = {}
   if (view.level === 'device') {
     for (const n of view.nodes) if (n.kind === 'device' && n.x != null && n.y != null) saved[n.id] = { x: n.x, y: n.y }
   }
-  cy.layout({
+  cy.nodes().not('[kind="band"]').layout({
     name: 'preset',
     padding: 30,
-    positions: (n: cytoscape.NodeSingular) => saved[n.id()] ?? auto[n.id()] ?? { x: 0, y: 0 },
+    positions: (n: cytoscape.NodeSingular) => keep?.get(n.id()) ?? saved[n.id()] ?? auto[n.id()] ?? { x: 0, y: 0 },
   } as cytoscape.LayoutOptions).run()
 }
 
+const LIVE_INTERVAL_MS = 30_000
+const FRESH_FOR_MS = 10 * 60_000  // how long new elements and links that went down stay highlighted
+
+function stored<T extends string>(key: string, fallback: T): T {
+  try {
+    return (localStorage.getItem(key) as T | null) ?? fallback
+  } catch {
+    return fallback
+  }
+}
+
+function remember(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    /* storage blocked: the choice just isn't remembered */
+  }
+}
+
+/** The area overview shows the trunks between regions; drilled-in views show every function. */
+function defaultSegments(level: Level): Set<Segment> {
+  return new Set(level === 'area' ? ['backbone', 'distribution'] : SEGMENTS)
+}
+
+/** Drawing state carried over a live refresh, so the map updates in place. */
+interface LiveKeep {
+  positions: Map<string, Pos>
+  zoom: number
+  pan: Pos
+}
+
+type Tab = 'map' | 'naming' | 'changes'
+const TABS: { key: Tab; label: string }[] = [
+  { key: 'map', label: 'Peta topologi' }, { key: 'naming', label: 'Standar penamaan & label' }, { key: 'changes', label: 'Log perubahan' },
+]
+
 export default function Topology() {
+  const [params, setParams] = useSearchParams()
+  const tab = (TABS.some((t) => t.key === params.get('tab')) ? params.get('tab') : 'map') as Tab
+  return (
+    <div className="topology-page">
+      <div className="config-menu topology-tabs" role="tablist" aria-label="Topologi">
+        {TABS.map((t) => (
+          <button key={t.key} type="button" role="tab" aria-selected={tab === t.key} className={tab === t.key ? 'active' : ''}
+            onClick={() => setParams(t.key === 'map' ? {} : { tab: t.key })}>{t.label}</button>
+        ))}
+      </div>
+      {tab === 'map' && <TopologyMap />}
+      {tab === 'naming' && <NamingStandard />}
+      {tab === 'changes' && <TopologyChanges />}
+    </div>
+  )
+}
+
+function TopologyMap() {
   const [params, setParams] = useSearchParams()
   const level = (params.get('level') as Level) || 'area'
   const area = params.get('area') ?? undefined
@@ -511,6 +681,22 @@ export default function Topology() {
   const [syncPhase, setSyncPhase] = useState<string | null>(null)
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [segmentsShown, setSegmentsShown] = useState<Set<Segment>>(() => defaultSegments(level))
+  const [colorMode, setColorMode] = useState<ColorMode>(() => stored('nadien.topology.color', 'utilization'))
+  const [labelMode, setLabelMode] = useState<LabelMode>(() => stored('nadien.topology.labels', 'short'))
+  const [legendOpen, setLegendOpen] = useState(() => stored('nadien.topology.legend', '1') === '1')
+  const [live, setLive] = useState(() => stored('nadien.topology.live', '1') === '1')
+  const [lastCheck, setLastCheck] = useState<Date | null>(null)
+  const [liveNote, setLiveNote] = useState<string | null>(null)
+  const viewRef = useRef<View | null>(null)
+  const keepRef = useRef<LiveKeep | null>(null)
+  const signatureRef = useRef<string | null>(null)
+  // Element id -> until when it stays highlighted (new since the page loaded / link that just went down).
+  const freshRef = useRef(new Map<string, number>())
+  const wentDownRef = useRef(new Map<string, number>())
+  const drawRef = useRef({ colorMode, labelMode })
+  drawRef.current = { colorMode, labelMode }
+  viewRef.current = view
 
   const go = useCallback(
     (next: { level: Level; area?: string; pop?: string; device_id?: number; depth?: number; focus?: string }) => {
@@ -525,28 +711,96 @@ export default function Topology() {
     [setParams],
   )
 
+  const viewPath = useMemo(() => {
+    const q = new URLSearchParams({ level })
+    if (area) q.set('area', area)
+    if (pop) q.set('pop', pop)
+    if (deviceId) q.set('device_id', deviceId)
+    if (level === 'neighbors') q.set('depth', depth)
+    return `/topology/view?${q}`
+  }, [level, area, pop, deviceId, depth])
+
   const load = useCallback(async () => {
     setLoading(true)
     setSelected(null)
     setDirty(false)
     try {
-      const q = new URLSearchParams({ level })
-      if (area) q.set('area', area)
-      if (pop) q.set('pop', pop)
-      if (deviceId) q.set('device_id', deviceId)
-      if (level === 'neighbors') q.set('depth', depth)
-      setView(await api.get<View>(`/topology/view?${q}`))
+      setView(await api.get<View>(viewPath))
     } catch (e) {
       setMessage({ text: (e as Error).message, error: true })
       setView(null)
     } finally {
       setLoading(false)
     }
-  }, [level, area, pop, deviceId, depth])
+  }, [viewPath])
 
   useEffect(() => {
     load()
   }, [load])
+
+  useEffect(() => {
+    setSegmentsShown(defaultSegments(level))
+  }, [level])
+
+  /** Live refresh: same view again, drawn in place, with what changed marked on the map. */
+  const refreshLive = useCallback(async () => {
+    const before = viewRef.current
+    const next = await api.get<View>(viewPath)
+    const cy = cyRef.current
+    if (cy && before) {
+      keepRef.current = {
+        positions: new Map(cy.nodes().not('[kind="band"]').nodes().map((n) => [n.id(), { ...n.position() }] as [string, Pos])),
+        zoom: cy.zoom(),
+        pan: { ...cy.pan() },
+      }
+    }
+    if (before) {
+      const until = Date.now() + FRESH_FOR_MS
+      const oldNodes = new Set(before.nodes.map((n) => n.id))
+      const oldDown = new Map(before.edges.map((e) => [e.id, e.down]))
+      const addedNodes = next.nodes.filter((n) => !oldNodes.has(n.id))
+      const addedEdges = next.edges.filter((e) => !oldDown.has(e.id))
+      const wentDown = next.edges.filter((e) => oldDown.has(e.id) && e.down > (oldDown.get(e.id) ?? 0))
+      const recovered = next.edges.filter((e) => oldDown.has(e.id) && e.down < (oldDown.get(e.id) ?? 0))
+      addedNodes.forEach((n) => freshRef.current.set(n.id, until))
+      addedEdges.forEach((e) => freshRef.current.set(e.id, until))
+      wentDown.forEach((e) => wentDownRef.current.set(e.id, until))
+      const parts = [
+        addedNodes.length && `${addedNodes.length} node baru`,
+        addedEdges.length && `${addedEdges.length} jalur baru`,
+        wentDown.length && `${wentDown.length} jalur dengan link down baru`,
+        recovered.length && `${recovered.length} jalur pulih`,
+      ].filter(Boolean)
+      const time = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+      setLiveNote(`Diperbarui otomatis ${time}: ${parts.length ? parts.join(' · ') : 'status/trafik berubah'}`)
+    }
+    setView(next)
+  }, [viewPath])
+
+  // Live: poll a cheap signature of the network; reload the view in place only when it changed.
+  useEffect(() => {
+    signatureRef.current = null
+    if (!live) return
+    let alive = true
+    const tick = async () => {
+      if (document.hidden) return
+      try {
+        const { signature } = await api.get<{ signature: string }>('/topology/signature')
+        if (!alive) return
+        setLastCheck(new Date())
+        if (signatureRef.current && signature !== signatureRef.current) await refreshLive()
+        signatureRef.current = signature
+      } catch {
+        /* a failed poll just waits for the next one */
+      }
+    }
+    tick()
+    const timer = setInterval(tick, LIVE_INTERVAL_MS)
+    return () => {
+      alive = false
+      clearInterval(timer)
+    }
+  }, [live, refreshLive])
 
   // Edge labels on by default only where there are few edges (area level).
   useEffect(() => {
@@ -584,9 +838,11 @@ export default function Topology() {
 
   useEffect(() => {
     if (!view || !container.current) return
+    const keep = keepRef.current
+    keepRef.current = null
     const cy = cytoscape({
       container: container.current,
-      elements: buildElements(view),
+      elements: buildElements(view, { bands: usesBands(view.level, onMap), ...drawRef.current }),
       style: STYLE,
       wheelSensitivity: 0.25,
       minZoom: 0.05,
@@ -634,15 +890,26 @@ export default function Topology() {
       }
     }
     cy.on('viewport', syncMap)
-    runLayout(cy, view, onMap)
-    cy.fit(undefined, 40)
-    if (onMap) {
-      // Marker sizes follow the zoom and the fit follows the sizes: settle both, then draw the map.
-      applyMarkerScale(cy, view.level)
-      cy.fit(undefined, 50)
-      lastZoom = 0
+    runLayout(cy, view, onMap, keep?.positions)
+    if (keep) {
+      // Live refresh: stay where the user was looking.
+      cy.viewport({ zoom: keep.zoom, pan: keep.pan })
+      if (onMap) applyMarkerScale(cy, view.level)
+    } else {
+      cy.fit(undefined, 40)
+      if (onMap) {
+        // Marker sizes follow the zoom and the fit follows the sizes: settle both, then draw the map.
+        applyMarkerScale(cy, view.level)
+        cy.fit(undefined, 50)
+        lastZoom = 0
+      }
     }
     syncMap()
+    const now = Date.now()
+    cy.elements().forEach((el) => {
+      if ((freshRef.current.get(el.id()) ?? 0) > now) el.addClass('fresh')
+      if ((wentDownRef.current.get(el.id()) ?? 0) > now) el.addClass('went-down')
+    })
     if (focus) {
       const hit = cy.nodes().filter((n) => (n.data('label') as string)?.toUpperCase() === focus.toUpperCase())
       if (hit.nonempty()) {
@@ -660,12 +927,39 @@ export default function Topology() {
     if (!cy) return
     cy.edges().forEach((edge) => {
       const color = edge.data('color') as CapacityColor
-      const visible = colorFilter === 'all' || (colorFilter === 'red' ? color === 'red' : color !== 'green')
+      const capacityOk = colorFilter === 'all' || (colorFilter === 'red' ? color === 'red' : color !== 'green')
+      const visible = capacityOk && segmentsShown.has(edge.data('segment') as Segment)
       edge.style('display', visible ? 'element' : 'none')
       if (edgeLabels) edge.addClass('labeled')
       else edge.removeClass('labeled')
     })
-  }, [colorFilter, edgeLabels, view])
+  }, [colorFilter, edgeLabels, segmentsShown, view, onMap])
+
+  // Colour and label modes restyle the drawing in place (no new layout, the view stays put).
+  useEffect(() => {
+    const cy = cyRef.current
+    if (!cy) return
+    cy.batch(() => {
+      cy.edges().forEach((edge) => {
+        edge.data('colorHex', edgeColor(edge.data() as EdgeData, colorMode))
+      })
+      cy.nodes('[kind="device"]').forEach((node) => {
+        const n = node.data() as NodeData
+        node.data('display', labelMode === 'short' ? shortName(n.label, n.pop) : n.label)
+      })
+    })
+  }, [colorMode, labelMode, view, onMap])
+
+  function toggleSegment(segment: Segment) {
+    const next = new Set(segmentsShown)
+    if (next.has(segment)) next.delete(segment)
+    else next.add(segment)
+    setSegmentsShown(next)
+  }
+
+  function onlySegment(segment: Segment) {
+    setSegmentsShown(segmentsShown.size === 1 && segmentsShown.has(segment) ? new Set(SEGMENTS) : new Set([segment]))
+  }
 
   // A POP opens its devices; a device opens its neighbours, centred and highlighted.
   function openHit(hit: SearchHit) {
@@ -727,7 +1021,7 @@ export default function Topology() {
   }
 
   const stats = useMemo(() => {
-    const edges = view?.edges ?? []
+    const edges = (view?.edges ?? []).filter((e) => segmentsShown.has(e.segment))
     return {
       groups: edges.length,
       links: edges.reduce((s, e) => s + e.links, 0),
@@ -735,9 +1029,9 @@ export default function Topology() {
       yellow: edges.filter((e) => e.color === 'yellow').length,
       green: edges.filter((e) => e.color === 'green').length,
     }
-  }, [view])
+  }, [view, segmentsShown])
 
-  const monitorGroups = useMemo(() => monitorItems(view), [view])
+  const monitorGroups = useMemo(() => monitorItems(view, segmentsShown), [view, segmentsShown])
   const monitorTotals = useMemo(() => monitorGroups.reduce((total, item) => ({
     links: total.links + item.links,
     down: total.down + item.down,
@@ -793,20 +1087,13 @@ export default function Topology() {
             ))}
           </div>
         )}
-        <select value={colorFilter} onChange={(e) => setColorFilter(e.target.value as 'all' | 'warn' | 'red')}>
-          <option value="all">Semua link</option>
-          <option value="warn">Kuning + Merah</option>
-          <option value="red">Merah saja</option>
-        </select>
-        <label className="check">
-          <input type="checkbox" checked={edgeLabels} onChange={(e) => setEdgeLabels(e.target.checked)} /> Label link
-        </label>
-        {mapAvailable && (
-          <label className="check" title="Tampilkan di atas peta sesuai koordinat (POP, atau site perangkat bila ada)">
-            <input type="checkbox" checked={mapOn} onChange={(e) => toggleMap(e.target.checked)} /> Peta
-          </label>
-        )}
         <div className="spacer" />
+        <button type="button" className={`live-toggle ${live ? 'on' : ''}`} aria-pressed={live}
+          title={live ? `Live: dicek tiap ${LIVE_INTERVAL_MS / 1000} detik${lastCheck ? `, terakhir ${lastCheck.toLocaleTimeString('id-ID')}` : ''}. Klik untuk menghentikan.`
+            : 'Live mati: peta tidak diperbarui otomatis. Klik untuk menyalakan.'}
+          onClick={() => { setLive(!live); remember('nadien.topology.live', live ? '0' : '1') }}>
+          <span className="live-dot" />{live ? 'Live' : 'Live mati'}
+        </button>
         {level === 'area' && view?.nodes.some((n) => n.label === 'Belum dipetakan') && (
           <button onClick={autoAssign} title="Isi area POP yang masih kosong dari kode kota (tidak menimpa yang sudah diisi)">
             Isi area otomatis
@@ -827,6 +1114,52 @@ export default function Topology() {
         </button>
       </div>
 
+      <div className="display-bar card" aria-label="Tampilan peta">
+        <div className="segment-chips" role="group" aria-label="Fungsi link">
+          <span className="muted small">Fungsi link</span>
+          {SEGMENTS.map((s) => (
+            <button key={s} type="button" aria-pressed={segmentsShown.has(s)} className={`segment-chip ${segmentsShown.has(s) ? 'on' : ''}`}
+              style={{ '--seg': SEGMENT_COLOR[s] } as React.CSSProperties} title={SEGMENT_HINT[s]} onClick={() => toggleSegment(s)}>
+              <span className={`segment-line ${s}`} />{SEGMENT_LABEL[s]}
+            </button>
+          ))}
+        </div>
+        <label className="inline-field"><span>Warna garis</span>
+          <select value={colorMode} onChange={(e) => { setColorMode(e.target.value as ColorMode); remember('nadien.topology.color', e.target.value) }}>
+            <option value="utilization">Utilisasi (committed)</option>
+            <option value="segment">Fungsi link</option>
+          </select>
+        </label>
+        <label className="inline-field"><span>Tampilkan</span>
+          <select value={colorFilter} onChange={(e) => setColorFilter(e.target.value as 'all' | 'warn' | 'red')}>
+            <option value="all">Semua link</option>
+            <option value="warn">Kuning + Merah</option>
+            <option value="red">Merah saja</option>
+          </select>
+        </label>
+        <label className="inline-field" title="Ringkas: nama perangkat tanpa kode POP yang sedang dibuka">
+          <span>Nama perangkat</span>
+          <select value={labelMode} onChange={(e) => { setLabelMode(e.target.value as LabelMode); remember('nadien.topology.labels', e.target.value) }}>
+            <option value="short">Ringkas</option>
+            <option value="full">Lengkap</option>
+          </select>
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={edgeLabels} onChange={(e) => setEdgeLabels(e.target.checked)} /> Label link
+        </label>
+        {mapAvailable && (
+          <label className="check" title="Tampilkan di atas peta sesuai koordinat (POP, atau site perangkat bila ada)">
+            <input type="checkbox" checked={mapOn} onChange={(e) => toggleMap(e.target.checked)} /> Peta
+          </label>
+        )}
+      </div>
+
+      {liveNote && (
+        <div className="notice live-note" onClick={() => setLiveNote(null)} title="Klik untuk menutup">
+          {liveNote}. Yang baru ditandai hijau, link yang baru down ditandai merah, selama 10 menit.
+        </div>
+      )}
+
       {message && (
         <div className={message.error ? 'error' : 'notice'} onClick={() => setMessage(null)}>
           {message.text}
@@ -844,6 +1177,27 @@ export default function Topology() {
             {committedPct.toFixed(1)}% committed
           </span>
         </div>
+        {view.segments && <div className="segment-cards">
+          {SEGMENTS.map((s) => {
+            const seg = view.segments[s]
+            return (
+              <button key={s} type="button" className={`segment-card ${segmentsShown.has(s) ? 'on' : ''}`}
+                style={{ '--seg': SEGMENT_COLOR[s] } as React.CSSProperties} onClick={() => onlySegment(s)}
+                title={`${SEGMENT_HINT[s]} — klik untuk menampilkan hanya segmen ini (klik lagi: semua)`}>
+                <span className="segment-card-head"><span className={`segment-line ${s}`} />{SEGMENT_LABEL[s]}</span>
+                <span className="segment-card-main">
+                  <b>{seg.links.toLocaleString('id-ID')}</b> link
+                  {seg.down > 0 && <span className="pill pill-bad">{seg.down.toLocaleString('id-ID')} down</span>}
+                </span>
+                <span className="segment-card-meta">
+                  <span className={`monitor-alert-pct ${seg.color}`}>{seg.committed_pct.toFixed(0)}% committed</span>
+                  {' · '}{fmtG(seg.capacity_gbps)}
+                  {seg.capacity_unknown > 0 && <> · <span className="muted">{seg.capacity_unknown} tanpa kapasitas</span></>}
+                </span>
+              </button>
+            )
+          })}
+        </div>}
         <div className="monitor-kpis">
           <div><span>Link</span><b>{monitorTotals.links.toLocaleString('id-ID')}</b></div>
           <div className={monitorTotals.down ? 'critical' : ''}><span>Link down</span><b>{monitorTotals.down.toLocaleString('id-ID')}</b></div>
@@ -885,6 +1239,8 @@ export default function Topology() {
           )}
           <div className="graph-canvas" ref={container} />
           {loading && <div className="graph-loading">Memuat…</div>}
+          <TopologyLegend open={legendOpen} colorMode={colorMode} level={level}
+            onToggle={() => { setLegendOpen(!legendOpen); remember('nadien.topology.legend', legendOpen ? '0' : '1') }} />
           <div className="graph-status small muted">
             {stats.groups} jalur · {stats.links} link
             {stats.red ? ` · ${stats.red} merah` : ''}
@@ -968,8 +1324,10 @@ export default function Topology() {
             <div className="detail">
               <h3>{nameOf(edge.source)} ↔ {nameOf(edge.target)}</h3>
               <dl>
+                <dt>Fungsi</dt><dd><span className={`segment-line ${edge.segment}`} /> {SEGMENT_LABEL[edge.segment]}</dd>
                 <dt>Link</dt><dd>{edge.links}{edge.down ? ` (${edge.down} down)` : ''}</dd>
-                <dt>Kapasitas</dt><dd>{fmtG(edge.capacity_gbps)}</dd>
+                <dt>Kapasitas</dt><dd>{fmtG(edge.capacity_gbps)}
+                  {edge.capacity_unknown > 0 && <span className="muted"> · {edge.capacity_unknown} link belum diketahui kapasitasnya</span>}</dd>
                 <dt>Trafik</dt><dd>{fmtG(edge.current_gbps)} ({edge.utilization_pct}%)</dd>
                 <dt>Committed</dt><dd>{edge.committed_pct}%</dd>
               </dl>

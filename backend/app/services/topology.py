@@ -11,12 +11,12 @@ at bundle level with capacity = sum of member speeds.
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from ..models import Device, Interface, Link, LldpNeighbor, UtilizationSample
+from ..models import Device, Interface, Link, LldpNeighbor, TopologyEvent, UtilizationSample
 from ..schemas import DiscoveryResult
 from .areas import csr_parts
 
@@ -250,6 +250,33 @@ class _Discovery:
         return sum(speeds) if speeds else None
 
 
+EVENT_RETENTION_DAYS = 90
+
+
+class _EventLog:
+    """Topology events of one discovery run. The very first run (empty link table) is an import, not news:
+    it gets one summary event instead of thousands of "link added"."""
+
+    def __init__(self, db: Session, now: datetime, first_run: bool):
+        self.db, self.now, self.first_run = db, now, first_run
+
+    def add(self, kind: str, link: Link, detail: str | None = None) -> None:
+        self.db.add(TopologyEvent(at=self.now, kind=kind, link_id=link.id, device_id=link.a_device_id,
+                                  title=link.name[:255], detail=detail))
+
+    def link_changed(self, link: Link, previous: str | None) -> None:
+        if previous is None and not self.first_run:
+            self.add("link_added", link, f"{link.capacity_gbps:g} Gbps" if link.capacity_gbps else None)
+        elif previous in ("up", "down") and previous != link.status:
+            self.add(f"link_{link.status}", link, "port operasional" if link.status == "up" else "port tidak up")
+
+    def finish(self, created: int) -> None:
+        if self.first_run and created:
+            self.db.add(TopologyEvent(at=self.now, kind="discovery", title=f"Topologi awal: {created} link ditemukan"))
+        self.db.execute(delete(TopologyEvent).where(
+            TopologyEvent.at < self.now - timedelta(days=EVENT_RETENTION_DAYS)))
+
+
 def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> DiscoveryResult:
     """Rebuild links. `valid_iface_ids` (ports confirmed by the NMS this run) enables cleanup of
     phantom ports left by earlier runs; without it nothing is treated as phantom."""
@@ -265,6 +292,7 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
     }
     seen_ids: set[int] = set()
     created = updated = 0
+    events = _EventLog(db, now, first_run=not existing)
 
     for key, adj in run.adjacencies.items():
         a_dev, b_dev = run.devices[adj.a.device_id], run.devices[adj.b.device_id]
@@ -287,12 +315,14 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
             if cap:
                 link.capacity_gbps = cap
         link.link_type = adj.link_type
+        previous = None if link.id is None else link.status
         link.status = "up" if up else "down"
         link.last_seen = now
         if link.discovery_source != "manual":
             link.discovery_source = adj.source
         db.flush()
         seen_ids.add(link.id)
+        events.link_changed(link, previous)
 
     # Discovered links that disappeared from LLDP/config are flagged, not deleted —
     # capacity history and customer references stay intact. Exceptions, which were superseded
@@ -321,6 +351,8 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
         elif link.status == "up":
             link.status = "down"
             marked_down += 1
+            events.add("link_down", link, "tidak terlihat lagi di LLDP/config")
+    events.finish(created)
     db.flush()
 
     removed = 0
