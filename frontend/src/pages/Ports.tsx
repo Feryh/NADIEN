@@ -43,6 +43,7 @@ const CATEGORY_TABS = [
   { key: '', label: 'Semua' },
   { key: 'router', label: 'Router' },
   { key: 'metro', label: 'Metro' },
+  { key: 'csr', label: 'CSR' },
   { key: 'olt', label: 'OLT' },
   { key: 'access', label: 'Access/Switch' },
   { key: 'other', label: 'Lainnya' },

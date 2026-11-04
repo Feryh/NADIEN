@@ -1,11 +1,40 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api, CapacityColor, DashboardSummary, PopUtilization } from '../api'
+import { AreaMapPanel, DataHealthPanel, ServicesPanel, TrendsPanel } from '../components/DashboardPanels'
 import { CAPACITY_HEX, ColorBadge, fmtG, fmtMonths, Kpi, UtilBar } from '../components/ui'
 
 const COLORS: CapacityColor[] = ['green', 'yellow', 'red']
 
+const TABS = [
+  { key: 'summary', label: 'Ringkasan' },
+  { key: 'trends', label: 'Tren & forecast' },
+  { key: 'services', label: 'Layanan & validasi' },
+  { key: 'health', label: 'Kesehatan data' },
+  { key: 'map', label: 'Peta hotspot' },
+] as const
+
 export default function Dashboard() {
+  const [params, setParams] = useSearchParams()
+  const tab = TABS.find((t) => t.key === params.get('tab'))?.key ?? 'summary'
+  return (
+    <div className="dashboard">
+      <div className="tabs">
+        {TABS.map((t) => (
+          <button key={t.key} className={tab === t.key ? 'active' : ''}
+                  onClick={() => setParams(t.key === 'summary' ? {} : { tab: t.key })}>{t.label}</button>
+        ))}
+      </div>
+      {tab === 'summary' && <Summary />}
+      {tab === 'trends' && <TrendsPanel />}
+      {tab === 'services' && <ServicesPanel />}
+      {tab === 'health' && <DataHealthPanel />}
+      {tab === 'map' && <AreaMapPanel />}
+    </div>
+  )
+}
+
+function Summary() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null)
   const [pops, setPops] = useState<PopUtilization[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -26,7 +55,7 @@ export default function Dashboard() {
   const totalLinks = c.links || 1
 
   return (
-    <div className="dashboard">
+    <>
       <div className="kpis">
         <Kpi label="Metro POP" value={c.pops} sub={`${c.devices} router · ${c.interfaces} interface`} />
         <Kpi label="Links" value={c.links} sub={`${summary.links_down} down`} />
@@ -137,6 +166,6 @@ export default function Dashboard() {
           </tbody>
         </table>
       </div>
-    </div>
+    </>
   )
 }

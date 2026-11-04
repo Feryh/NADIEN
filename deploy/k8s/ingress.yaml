@@ -1,0 +1,25 @@
+# RKE2 ships ingress-nginx. NADIEN has no login yet: keep the source-range whitelist (and/or basic auth)
+# until SSO is added. TLS secret: kubectl -n nadien create secret tls nadien-tls --cert=... --key=...
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nadien
+  annotations:
+    nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8,172.16.0.0/12"
+    nginx.ingress.kubernetes.io/proxy-body-size: 50m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    # nginx.ingress.kubernetes.io/auth-type: basic
+    # nginx.ingress.kubernetes.io/auth-secret: nadien-basic-auth
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [nadien.example.co.id]
+      secretName: nadien-tls
+  rules:
+    - host: nadien.example.co.id
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: nadien-frontend, port: { number: 80 } }

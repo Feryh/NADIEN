@@ -11,7 +11,14 @@ export interface Field {
   required?: boolean
   readonly?: boolean // shown in the table, never sent in the form
   hideInTable?: boolean
+  blankDefault?: boolean // optional select that starts empty on "Tambah" instead of the first option
 }
+
+// Standard areas (same list as backend services/areas.py AREAS); a POP may also carry a custom one.
+export const AREA_NAMES = [
+  'Sumatera', 'Jabodetabek', 'Jawa Barat & Banten', 'Jawa Tengah & DIY', 'Jawa Timur',
+  'Bali & Nusa Tenggara', 'Kalimantan', 'Sulawesi', 'Maluku & Papua', 'Internasional',
+]
 
 export interface Entity {
   key: string
@@ -39,7 +46,7 @@ export const ENTITIES: Entity[] = [
       { name: 'code', label: 'Code', required: true },
       { name: 'name', label: 'Name', required: true },
       { name: 'tier', label: 'Tier', type: 'select', options: ['core', 'aggregation', 'access'] },
-      { name: 'region', label: 'Area' },
+      { name: 'region', label: 'Area', type: 'select', options: AREA_NAMES, blankDefault: true },
       { name: 'city', label: 'City' },
       { name: 'address', label: 'Address', type: 'textarea', hideInTable: true },
       { name: 'latitude', label: 'Lat', type: 'number' },
@@ -52,7 +59,7 @@ export const ENTITIES: Entity[] = [
     fields: [
       { name: 'hostname', label: 'Hostname', required: true },
       { name: 'pop_id', label: 'POP', type: 'ref', ref: 'pops', required: true },
-      { name: 'role', label: 'Role', type: 'select', options: ['p', 'pe', 'agg', 'access', 'dci', 'olt', 'bng'] },
+      { name: 'role', label: 'Role', type: 'select', options: ['p', 'pe', 'agg', 'csr', 'access', 'dci', 'olt', 'bng'] },
       { name: 'vendor_id', label: 'Vendor', type: 'ref', ref: 'vendors' },
       { name: 'model_id', label: 'Model', type: 'ref', ref: 'device-models' },
       { name: 'software_id', label: 'Software', type: 'ref', ref: 'software' },
@@ -246,6 +253,7 @@ const deviceEntity = ENTITIES.find((e) => e.key === 'devices') as Entity
 const DEVICE_CATEGORIES: [string, string, string][] = [
   ['devices-router', 'Router (P/PE/BNG/DCI)', 'p,pe,bng,dci'],
   ['devices-metro', 'Metro / Aggregation', 'agg'],
+  ['devices-csr', 'CSR (Cell Site Router)', 'csr'],
   ['devices-olt', 'OLT', 'olt'],
   ['devices-access', 'Access / Switch', 'access'],
 ]

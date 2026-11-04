@@ -1,0 +1,59 @@
+# Collector schedules go through the worker's API, so each run is a normal background job: visible in
+# the UI, backed up first, and refused (HTTP 409) while another sync runs. The daily gitweb update is
+# scheduled inside the worker itself (NADIEN_GITWEB_DAILY_AT, default 02:30 Asia/Jakarta).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nadien-utilization
+spec:
+  schedule: "*/10 * * * *"
+  timeZone: Asia/Jakarta
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: trigger
+              image: curlimages/curl:8.10.1
+              args: ["-fsS", "-X", "POST", "http://nadien-worker:8000/api/collectors/observium/sync?parts=utilization"]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nadien-observium-full
+spec:
+  schedule: "0 1 * * *"
+  timeZone: Asia/Jakarta
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: trigger
+              image: curlimages/curl:8.10.1
+              args: ["-fsS", "-X", "POST", "http://nadien-worker:8000/api/collectors/observium/sync"]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nadien-rrd
+spec:
+  schedule: "30 4 * * *"
+  timeZone: Asia/Jakarta
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: trigger
+              image: curlimages/curl:8.10.1
+              args: ["-fsS", "-X", "POST", "http://nadien-worker:8000/api/collectors/observium/rrd?days=7"]

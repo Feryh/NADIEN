@@ -1,31 +1,58 @@
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
+import { AuthGate, Role, ROLE_LABELS, useAuth } from './auth'
+import Access from './pages/Access'
+import AiAssistant from './pages/AiAssistant'
 import Capacity from './pages/Capacity'
+import Changes from './pages/Changes'
+import CollectorSettings from './pages/CollectorSettings'
 import Collectors from './pages/Collectors'
+import ConfigGenerator from './pages/ConfigGenerator'
 import Dashboard from './pages/Dashboard'
+import DigitalTwin from './pages/DigitalTwin'
 import Inventory from './pages/Inventory'
+import MopGenerator from './pages/MopGenerator'
+import Paths from './pages/Paths'
+import Portal from './pages/Portal'
 import Ports from './pages/Ports'
+import ServiceValidation from './pages/ServiceValidation'
 import Topology from './pages/Topology'
 
-const NAV = [
-  { to: '/', label: 'Dashboard', phase: 8 },
-  { to: '/inventory', label: 'Inventory', phase: 1 },
-  { to: '/ports', label: 'Kapasitas Port', phase: 1 },
-  { to: '/topology', label: 'Topology', phase: 2 },
-  { to: '/capacity', label: 'Capacity Planning', phase: 3 },
-  { to: '/collectors', label: 'Collectors', phase: 1 },
-]
+type NavItem = { to: string; label: string; tag: string; role?: Role }
 
-// Shown in the sidebar so the roadmap stays visible; enabled as each sprint lands.
-const ROADMAP = [
-  { label: 'Customer Path', phase: 4 },
-  { label: 'Service Validation', phase: 5 },
-  { label: 'MoP Generator', phase: 6 },
-  { label: 'Config Generator', phase: 7 },
-  { label: 'AI Assistant', phase: 9 },
-  { label: 'Digital Twin', phase: 10 },
+const NAV: NavItem[] = [
+  { to: '/', label: 'Dashboard', tag: 'P8' },
+  { to: '/inventory', label: 'Inventory', tag: 'P1' },
+  { to: '/ports', label: 'Kapasitas Port', tag: 'P1' },
+  { to: '/topology', label: 'Topology', tag: 'P2' },
+  { to: '/capacity', label: 'Capacity Planning', tag: 'P3' },
+  { to: '/paths', label: 'Customer Path', tag: 'P4' },
+  { to: '/validation', label: 'Service Validation', tag: 'P5' },
+  { to: '/mop', label: 'MoP Generator', tag: 'P6' },
+  { to: '/configs', label: 'Config Generator', tag: 'P7' },
+  { to: '/changes', label: 'Change & Eksekusi', tag: 'P7' },
+  { to: '/ai', label: 'AI Assistant', tag: 'P9' },
+  { to: '/twin', label: 'Digital Twin', tag: 'P10' },
+  { to: '/collectors', label: 'Collectors', tag: 'P1' },
+  { to: '/settings', label: 'Pengaturan Collector', tag: 'P1', role: 'admin' },
+  { to: '/access', label: 'Pengaturan Akses', tag: 'Akses' },
+]
+const CUSTOMER_NAV: NavItem[] = [
+  { to: '/', label: 'Layanan Saya', tag: 'Portal' },
+  { to: '/access', label: 'Akun Saya', tag: 'Akses' },
 ]
 
 export default function App() {
+  return (
+    <AuthGate>
+      <Shell />
+    </AuthGate>
+  )
+}
+
+function Shell() {
+  const { user, authEnabled, can, logout } = useAuth()
+  const customer = user.role === 'customer'
+  const nav = customer ? CUSTOMER_NAV : NAV.filter((n) => !n.role || can(n.role))
   return (
     <div className="app">
       <aside className="sidebar">
@@ -37,35 +64,52 @@ export default function App() {
           </div>
         </div>
         <nav>
-          {NAV.map((n) => (
+          {nav.map((n) => (
             <NavLink key={n.to} to={n.to} end={n.to === '/'}>
               <span>{n.label}</span>
-              <span className="phase">P{n.phase}</span>
+              <span className="phase">{n.tag}</span>
             </NavLink>
           ))}
-          <div className="nav-section">Roadmap</div>
-          {ROADMAP.map((r) => (
-            <span key={r.label} className="nav-disabled" title="Belum diimplementasi">
-              <span>{r.label}</span>
-              <span className="phase">P{r.phase}</span>
-            </span>
-          ))}
         </nav>
-        <a className="api-link" href="/docs" target="_blank" rel="noreferrer">
-          API docs ↗
-        </a>
+        <div className="user-box">
+          <div className="user-avatar">{(user.full_name || user.username).slice(0, 1).toUpperCase()}</div>
+          <div className="user-meta">
+            <b>{user.full_name || user.username}</b>
+            <div className="muted">{user.username} · {ROLE_LABELS[user.role]}</div>
+          </div>
+          {authEnabled && <button onClick={logout} title="Keluar">Keluar</button>}
+        </div>
+        {!customer && <a className="api-link" href="/docs" target="_blank" rel="noreferrer">API docs ↗</a>}
       </aside>
       <main className="content">
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/inventory" element={<Inventory />} />
-          <Route path="/inventory/:entityKey" element={<Inventory />} />
-          <Route path="/topology" element={<Topology />} />
-          <Route path="/ports" element={<Ports />} />
-          <Route path="/capacity" element={<Capacity />} />
-          <Route path="/collectors" element={<Collectors />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        {customer ? (
+          <Routes>
+            <Route path="/" element={<Portal />} />
+            <Route path="/access" element={<Access />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        ) : (
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/inventory" element={<Inventory />} />
+            <Route path="/inventory/:entityKey" element={<Inventory />} />
+            <Route path="/topology" element={<Topology />} />
+            <Route path="/ports" element={<Ports />} />
+            <Route path="/paths" element={<Paths />} />
+            <Route path="/validation" element={<ServiceValidation />} />
+            <Route path="/mop" element={<MopGenerator />} />
+            <Route path="/configs" element={<ConfigGenerator />} />
+            <Route path="/changes" element={<Changes />} />
+            <Route path="/ai" element={<AiAssistant />} />
+            <Route path="/twin" element={<DigitalTwin />} />
+            <Route path="/capacity" element={<Capacity />} />
+            <Route path="/collectors" element={<Collectors />} />
+            <Route path="/settings" element={<CollectorSettings />} />
+            <Route path="/access" element={<Access />} />
+            <Route path="/users" element={<Navigate to="/access?tab=users" replace />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        )}
       </main>
     </div>
   )

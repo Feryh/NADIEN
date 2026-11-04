@@ -1,0 +1,13 @@
+/* Phase 10 — Digital Twin page. */
+.twin-list { max-height: 260px; overflow: auto; }
+.twin-wide { grid-column: span 2; }
+.twin-changes { margin: 0 0 10px; padding-left: 20px; }
+.twin-changes li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+.twin-changes li button { padding: 2px 8px; font-size: 12px; }
+.twin-picker { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; }
+.twin-picker .mop-meta { margin-bottom: 6px; align-items: end; }
+.twin-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.twin-options button { font-size: 12px; text-align: left; }
+.twin-result h3 { margin-top: 14px; }
+.twin-notes { margin: 12px 0 0; padding-left: 18px; }
+@media (max-width: 700px) { .twin-wide { grid-column: auto; } }

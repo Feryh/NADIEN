@@ -1,0 +1,28 @@
+#cloud-config
+# Harvester VM user data for NADIEN (Ubuntu 22.04/24.04 cloud image).
+# Harvester UI: Virtual Machines > Create > Advanced Options > User Data: paste this file.
+# Edit REPO_URL / REPO_REF below (or copy the code in by hand after boot), then follow docs/LAUNCH.md
+# section "Harvester" for secrets and the first start.
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - git
+  - nginx
+  - qemu-guest-agent  # lets Harvester show the VM's IP and shut it down cleanly
+write_files:
+  - path: /etc/sysctl.d/90-nadien.conf
+    content: |
+      vm.swappiness=10
+      net.core.somaxconn=4096
+runcmd:
+  - systemctl enable --now qemu-guest-agent
+  - sysctl --system
+  - curl -fsSL https://get.docker.com | sh
+  - systemctl enable --now docker
+  - mkdir -p /opt/nadien
+  - |
+    REPO_URL="${REPO_URL:-}"   # e.g. https://git.example.co.id/neteng/nadien.git
+    REPO_REF="${REPO_REF:-main}"
+    if [ -n "$REPO_URL" ]; then git clone --branch "$REPO_REF" "$REPO_URL" /opt/nadien; fi
+final_message: "NADIEN VM ready after $UPTIME s. Next: /opt/nadien/.env + backend/.env, then docker compose up -d (docs/LAUNCH.md)."

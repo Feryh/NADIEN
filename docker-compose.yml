@@ -19,6 +19,7 @@ services:
     environment:
       NADIEN_DATABASE_URL: postgresql+psycopg://nadien:nadien@db:5432/nadien
       NADIEN_BACKUP_DIR: /backups
+      NADIEN_SEED_DEMO: "true"  # development: demo data on an empty DB (production override sets false)
     env_file:
       - path: ./backend/.env
         required: false

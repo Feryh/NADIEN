@@ -77,7 +77,8 @@ def test_role_first_devices_get_pop_and_unassigned_moves(db):
     report = sync_observium(db, c, {"inventory"}, discover=False)
     pops = {d.hostname: db.get(m.Pop, d.pop_id).code for d in db.scalars(select(m.Device))}
     assert pops == {"JKT-ABW-OLT1-HW": "JKT", "OLT2-MA5603T-JKT-BSG": "JKT", "PE1-ATN910-CIBISNINE": "UNASSIGNED"}
-    assert report.counts["pops_inferred"] == 1 and report.counts["devices_unassigned"] == 1
+    # JKT is a registered city code, so it is read straight from the hostname, not inferred afterwards.
+    assert report.counts["pops_inferred"] == 0 and report.counts["devices_unassigned"] == 1
     assert {d.hostname: d.role for d in db.scalars(select(m.Device))}["OLT2-MA5603T-JKT-BSG"] == "olt"
 
 

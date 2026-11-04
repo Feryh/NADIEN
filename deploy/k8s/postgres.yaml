@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: nadien-db
+spec:
+  selector: { app: nadien-db }
+  ports: [{ port: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nadien-db
+spec:
+  serviceName: nadien-db
+  replicas: 1
+  selector:
+    matchLabels: { app: nadien-db }
+  template:
+    metadata:
+      labels: { app: nadien-db }
+    spec:
+      containers:
+        - name: postgres
+          image: postgis/postgis:16-3.4
+          args: ["-c", "max_connections=200", "-c", "shared_buffers=2GB", "-c", "effective_cache_size=6GB",
+                 "-c", "work_mem=32MB", "-c", "maintenance_work_mem=512MB", "-c", "random_page_cost=1.1"]
+          env:
+            - { name: POSTGRES_DB, value: nadien }
+            - { name: POSTGRES_USER, value: nadien }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: nadien-db, key: POSTGRES_PASSWORD } }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ containerPort: 5432 }]
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "nadien", "-d", "nadien"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "1", memory: 4Gi }
+            limits: { memory: 8Gi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: harvester
+        resources:
+          requests: { storage: 100Gi }
