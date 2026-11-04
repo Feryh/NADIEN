@@ -228,6 +228,9 @@ def _status(value: Any) -> str:
     return "up" if str(value).lower() in ("up", "1") else "down"
 
 
+IF_SPEED_MAX = 4_294_967_295  # ifSpeed (Gauge32) ceiling; faster ports report it unless ifHighSpeed is set
+
+
 def _rate_gbps(row: dict[str, Any], key: str) -> float | None:
     rate = _num(row.get(key))  # bytes per second
     return round(rate * 8 / 1e9, 4) if rate is not None else None
@@ -241,6 +244,8 @@ def parse_port(row: dict[str, Any]) -> PortRecord | None:
         return None
     high_speed = _num(row.get("ifHighSpeed"))  # Mbps
     speed = _num(row.get("ifSpeed"))  # bps
+    if speed is not None and speed >= IF_SPEED_MAX:
+        speed = None  # 32-bit ifSpeed is pinned at 4.29G for anything faster: unknown, not 4.29G
     speed_gbps = high_speed / 1000 if high_speed else (speed / 1e9 if speed else None)
     if_type = str(row.get("ifType") or "")
     mtu = _int(row.get("ifMtu"))

@@ -75,6 +75,18 @@ def test_should_flag_links_at_70_and_90_percent_when_listing_hotspots(db, client
     assert (hotspot_level(69.9), hotspot_level(70), hotspot_level(90)) == ("normal", "warning", "critical")
 
 
+def test_should_name_ports_and_flag_bundle_when_listing_hot_links(db, client):
+    link = _network(db, [80.0], capacity=100)
+    a = m.Interface(device_id=link.a_device_id, name="Bundle-Ether10", if_type="bundle")
+    b = m.Interface(device_id=link.b_device_id, name="Eth-Trunk10", if_type="bundle")
+    db.add_all([a, b])
+    db.flush()
+    link.a_interface_id, link.b_interface_id = a.id, b.id
+    db.commit()
+    row = client.get("/api/capacity/hotspots").json()["links"]["rows"][0]
+    assert (row["a_port"], row["b_port"], row["bundle"], row["level"]) == ("Bundle-Ether10", "Eth-Trunk10", True, "warning")
+
+
 def test_should_mark_capacity_suspect_when_utilization_is_far_above_100_percent(db, client):
     _network(db, [7.6], capacity=0.01)  # 10M per SNMP on a link carrying 7.6G
     row = client.get("/api/capacity/hotspots").json()["links"]["rows"][0]
