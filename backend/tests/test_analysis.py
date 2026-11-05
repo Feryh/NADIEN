@@ -187,7 +187,7 @@ def test_neighbor_level(net):
 def test_pop_tier(net):
     api, _ = net
     view = api.get("/api/topology/view", params={"level": "pop", "area": "Jabodetabek"}).json()
-    tiers = {n["label"]: n.get("tier") for n in view["nodes"] if n["kind"] == "pop"}
+    tiers = {n["code"]: n.get("tier") for n in view["nodes"] if n["kind"] == "pop"}
     assert tiers == {"JKT": 0, "BKS": 1}  # JKT has a P router, BKS only a PE
 
 

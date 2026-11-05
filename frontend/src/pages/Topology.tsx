@@ -10,10 +10,18 @@ import { CAPACITY_HEX, fmtG } from '../components/ui'
 
 // Drill-down topology:
 //   area      — areas west→east as a schematic, trunks between them
-//   pop       — POPs of one area in rows by their highest role, other areas as the top (uplink) row
+//   province  — provinces of one area (other areas they link to drawn dashed)
+//   regency   — kabupaten/kota of one province (other provinces / areas drawn dashed)
+//   pop       — POPs of one area, province or regency in rows by their highest role, other groups on top
 //   device    — devices of one POP in role rows (Core → PE/BNG → Metro → OLT/Access), other POPs on top
 //   neighbors — one device and everything within 1–2 hops, same role rows
-type Level = 'area' | 'pop' | 'device' | 'neighbors'
+type Level = 'area' | 'province' | 'regency' | 'pop' | 'device' | 'neighbors'
+type GroupKind = 'area' | 'province' | 'regency'
+type NodeKind = GroupKind | 'pop' | 'device' | 'external_area' | 'external_province' | 'external_regency' | 'external_pop'
+
+const GROUP_KINDS: string[] = ['area', 'province', 'regency']
+const isGroup = (kind: string) => GROUP_KINDS.includes(kind)
+const isGroupLevel = (level: Level) => level === 'area' || level === 'province' || level === 'regency'
 
 export type Segment = 'backbone' | 'distribution' | 'last_mile'
 export const SEGMENTS: Segment[] = ['backbone', 'distribution', 'last_mile']
@@ -48,10 +56,14 @@ interface EdgeData extends Totals {
 
 interface NodeData {
   id: string
-  kind: 'area' | 'pop' | 'device' | 'external_area' | 'external_pop'
-  label: string
+  kind: NodeKind
+  label: string  // POPs: the city they serve; `code` is the POP code
+  code?: string
   name?: string
   area?: string
+  province?: string
+  regency?: string
+  city?: string | null
   pop?: string
   pops?: number
   devices?: number
@@ -81,6 +93,9 @@ interface NodeData {
 interface View {
   level: Level
   area?: string
+  province?: string
+  regency?: string
+  city?: string | null
   pop?: string
   pop_name?: string
   pop_id?: number
@@ -89,6 +104,8 @@ interface View {
   device_id?: number
   depth?: number
   truncated?: boolean
+  layout_key?: string  // which saved arrangement this view uses
+  layout?: Record<string, Pos>  // node id -> position arranged by hand and saved
   nodes: NodeData[]
   edges: EdgeData[]
   segments: Record<Segment, Totals>
@@ -154,7 +171,7 @@ const STYLE = [
     },
   },
   {
-    selector: 'node[kind="area"]',
+    selector: 'node[kind="area"], node[kind="province"], node[kind="regency"]',
     style: {
       shape: 'round-rectangle',
       width: 'data(w)',
@@ -187,7 +204,7 @@ const STYLE = [
     },
   },
   {
-    selector: 'node[kind="external_area"], node[kind="external_pop"]',
+    selector: 'node[kind="external_area"], node[kind="external_province"], node[kind="external_regency"], node[kind="external_pop"]',
     style: {
       shape: 'round-rectangle',
       width: 'data(w)',
@@ -256,15 +273,60 @@ function edgeWidth(capacity: number): number {
 function nodeDisplay(n: NodeData): string {
   switch (n.kind) {
     case 'area':
+    case 'province':
+    case 'regency':
       return `${n.label}\n${n.pops} POP · ${n.devices} perangkat`
-    case 'pop':
-      return n.label
     case 'external_area':
+    case 'external_province':
+    case 'external_regency':
     case 'external_pop':
       return `→ ${n.label}`
     default:
       return n.label
   }
+}
+
+interface Target {
+  level: Level
+  area?: string
+  province?: string
+  regency?: string
+  pop?: string
+  device_id?: number
+  depth?: number
+  focus?: string
+}
+
+/** What opening a node shows: one level down in Area > Provinsi > Kab/Kota > POP > Perangkat. */
+function drillTarget(n: NodeData): Target | null {
+  switch (n.kind) {
+    case 'area':
+    case 'external_area':
+      return { level: 'province', area: n.area ?? n.label }
+    case 'province':
+    case 'external_province':
+      return { level: 'regency', area: n.area, province: n.province }
+    case 'regency':
+    case 'external_regency':
+      return { level: 'pop', area: n.area, province: n.province, regency: n.regency }
+    case 'pop':
+    case 'external_pop':
+      return { level: 'device', pop: n.code ?? n.label }
+    case 'device':
+      return n.device_id != null ? { level: 'neighbors', device_id: n.device_id, depth: 1 } : null
+  }
+}
+
+const DRILL_LABEL: Record<NodeKind, string> = {
+  area: 'Buka provinsi di area ini', external_area: 'Buka provinsi di area ini',
+  province: 'Buka kabupaten/kota', external_province: 'Buka kabupaten/kota',
+  regency: 'Buka POP', external_regency: 'Buka POP',
+  pop: 'Buka perangkat', external_pop: 'Buka perangkat', device: 'Lihat tetangga perangkat',
+}
+
+const GROUP_LABEL: Record<string, string> = {
+  area: 'Area', province: 'Provinsi', regency: 'Kab/Kota', external_area: 'Area', external_province: 'Provinsi',
+  external_regency: 'Kab/Kota', external_pop: 'POP',
 }
 
 /**
@@ -286,6 +348,27 @@ function areaLayout(view: View): Record<string, Pos> {
   place(north, 0)
   place(south, 230)
   place(other, 460)
+  return pos
+}
+
+/** Provinces or regencies west→east in a few rows, the groups outside this one on a row above. */
+function groupLayout(view: View): Record<string, Pos> {
+  const pos: Record<string, Pos> = {}
+  const byLon = (a: NodeData, b: NodeData) => (a.lon ?? 999) - (b.lon ?? 999)
+  const inside = view.nodes.filter((n) => isGroup(n.kind)).sort(byLon)
+  const outside = view.nodes.filter((n) => !isGroup(n.kind)).sort(byLon)
+  const dx = 250
+  const dy = 190
+  const perLine = Math.max(4, Math.ceil(Math.sqrt(inside.length * 2)))
+  const width = Math.min(perLine, Math.max(inside.length, outside.length, 1)) * dx
+  const place = (row: NodeData[], top: number) =>
+    row.forEach((n, i) => {
+      const line = Math.floor(i / perLine)
+      const inLine = Math.min(perLine, row.length - line * perLine)
+      pos[n.id] = { x: (width - inLine * dx) / 2 + (i % perLine) * dx, y: top + line * dy }
+    })
+  place(outside, 0)
+  place(inside, outside.length ? Math.ceil(outside.length / perLine) * 120 + 80 : 0)
   return pos
 }
 
@@ -361,7 +444,7 @@ const BAND_LABEL: Record<number, string> = {
   [-1]: 'Terhubung ke luar', 0: 'Core · P / DCI', 1: 'Edge · PE / BNG', 2: 'Distribusi · Metro / Agg', 3: 'Akses · OLT / CSR / Switch', 4: 'Lainnya',
 }
 const POP_BAND_LABEL: Record<number, string> = {
-  [-1]: 'Area lain', 0: 'POP core', 1: 'POP edge', 2: 'POP distribusi', 3: 'POP akses', 4: 'POP lainnya',
+  [-1]: 'Wilayah lain', 0: 'POP core', 1: 'POP edge', 2: 'POP distribusi', 3: 'POP akses', 4: 'POP lainnya',
 }
 
 /** Row a node sits in on the schematic: other POPs/areas (external) on top, then by role tier. */
@@ -411,7 +494,7 @@ function buildElements(view: View, options: BuildOptions): ElementDefinition[] {
         display,
         roleColor: ROLE_COLOR[n.role ?? ''] ?? '#64748b',
         tierColor: TIER_COLOR[n.tier ?? 4],
-        w: n.kind === 'area' ? 170 + 60 * scale : n.kind === 'pop' ? Math.max(60, n.label.length * 10 + 24) : Math.max(70, display.length * 7 + 26),
+        w: isGroup(n.kind) ? 170 + 60 * scale : n.kind === 'pop' ? Math.max(60, n.label.length * 10 + 24) : Math.max(70, display.length * 7 + 26),
         h: 70 + 40 * scale,
       },
     }
@@ -433,6 +516,8 @@ function buildElements(view: View, options: BuildOptions): ElementDefinition[] {
 // that size at any zoom, like map markers), and the on-screen gap kept between overlapping nodes.
 const MAP_SCALE: Partial<Record<Level, { pxPerDegree: number; markerScale: number; minScreenGap: number }>> = {
   area: { pxPerDegree: 60, markerScale: 0.9, minScreenGap: 10 },
+  province: { pxPerDegree: 100, markerScale: 0.9, minScreenGap: 10 },
+  regency: { pxPerDegree: 160, markerScale: 0.9, minScreenGap: 8 },
   pop: { pxPerDegree: 200, markerScale: 0.9, minScreenGap: 6 },
   device: { pxPerDegree: 3000, markerScale: 1, minScreenGap: 4 },  // one city: ~30 px per km
   neighbors: { pxPerDegree: 1500, markerScale: 1, minScreenGap: 4 },
@@ -443,7 +528,7 @@ const MAX_SHIFT_HEIGHTS = 3
 
 /** Normal (zoom 1) size of a node, before the map's marker scale. */
 function nodeSize(n: { kind: string; w?: number }): { width: number; height: number } {
-  if (n.kind === 'area') return { width: 150, height: 56 }
+  if (isGroup(n.kind)) return { width: 150, height: 56 }
   if (n.kind === 'pop') return { width: n.w ?? 80, height: 34 }
   if (n.kind.startsWith('external')) return { width: n.w ?? 120, height: 30 }
   return { width: 26, height: 26 }
@@ -459,9 +544,9 @@ function applyMarkerScale(cy: Core, level: Level) {
       n.style({
         width: width * scale,
         height: height * scale,
-        'font-size': (kind === 'area' ? 13 : 12) * scale,
+        'font-size': (isGroup(kind) ? 13 : 12) * scale,
         'border-width': 2 * scale,
-        'text-max-width': `${(kind === 'area' ? 150 : 160) * scale}px`,
+        'text-max-width': `${(isGroup(kind) ? 150 : 160) * scale}px`,
       })
     })
     cy.edges().forEach((e) => {
@@ -527,9 +612,9 @@ function mapLayout(cy: Core, view: View) {
   } as cytoscape.LayoutOptions).run()
 }
 
-/** Schematic views with tier bands: every level except the area overview and the map. */
+/** Schematic views with tier bands: POPs and devices, not the area / province / regency overviews or the map. */
 function usesBands(level: Level, onMap: boolean): boolean {
-  return !onMap && level !== 'area'
+  return !onMap && !isGroupLevel(level)
 }
 
 /**
@@ -538,21 +623,36 @@ function usesBands(level: Level, onMap: boolean): boolean {
  */
 function runLayout(cy: Core, view: View, onMap: boolean, keep?: Map<string, Pos>) {
   if (onMap) return mapLayout(cy, view)
-  if (view.level === 'area') {
-    const pos = areaLayout(view)
-    cy.layout({ name: 'preset', padding: 50, positions: (n: cytoscape.NodeSingular) => keep?.get(n.id()) ?? pos[n.id()] } as cytoscape.LayoutOptions).run()
-    return
-  }
-  const auto = layeredLayout(view, 120)
-  const saved: Record<string, Pos> = {}
+  // Saved arrangement of this view first (every node kind), then the device positions saved the old way.
+  const arranged: Record<string, Pos> = { ...(view.layout ?? {}) }
   if (view.level === 'device') {
-    for (const n of view.nodes) if (n.kind === 'device' && n.x != null && n.y != null) saved[n.id] = { x: n.x, y: n.y }
+    for (const n of view.nodes) {
+      if (n.kind === 'device' && n.x != null && n.y != null && !arranged[n.id]) arranged[n.id] = { x: n.x, y: n.y }
+    }
   }
+  const auto = view.level === 'area' ? areaLayout(view) : isGroupLevel(view.level) ? groupLayout(view) : layeredLayout(view, 120)
   cy.nodes().not('[kind="band"]').layout({
     name: 'preset',
-    padding: 30,
-    positions: (n: cytoscape.NodeSingular) => keep?.get(n.id()) ?? saved[n.id()] ?? auto[n.id()] ?? { x: 0, y: 0 },
+    padding: isGroupLevel(view.level) ? 50 : 30,
+    positions: (n: cytoscape.NodeSingular) => keep?.get(n.id()) ?? arranged[n.id()] ?? auto[n.id()] ?? { x: 0, y: 0 },
   } as cytoscape.LayoutOptions).run()
+}
+
+/** Every node the user can arrange: all but the role bands, which wrap their rows. */
+function nodePositions(cy: Core): { id: string; pos: Pos }[] {
+  return cy.nodes().not('[kind="band"]').nodes().map((n) => ({ id: n.id(), pos: { ...n.position() } }))
+}
+
+/** Nodes more than a pixel away from their saved place (a click without a drag must not count). */
+function countMoved(cy: Core, saved: Map<string, Pos>): number {
+  return nodePositions(cy).filter((d) => {
+    const s = saved.get(d.id)
+    return !s || Math.abs(s.x - d.pos.x) > 1 || Math.abs(s.y - d.pos.y) > 1
+  }).length
+}
+
+function confirmDiscard(dirty: boolean): boolean {
+  return !dirty || window.confirm('Ada perubahan tata letak topologi yang belum disimpan. Tinggalkan tanpa menyimpan?')
 }
 
 const LIVE_INTERVAL_MS = 30_000
@@ -594,25 +694,33 @@ const TABS: { key: Tab; label: string }[] = [
 export default function Topology() {
   const [params, setParams] = useSearchParams()
   const tab = (TABS.some((t) => t.key === params.get('tab')) ? params.get('tab') : 'map') as Tab
+  // Leaving the map tab unmounts it: unsaved position changes would be lost silently.
+  const mapDirtyRef = useRef(false)
   return (
     <div className="topology-page">
       <div className="config-menu topology-tabs" role="tablist" aria-label="Topologi">
         {TABS.map((t) => (
           <button key={t.key} type="button" role="tab" aria-selected={tab === t.key} className={tab === t.key ? 'active' : ''}
-            onClick={() => setParams(t.key === 'map' ? {} : { tab: t.key })}>{t.label}</button>
+            onClick={() => {
+              if (t.key === tab || !confirmDiscard(tab === 'map' && mapDirtyRef.current)) return
+              mapDirtyRef.current = false
+              setParams(t.key === 'map' ? {} : { tab: t.key })
+            }}>{t.label}</button>
         ))}
       </div>
-      {tab === 'map' && <TopologyMap />}
+      {tab === 'map' && <TopologyMap dirtyRef={mapDirtyRef} />}
       {tab === 'naming' && <NamingStandard />}
       {tab === 'changes' && <TopologyChanges />}
     </div>
   )
 }
 
-function TopologyMap() {
+function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }) {
   const [params, setParams] = useSearchParams()
   const level = (params.get('level') as Level) || 'area'
   const area = params.get('area') ?? undefined
+  const province = params.get('province') ?? undefined
+  const regency = params.get('regency') ?? undefined
   const pop = params.get('pop') ?? undefined
   const deviceId = params.get('device_id') ?? undefined
   const depth = params.get('depth') ?? '1'
@@ -626,7 +734,7 @@ function TopologyMap() {
   const [view, setView] = useState<View | null>(null)
   // Devices go on the map only where at least one has its own site coordinates.
   const devicesLocated = view?.nodes.filter((n) => n.kind === 'device' && n.located).length ?? 0
-  const mapAvailable = level === 'area' || level === 'pop' || devicesLocated > 0
+  const mapAvailable = isGroupLevel(level) || level === 'pop' || devicesLocated > 0
   const onMap = mapOn && mapAvailable && view?.level === level
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<{ node?: NodeData; edge?: EdgeData } | null>(null)
@@ -634,7 +742,12 @@ function TopologyMap() {
   const [colorFilter, setColorFilter] = useState<'all' | 'warn' | 'red'>('all')
   const [edgeLabels, setEdgeLabels] = useState(false)
   const [syncPhase, setSyncPhase] = useState<string | null>(null)
-  const [dirty, setDirty] = useState(false)
+  // Device id -> position as last saved (or as first laid out); moved = devices that differ from it.
+  const savedPosRef = useRef(new Map<string, Pos>())
+  const [moved, setMoved] = useState(0)
+  const [saving, setSaving] = useState(false)
+  const dirty = moved > 0
+  dirtyRef.current = dirty
   const [busy, setBusy] = useState(false)
   const [segmentsShown, setSegmentsShown] = useState<Set<Segment>>(() => defaultSegments(level))
   const [colorMode, setColorMode] = useState<ColorMode>(() => stored('nadien.topology.color', 'utilization'))
@@ -654,14 +767,17 @@ function TopologyMap() {
   viewRef.current = view
 
   const go = useCallback(
-    (next: { level: Level; area?: string; pop?: string; device_id?: number; depth?: number; focus?: string }) => {
+    (next: Target, replace = false) => {
+      if (!replace && !confirmDiscard(dirtyRef.current)) return
       const p: Record<string, string> = { level: next.level }
       if (next.area) p.area = next.area
+      if (next.province) p.province = next.province
+      if (next.regency) p.regency = next.regency
       if (next.pop) p.pop = next.pop
       if (next.device_id != null) p.device_id = String(next.device_id)
       if (next.depth) p.depth = String(next.depth)
       if (next.focus) p.focus = next.focus
-      setParams(p)
+      setParams(p, { replace })
     },
     [setParams],
   )
@@ -669,25 +785,42 @@ function TopologyMap() {
   const viewPath = useMemo(() => {
     const q = new URLSearchParams({ level })
     if (area) q.set('area', area)
+    if (province) q.set('province', province)
+    if (regency) q.set('regency', regency)
     if (pop) q.set('pop', pop)
     if (deviceId) q.set('device_id', deviceId)
     if (level === 'neighbors') q.set('depth', depth)
     return `/topology/view?${q}`
-  }, [level, area, pop, deviceId, depth])
+  }, [level, area, province, regency, pop, deviceId, depth])
 
+  // A province/regency holding a single group comes back one level deeper: the URL follows it, and the
+  // view already fetched is used for that new URL instead of being fetched again.
+  const deeperRef = useRef<View | null>(null)
   const load = useCallback(async () => {
     setLoading(true)
     setSelected(null)
-    setDirty(false)
+    setMoved(0)
     try {
-      setView(await api.get<View>(viewPath))
+      const ready = deeperRef.current
+      deeperRef.current = null
+      if (ready && ready.level === level && ready.area === area && ready.province === province && ready.regency === regency) {
+        setView(ready)
+        return
+      }
+      const next = await api.get<View>(viewPath)
+      if (next.level !== level) {
+        deeperRef.current = next
+        go({ level: next.level, area: next.area, province: next.province, regency: next.regency }, true)
+        return
+      }
+      setView(next)
     } catch (e) {
       setMessage({ text: (e as Error).message, error: true })
       setView(null)
     } finally {
       setLoading(false)
     }
-  }, [viewPath])
+  }, [viewPath, level, area, province, regency, go])
 
   useEffect(() => {
     load()
@@ -759,7 +892,7 @@ function TopologyMap() {
 
   // Edge labels on by default only where there are few edges (area level).
   useEffect(() => {
-    setEdgeLabels(level === 'area')
+    setEdgeLabels(isGroupLevel(level))
   }, [level])
 
   // A running collector sync rebuilds topology itself and holds the DB writer; block manual discovery.
@@ -783,6 +916,8 @@ function TopologyMap() {
   }, [onMap, basemap.length])
 
   function toggleMap(on: boolean) {
+    if (!confirmDiscard(dirty)) return
+    setMoved(0)
     setMapOn(on)
     try {
       localStorage.setItem(MAP_KEY, on ? '1' : '0')
@@ -826,12 +961,14 @@ function TopologyMap() {
       }
     })
     cy.on('dbltap', 'node', (e) => {
-      const n = e.target.data() as NodeData
-      if (n.kind === 'area' || n.kind === 'external_area') go({ level: 'pop', area: n.label })
-      else if (n.kind === 'pop' || n.kind === 'external_pop') go({ level: 'device', pop: n.label })
-      else if (n.kind === 'device' && n.device_id != null) go({ level: 'neighbors', device_id: n.device_id, depth: 1 })
+      const target = drillTarget(e.target.data() as NodeData)
+      if (target) go(target)
     })
-    cy.on('dragfree', 'node[kind="device"]', () => setDirty(true))
+    // Every schematic view can be arranged and saved. On the map positions follow coordinates, so nodes stay put
+    // there instead of moving and silently snapping back on the next visit.
+    const positionsEditable = !onMap
+    if (positionsEditable) cy.on('dragfree', 'node', () => setMoved(countMoved(cy, savedPosRef.current)))
+    else cy.autoungrabify(true)
     cyRef.current = cy
     // The basemap is drawn in degrees; keep it under the graph through every pan and zoom.
     let lastZoom = 0
@@ -846,6 +983,15 @@ function TopologyMap() {
     }
     cy.on('viewport', syncMap)
     runLayout(cy, view, onMap, keep?.positions)
+    if (positionsEditable) {
+      // After a live refresh the unsaved moves survive in `keep`: compare against the saved positions, not the kept ones.
+      const before = keep ? savedPosRef.current : new Map<string, Pos>()
+      savedPosRef.current = new Map(nodePositions(cy).map((d) => [d.id, before.get(d.id) ?? d.pos] as [string, Pos]))
+      setMoved(countMoved(cy, savedPosRef.current))
+    } else {
+      savedPosRef.current = new Map()
+      setMoved(0)
+    }
     if (keep) {
       // Live refresh: stay where the user was looking.
       cy.viewport({ zoom: keep.zoom, pan: keep.pan })
@@ -925,20 +1071,68 @@ function TopologyMap() {
 
   async function savePositions() {
     const cy = cyRef.current
-    if (!cy) return
-    const positions = cy.nodes('[kind="device"]').map((n) => ({
-      device_id: Number(n.data('device_id')),
-      x: Math.round(n.position('x')),
-      y: Math.round(n.position('y')),
-    }))
+    const viewKey = viewRef.current?.layout_key
+    if (!cy || !viewKey || saving) return
+    // Every node is stored, not only the moved ones, so the whole drawing reopens exactly as it is now.
+    const current = nodePositions(cy)
+    const positions = Object.fromEntries(current.map((d) => [d.id, { x: Math.round(d.pos.x), y: Math.round(d.pos.y) }]))
+    setSaving(true)
     try {
-      await api.put('/topology/positions', positions)
-      setDirty(false)
-      setMessage({ text: `Posisi ${positions.length} perangkat di ${pop} disimpan.` })
+      await api.put('/topology/layouts', { view_key: viewKey, positions })
+      savedPosRef.current = new Map(current.map((d) => [d.id, d.pos] as [string, Pos]))
+      setMessage({ text: `Tata letak disimpan: ${moved} node dipindah. Tampilan ini akan dibuka dengan susunan yang sama.` })
+      setMoved(0)
+    } catch (e) {
+      setMessage({ text: (e as Error).message, error: true })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function resetLayout() {
+    const viewKey = view?.layout_key
+    if (!viewKey || !window.confirm('Kembalikan tampilan ini ke tata letak otomatis? Susunan yang tersimpan dihapus.')) return
+    try {
+      await api.del(`/topology/layouts?view_key=${encodeURIComponent(viewKey)}`)
+      setMessage({ text: 'Tata letak dikembalikan ke susunan otomatis.' })
+      await load()
     } catch (e) {
       setMessage({ text: (e as Error).message, error: true })
     }
   }
+
+  function discardMoves() {
+    const cy = cyRef.current
+    if (!cy) return
+    cy.nodes().not('[kind="band"]').forEach((n) => {
+      const pos = savedPosRef.current.get(n.id())
+      if (pos) n.animate({ position: pos }, { duration: 250 })
+    })
+    setMoved(0)
+  }
+
+  const saveRef = useRef(savePositions)
+  saveRef.current = savePositions
+  // While there are unsaved moves: Ctrl+S saves, and closing or reloading the tab asks first.
+  useEffect(() => {
+    if (!dirty) return
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault()
+        saveRef.current()
+      }
+    }
+    const onUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('beforeunload', onUnload)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('beforeunload', onUnload)
+    }
+  }, [dirty])
 
   async function autoAssign() {
     try {
@@ -986,6 +1180,8 @@ function TopologyMap() {
   const edge = selected?.edge
   const nameOf = (id: string) => view?.nodes.find((n) => n.id === id)?.label ?? id
   const viewArea = view?.area ?? area
+  const viewProvince = view?.province ?? province
+  const viewRegency = view?.regency ?? regency
   const viewPop = view?.pop ?? pop
 
   return (
@@ -998,16 +1194,36 @@ function TopologyMap() {
           {level !== 'area' && viewArea && (
             <>
               <span>›</span>
-              <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'pop', area: viewArea }) }} className={level === 'pop' ? 'current' : ''}>
+              <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'province', area: viewArea }) }}
+                className={level === 'province' || (level === 'pop' && !viewProvince) ? 'current' : ''}>
                 {viewArea}
+              </a>
+            </>
+          )}
+          {level !== 'area' && level !== 'province' && viewArea && viewProvince && (
+            <>
+              <span>›</span>
+              <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'regency', area: viewArea, province: viewProvince }) }}
+                className={level === 'regency' || (level === 'pop' && !viewRegency) ? 'current' : ''}>
+                {viewProvince}
+              </a>
+            </>
+          )}
+          {(level === 'pop' || level === 'device' || level === 'neighbors') && viewArea && viewProvince && viewRegency && (
+            <>
+              <span>›</span>
+              <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'pop', area: viewArea, province: viewProvince, regency: viewRegency }) }}
+                className={level === 'pop' ? 'current' : ''}>
+                {viewRegency}
               </a>
             </>
           )}
           {(level === 'device' || level === 'neighbors') && viewPop && (
             <>
               <span>›</span>
-              <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'device', pop: viewPop }) }} className={level === 'device' ? 'current' : ''}>
-                {viewPop}{level === 'device' && view?.pop_name && view.pop_name !== viewPop ? ` · ${view.pop_name}` : ''}
+              <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'device', pop: viewPop }) }} className={level === 'device' ? 'current' : ''}
+                title={`POP ${viewPop}${view?.pop_name && view.pop_name !== viewPop ? ` · ${view.pop_name}` : ''}`}>
+                {(level === 'device' && view?.city) || viewPop}
               </a>
             </>
           )}
@@ -1035,14 +1251,14 @@ function TopologyMap() {
           onClick={() => { setLive(!live); remember('nadien.topology.live', live ? '0' : '1') }}>
           <span className="live-dot" />{live ? 'Live' : 'Live mati'}
         </button>
+        {!onMap && view && (Object.keys(view.layout ?? {}).length > 0 || view.nodes.some((n) => n.kind === 'device' && n.x != null)) && (
+          <button onClick={resetLayout} title="Hapus susunan yang tersimpan untuk tampilan ini dan kembali ke tata letak otomatis">
+            Atur ulang tata letak
+          </button>
+        )}
         {level === 'area' && view?.nodes.some((n) => n.label === 'Belum dipetakan') && (
           <button onClick={autoAssign} title="Isi area POP yang masih kosong dari kode kota (tidak menimpa yang sudah diisi)">
             Isi area otomatis
-          </button>
-        )}
-        {level === 'device' && !onMap && (
-          <button onClick={savePositions} disabled={!dirty}>
-            Simpan posisi
           </button>
         )}
         <button
@@ -1121,6 +1337,16 @@ function TopologyMap() {
             </svg>
           )}
           <div className="graph-canvas" ref={container} />
+          {dirty && (
+            <div className="unsaved-bar" role="status">
+              <span className="unsaved-dot" />
+              <span><b>{moved} node</b> dipindah · tata letak belum disimpan</span>
+              <button type="button" onClick={discardMoves} disabled={saving}>Batalkan</button>
+              <button type="button" className="primary" onClick={savePositions} disabled={saving} title="Simpan tata letak tampilan ini (Ctrl+S)">
+                {saving ? 'Menyimpan…' : 'Simpan perubahan'}
+              </button>
+            </div>
+          )}
           {loading && <div className="graph-loading">Memuat…</div>}
           <TopologyLegend open={legendOpen} colorMode={colorMode} level={level}
             onToggle={() => { setLegendOpen(!legendOpen); remember('nadien.topology.legend', legendOpen ? '0' : '1') }} />
@@ -1139,8 +1365,8 @@ function TopologyMap() {
               )}
           {level === 'device' && view?.pop_id != null && !node && !edge && (
             <div className="detail">
-              <h3>POP {view.pop}</h3>
-              <div className="small muted">Area: {view.area}</div>
+              <h3>{view.city ?? `POP ${view.pop}`}</h3>
+              <div className="small muted">POP {view.pop} · {[view.regency, view.province, view.area].filter(Boolean).join(' · ')}</div>
               <PopAreaEditor popId={view.pop_id} region={view.region} onSaved={(a) => areaSaved(view.pop ?? '', a)} />
             </div>
           )}
@@ -1148,15 +1374,18 @@ function TopologyMap() {
             <div className="detail">
               <h3>{node.label}</h3>
               <dl>
-                {node.kind === 'area' && (
+                {isGroup(node.kind) && (
                   <>
+                    {node.kind !== 'area' && (<><dt>Wilayah</dt><dd>{[node.province !== node.label && node.province, node.area].filter(Boolean).join(' · ')}</dd></>)}
                     <dt>POP</dt><dd>{node.pops}</dd>
                     <dt>Perangkat</dt><dd>{node.devices}</dd>
                   </>
                 )}
                 {node.kind === 'pop' && (
                   <>
+                    <dt>Kode POP</dt><dd>{node.code}</dd>
                     <dt>Nama</dt><dd>{node.name}</dd>
+                    <dt>Kab/Kota</dt><dd>{node.regency} · {node.province}</dd>
                     <dt>Area</dt><dd>{node.area}{node.region ? '' : ' (otomatis)'}</dd>
                     <dt>Perangkat</dt><dd>{node.devices} di {node.sites} site</dd>
                     <dt>Kategori</dt>
@@ -1171,15 +1400,17 @@ function TopologyMap() {
                     <dt>Status</dt><dd>{node.status}</dd>
                   </>
                 )}
-                {(node.kind === 'external_area' || node.kind === 'external_pop') && (
+                {node.kind.startsWith('external') && (
                   <>
-                    <dt>Area</dt><dd>{node.area ?? node.label}</dd>
+                    <dt>{GROUP_LABEL[node.kind]}</dt><dd>{node.kind === 'external_pop' ? `${node.label} (${node.code})` : node.label}</dd>
+                    {node.kind !== 'external_area' && <><dt>Area</dt><dd>{node.area}</dd></>}
+                    {node.links != null && (<><dt>Link ke sini</dt><dd>{node.links}</dd></>)}
                     {node.devices != null && (<><dt>Perangkat terhubung</dt><dd>{node.devices}</dd></>)}
                   </>
                 )}
               </dl>
               {node.kind === 'pop' && node.pop_id != null && (
-                <PopAreaEditor popId={node.pop_id} region={node.region} onSaved={(a) => areaSaved(node.label, a)} />
+                <PopAreaEditor popId={node.pop_id} region={node.region} onSaved={(a) => areaSaved(node.code ?? node.label, a)} />
               )}
               {node.internal && node.internal.links > 0 && (
                 <p className="small muted">
@@ -1188,17 +1419,11 @@ function TopologyMap() {
                 </p>
               )}
               <div className="detail-actions">
-                {(node.kind === 'area' || node.kind === 'external_area') && (
-                  <button onClick={() => go({ level: 'pop', area: node.label })}>Buka POP di area ini →</button>
+                {drillTarget(node) && (
+                  <button onClick={() => go(drillTarget(node)!)}>{DRILL_LABEL[node.kind]} →</button>
                 )}
-                {(node.kind === 'pop' || node.kind === 'external_pop') && (
-                  <button onClick={() => go({ level: 'device', pop: node.label })}>Buka perangkat di {node.label} →</button>
-                )}
-                {node.kind === 'device' && node.device_id != null && (
-                  <>
-                    <button onClick={() => go({ level: 'neighbors', device_id: node.device_id, depth: 1 })}>Lihat tetangga perangkat →</button>
-                    <RouterLink to={`/ports?q=${encodeURIComponent(node.label)}`}>Lihat port perangkat →</RouterLink>
-                  </>
+                {node.kind === 'device' && (
+                  <RouterLink to={`/ports?q=${encodeURIComponent(node.label)}`}>Lihat port perangkat →</RouterLink>
                 )}
               </div>
             </div>

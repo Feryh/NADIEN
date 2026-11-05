@@ -501,3 +501,25 @@ a.button.primary { background: var(--accent-strong); border-color: var(--accent-
 .olt-pon-metric { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
 .olt-pon .pill { min-width: 38px; text-align: center; }
 @media (max-width: 600px) { .olt-uplink { grid-template-columns: 1fr auto; } .olt-uplink-desc { grid-column: 1 / -1; grid-row: 2; } }
+
+/* Unsaved position changes on the topology graph */
+.unsaved-bar {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 5;
+  display: flex; align-items: center; gap: 10px; padding: 6px 8px 6px 12px; border-radius: 8px;
+  background: #111827f2; border: 1px solid #f59e0b88; box-shadow: 0 8px 24px #0008; white-space: nowrap;
+}
+.unsaved-dot { width: 8px; height: 8px; border-radius: 50%; background: #f59e0b; }
+@media (max-width: 700px) {
+  .unsaved-bar { left: 12px; right: 12px; transform: none; white-space: normal; flex-wrap: wrap; }
+}
+
+/* Config Generator: L2VPN from two hostnames */
+.l2-source { margin: 4px 0 10px; }
+.l2vpn-hostname { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px; }
+.l2vpn-hostname .mop-meta label.span-2 { grid-column: span 2; }
+.l2vpn-hostname select, .l2vpn-hostname input { width: 100%; }
+.pw-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; padding: 8px 12px; margin-bottom: 10px;
+  border: 1px solid var(--accent); border-radius: 8px; background: #0ea5e914; }
+.pw-summary b { font-size: 18px; color: var(--accent); }
+.text-bad { color: #f87171; }
+@media (max-width: 700px) { .l2vpn-hostname .mop-meta label.span-2 { grid-column: 1 / -1; } }

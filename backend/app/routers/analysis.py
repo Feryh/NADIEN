@@ -48,6 +48,7 @@ from ..services.areas import (
     speed_bucket,
 )
 from ..services.capacity import capacity_color, occupancy_pct
+from ..services.regions import Place, place_for_pop
 from ..services.segments import SEGMENTS, link_segment
 from ..services.geo import KmlError, Placemark, match_devices, match_pops, read_placemarks
 
@@ -71,6 +72,12 @@ class _Ctx:
     devices: dict[int, Any]  # rows: id, hostname, pop_id, role, vendor_id, status
     vendors: dict[int, str]
     locations: dict[int, tuple[float, float]] = field(default_factory=dict)  # device's own site (lat, lon)
+    place_of_pop: dict[int, Place] = field(default_factory=dict)
+
+    def path_of_pop(self, pop_id: int) -> tuple[str, str, str]:
+        """(area, province, regency): where the POP sits in the drill-down."""
+        place = self.place_of_pop.get(pop_id) or place_for_pop("UNASSIGNED", None, None)
+        return self.area_of_pop.get(pop_id, UNMAPPED_AREA), place.province, place.regency
 
     def pop_spot(self, pop_id: int) -> tuple[float, float] | None:
         """POP coordinates, else the centre of the city its code names (estimate)."""
@@ -111,6 +118,8 @@ def _context(db: Session) -> _Ctx:
         vendors={v.id: v.name for v in db.scalars(select(m.Vendor))},
         locations={r.device_id: (r.latitude, r.longitude) for r in
                    db.execute(select(m.DeviceLocation.device_id, m.DeviceLocation.latitude, m.DeviceLocation.longitude))},
+        place_of_pop={pid: place_for_pop(p.code, p.city, p.name, area_of_pop[pid], hostnames_by_pop[pid])
+                      for pid, p in pops.items()},
     )
 
 
@@ -138,7 +147,7 @@ def _place_devices(ctx: _Ctx, nodes: list[dict]) -> None:
                 radius = DEVICE_RING_DEGREES * math.sqrt(i + 1)
                 node["lat"], node["lon"] = spot[0] + radius * math.sin(angle), spot[1] + radius * math.cos(angle)
         elif node["kind"] == "external_pop":
-            pop = next((p for p in ctx.pops.values() if p.code == node["label"]), None)
+            pop = next((p for p in ctx.pops.values() if p.code == node["code"]), None)
             spot = ctx.pop_spot(pop.id) if pop else None
             if spot:
                 node["lat"], node["lon"] = spot
@@ -584,30 +593,61 @@ MAX_NEIGHBOR_NODES = 400
 
 @router.get("/topology/view")
 def topology_view(
-    level: str = Query("area", pattern="^(area|pop|device|neighbors)$"),
+    level: str = Query("area", pattern="^(area|province|regency|pop|device|neighbors)$"),
     area: str | None = None,
+    province: str | None = None,
+    regency: str | None = None,
     pop: str | None = None,
     device_id: int | None = None,
     depth: int = Query(1, ge=1, le=2),
     db: Session = Depends(get_db),
 ):
-    """area: areas + inter-area trunks · pop (needs `area`): POPs of one area + neighbouring areas ·
+    """area: areas + inter-area trunks · province (needs `area`): provinces of one area ·
+    regency (needs `area`, `province`): kabupaten/kota of one province · pop (needs `area`, optionally
+    `province` and `regency` to narrow it): POPs + the neighbouring groups they link to ·
     device (needs `pop`): devices of one POP + links out to other POPs ·
-    neighbors (needs `device_id`): one device and everything within `depth` hops."""
-    key = ("topology", level, area, (pop or "").upper(), device_id, depth)
-    return cache.cached(key, lambda: _topology_view(db, level, area, pop, device_id, depth))
+    neighbors (needs `device_id`): one device and everything within `depth` hops.
+    A province or regency level with a single group inside answers with the next level down
+    (the response's `level` says which), so no click opens a view of one box."""
+    key = ("topology", level, area, province, regency, (pop or "").upper(), device_id, depth)
+    return cache.cached(key, lambda: _with_layout(db, _topology_view(db, level, area, province, regency, pop,
+                                                                     device_id, depth)))
 
 
-def _topology_view(db: Session, level: str, area: str | None, pop: str | None, device_id: int | None,
-                   depth: int) -> dict:
+def layout_key(view: dict) -> str:
+    """Which saved arrangement a view uses: one per area overview, province, regency, POP list, POP and
+    neighbourhood (device:JKT, regency:Jawa Tengah & DIY|Jawa Tengah, neighbors:42:1)."""
+    level = view["level"]
+    if level == "area":
+        return "area"
+    if level == "device":
+        return f"device:{view['pop']}"
+    if level == "neighbors":
+        return f"neighbors:{view['device_id']}:{view['depth']}"
+    return f"{level}:" + "|".join(view.get(k) or "" for k in ("area", "province", "regency"))
+
+
+def _with_layout(db: Session, view: dict) -> dict:
+    view["layout_key"] = layout_key(view)
+    row = db.get(m.TopologyLayout, view["layout_key"])
+    view["layout"] = row.positions if row else {}
+    return view
+
+
+def _topology_view(db: Session, level: str, area: str | None, province: str | None, regency: str | None,
+                   pop: str | None, device_id: int | None, depth: int) -> dict:
     ctx = _context(db)
     links = _links(db)
     if level == "area":
         return _area_level(ctx, links)
-    if level == "pop":
+    if level in ("province", "regency", "pop"):
         if not area:
-            raise HTTPException(422, "area is required for level=pop")
-        return _pop_level(ctx, links, area)
+            raise HTTPException(422, f"area is required for level={level}")
+        if level == "regency" and not province:
+            raise HTTPException(422, "province is required for level=regency")
+        scope = (area,) if level == "province" else (area, province) if level == "regency" else \
+            tuple(v for v in (area, province, regency) if v)
+        return _scoped_level(ctx, links, scope, level == "pop")
     if level == "neighbors":
         if device_id is None:
             raise HTTPException(422, "device_id is required for level=neighbors")
@@ -659,7 +699,7 @@ def _neighbor_level(ctx: _Ctx, links, device_id: int, depth: int) -> dict:
              for i in sorted(included, key=lambda i: (ROLE_TIER.get(ctx.devices[i].role, 4), ctx.devices[i].hostname))]
     _place_devices(ctx, nodes)
     return {"level": "neighbors", "device": center.hostname, "device_id": device_id, "depth": depth,
-            "pop": ctx.pop_code(device_id), "area": ctx.area_of_device(device_id), "truncated": truncated,
+            "pop": ctx.pop_code(device_id), **_path_fields(ctx.path_of_pop(center.pop_id)), "truncated": truncated,
             "nodes": nodes, "edges": _edges(edges), "segments": _segments(totals)}
 
 
@@ -744,11 +784,66 @@ def _area_level(ctx: _Ctx, links) -> dict:
     return {"level": "area", "nodes": nodes, "edges": _edges(trunks), "segments": _segments(totals)}
 
 
-def _pop_level(ctx: _Ctx, links, area: str) -> dict:
-    in_area = {pid for pid, a in ctx.area_of_pop.items() if a == area}
-    if not in_area:
-        raise HTTPException(404, f"No POPs in area '{area}'")
-    inner: dict[int, _Agg] = defaultdict(_Agg)
+# Drill-down groups by depth in the (area, province, regency) path of a POP.
+_GROUP_KINDS = ("area", "province", "regency")
+_GROUP_LEVELS = ("province", "regency", "pop")  # what opening a group of each depth shows
+
+
+def _group_node_id(path: tuple[str, ...]) -> str:
+    """area:Jawa Timur · province:Jawa Timur|Jawa Timur · regency:Jawa Timur|Jawa Timur|Kota Malang."""
+    return f"{_GROUP_KINDS[len(path) - 1]}:{'|'.join(path)}"
+
+
+def _path_fields(path: tuple[str, ...]) -> dict[str, str]:
+    return dict(zip(("area", "province", "regency"), path))
+
+
+def _group_centers(ctx: _Ctx) -> dict[tuple[str, ...], tuple[float, float]]:
+    """(lat, lon) per area / province / regency: median of its POPs' spots (coordinates or city centre),
+    areas without any falling back to their default spot."""
+    points: dict[tuple[str, ...], list[tuple[float, float]]] = defaultdict(list)
+    for pid in ctx.pops:
+        spot = ctx.pop_spot(pid)
+        if spot is None:
+            continue
+        path = ctx.path_of_pop(pid)
+        for depth in (1, 2, 3):
+            points[path[:depth]].append(spot)
+    centers = {key: (_median([p[0] for p in pts]), _median([p[1] for p in pts])) for key, pts in points.items()}
+    for area, spot in _area_centers(ctx).items():
+        centers.setdefault((area,), spot)
+    return centers
+
+
+def _outside_path(path: tuple[str, ...], scope: tuple[str, ...]) -> tuple[str, ...]:
+    """The group a POP outside `scope` is drawn as: the widest one where it leaves the scope
+    (another area, else another province of this area, else another regency of this province)."""
+    for depth, (mine, theirs) in enumerate(zip(scope, path), start=1):
+        if mine != theirs:
+            return path[:depth]
+    return path[:len(scope)]
+
+
+def _scoped_level(ctx: _Ctx, links, scope: tuple[str, ...], pops: bool) -> dict:
+    """POPs inside `scope` (a path prefix), drawn as POPs (`pops`) or as the groups one level below the
+    scope, with links out of the scope ending on the group they lead to. A group level holding a single
+    group opens that group instead."""
+    inside = {pid for pid in ctx.pops if ctx.path_of_pop(pid)[:len(scope)] == scope}
+    if not inside:
+        raise HTTPException(404, f"No POPs in {' / '.join(scope)}")
+    if not pops:
+        groups = {ctx.path_of_pop(pid)[:len(scope) + 1] for pid in inside}
+        if len(groups) == 1:
+            only = groups.pop()
+            return _scoped_level(ctx, links, only, pops=len(only) == 3)
+
+    def node_of(pid: int) -> str:
+        path = ctx.path_of_pop(pid)
+        if pid not in inside:
+            return _group_node_id(_outside_path(path, scope))
+        return f"pop:{ctx.pops[pid].code}" if pops else _group_node_id(path[:len(scope) + 1])
+
+    inner: dict[str, _Agg] = defaultdict(_Agg)
     edges: dict[tuple[str, str, str], _Agg] = defaultdict(_Agg)
     totals: dict[str, _Agg] = defaultdict(_Agg)
     external: Counter = Counter()
@@ -756,53 +851,90 @@ def _pop_level(ctx: _Ctx, links, area: str) -> dict:
         if link.a_device_id not in ctx.devices or link.b_device_id not in ctx.devices:
             continue
         pa, pb = ctx.devices[link.a_device_id].pop_id, ctx.devices[link.b_device_id].pop_id
-        a_in, b_in = pa in in_area, pb in in_area
-        if not (a_in or b_in):
+        if pa not in inside and pb not in inside:
             continue
         segment = _segment_of(ctx, link)
         totals[segment].add(link)
-        if a_in and b_in:
-            if pa == pb:
-                inner[pa].add(link)
-            else:
-                edges[(*_pair(f"pop:{ctx.pops[pa].code}", f"pop:{ctx.pops[pb].code}"), segment)].add(link)
-        else:
-            local, remote = (pa, pb) if a_in else (pb, pa)
-            remote_area = ctx.area_of_pop.get(remote, UNMAPPED_AREA)
-            edges[(*_pair(f"pop:{ctx.pops[local].code}", f"area:{remote_area}"), segment)].add(link)
-            external[remote_area] += 1
+        na, nb = node_of(pa), node_of(pb)
+        if na == nb:
+            inner[na].add(link)
+            continue
+        edges[(*_pair(na, nb), segment)].add(link)
+        for pid, nid in ((pa, na), (pb, nb)):
+            if pid not in inside:
+                external[nid] += 1
 
+    centers = _group_centers(ctx)
+    nodes = _pop_nodes(ctx, inside, inner) if pops else _group_nodes(ctx, inside, scope, inner, centers)
+    outside_paths = {_group_node_id(_outside_path(ctx.path_of_pop(pid), scope)): _outside_path(ctx.path_of_pop(pid), scope)
+                     for pid in ctx.pops if pid not in inside}
+    for nid, count in external.items():
+        path = outside_paths[nid]
+        lat, lon = centers.get(path, (None, None))
+        nodes.append({"id": nid, "kind": f"external_{_GROUP_KINDS[len(path) - 1]}", "label": path[-1],
+                      "links": count, "lat": lat, "lon": lon, **_path_fields(path)})
+    if pops:
+        _place_pops(nodes, edges, centers.get(scope))
+    level = "pop" if pops else _GROUP_LEVELS[len(scope) - 1]
+    return {"level": level, **_path_fields(scope), "nodes": nodes, "edges": _edges(edges), "segments": _segments(totals)}
+
+
+def _group_nodes(ctx: _Ctx, inside: set[int], scope: tuple[str, ...], inner: dict[str, _Agg],
+                 centers: dict[tuple[str, ...], tuple[float, float]]) -> list[dict]:
+    pops_of: dict[tuple[str, ...], list[int]] = defaultdict(list)
+    for pid in inside:
+        pops_of[ctx.path_of_pop(pid)[:len(scope) + 1]].append(pid)
+    devices_per_pop = Counter(d.pop_id for d in ctx.devices.values())
+    nodes = []
+    # Unmapped groups last, the rest by name.
+    for path in sorted(pops_of, key=lambda p: ("belum dipetakan" in p[-1].lower(), p[-1])):
+        lat, lon = centers.get(path, (None, None))
+        members = pops_of[path]
+        nid = _group_node_id(path)
+        nodes.append({
+            "id": nid, "kind": _GROUP_KINDS[len(path) - 1], "label": path[-1], **_path_fields(path),
+            "pops": len(members), "devices": sum(devices_per_pop[p] for p in members),
+            "internal": inner[nid].as_dict(), "lat": lat, "lon": lon,
+            "pops_located": sum(ctx.pops[p].latitude is not None for p in members),
+        })
+    return nodes
+
+
+def _pop_labels(ctx: _Ctx, pop_ids: set[int]) -> dict[int, str]:
+    """City name per POP; POPs sharing a city in one view get their code added (Jakarta · JKT2)."""
+    city = {pid: ctx.place_of_pop[pid].city or ctx.pops[pid].code for pid in pop_ids}
+    shared = Counter(city.values())
+    return {pid: f"{name} · {ctx.pops[pid].code}" if shared[name] > 1 and name != ctx.pops[pid].code else name
+            for pid, name in city.items()}
+
+
+def _pop_nodes(ctx: _Ctx, inside: set[int], inner: dict[str, _Agg]) -> list[dict]:
     devices_per_pop: dict[int, list[Any]] = defaultdict(list)
     for d in ctx.devices.values():
-        if d.pop_id in in_area:
+        if d.pop_id in inside:
             devices_per_pop[d.pop_id].append(d)
+    labels = _pop_labels(ctx, inside)
     nodes = []
-    for pid in sorted(in_area, key=lambda p: ctx.pops[p].code):
+    for pid in sorted(inside, key=lambda p: labels[p]):
         p = ctx.pops[pid]
         devs = devices_per_pop[pid]
         nodes.append({
-            "id": f"pop:{p.code}", "kind": "pop", "label": p.code, "name": p.name, "area": area, "pop_id": pid,
-            "region": p.region,
+            "id": f"pop:{p.code}", "kind": "pop", "label": labels[pid], "code": p.code, "name": p.name,
+            **_path_fields(ctx.path_of_pop(pid)), "pop_id": pid, "region": p.region, "city": p.city,
             "devices": len(devs), "sites": len({site_for(d.hostname, p.code) for d in devs}),
             "categories": dict(Counter(category_for(d.role) for d in devs)),
             # Highest role in the POP: core POPs (P/DCI) sit in the middle of the ring layout.
             "tier": min((ROLE_TIER.get(d.role, 4) for d in devs), default=4),
-            "internal": inner[pid].as_dict(), "lat": p.latitude, "lon": p.longitude,
+            "internal": inner[f"pop:{p.code}"].as_dict(), "lat": p.latitude, "lon": p.longitude,
         })
-    centers = _area_centers(ctx)
-    for remote_area, count in external.items():
-        lat, lon = centers.get(remote_area, (None, None))
-        nodes.append({"id": f"area:{remote_area}", "kind": "external_area", "label": remote_area, "links": count,
-                      "lat": lat, "lon": lon})
-    _place_pops(nodes, edges, centers.get(area))
-    return {"level": "pop", "area": area, "nodes": nodes, "edges": _edges(edges), "segments": _segments(totals)}
+    return nodes
 
 
 def _place_pops(nodes: list[dict], edges: dict, center: tuple[float, float] | None) -> None:
     """Fill lat/lon of POPs without coordinates with a display estimate, flagged `estimated`: the
     centre of the city its code names, else near its linked POPs, else around the area centre."""
     for node in nodes:
-        if node["kind"] == "pop" and node.get("lat") is None and (spot := city_center_for_code(node["label"])):
+        if node["kind"] == "pop" and node.get("lat") is None and (spot := city_center_for_code(node["code"])):
             node["lat"], node["lon"], node["estimated"] = spot[0], spot[1], True
     known = {n["id"]: (n["lat"], n["lon"]) for n in nodes if n.get("lat") is not None and n.get("lon") is not None}
     neighbours: dict[str, set[str]] = defaultdict(set)
@@ -841,17 +973,20 @@ def _device_level(ctx: _Ctx, links, pop_code: str) -> dict:
 
     nodes = [_device_node(ctx, d)
              for d in sorted(local.values(), key=lambda d: (ROLE_TIER.get(d.role, 4), d.hostname))]
+    by_code = {p.code: p for p in ctx.pops.values()}
+    remote_ids = {by_code[code].id for code in external if code in by_code}
+    labels = _pop_labels(ctx, remote_ids)
     for code, remote_devices in sorted(external.items()):
-        rp = next((p for p in ctx.pops.values() if p.code == code), None)
+        rp = by_code.get(code)
         nodes.append({
-            "id": f"pop:{code}", "kind": "external_pop", "label": code,
-            "area": ctx.area_of_pop.get(rp.id, UNMAPPED_AREA) if rp else UNMAPPED_AREA,
+            "id": f"pop:{code}", "kind": "external_pop", "label": labels.get(rp.id, code) if rp else code, "code": code,
+            **(_path_fields(ctx.path_of_pop(rp.id)) if rp else {"area": UNMAPPED_AREA}),
             "devices": len(remote_devices),
         })
     _place_devices(ctx, nodes)
     return {"level": "device", "pop": pop.code, "pop_name": pop.name, "pop_id": pop.id, "region": pop.region,
-            "area": ctx.area_of_pop.get(pop.id, UNMAPPED_AREA), "nodes": nodes, "edges": _edges(edges),
-            "segments": _segments(totals)}
+            "city": ctx.place_of_pop[pop.id].city, **_path_fields(ctx.path_of_pop(pop.id)), "nodes": nodes,
+            "edges": _edges(edges), "segments": _segments(totals)}
 
 
 # --------------------------------------------------------------------------- search & POP area

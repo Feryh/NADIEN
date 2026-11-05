@@ -350,6 +350,20 @@ class CollectorSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class TopologyLayout(Base):
+    """Node positions a user arranged on one topology view (area, a province, a POP's devices …), keyed by view.
+
+    Covers every node kind the view draws, not only devices: areas, provinces, regencies, POPs and the dashed
+    boxes of other groups. Positions are the schematic's model coordinates; map views follow coordinates instead.
+    """
+
+    __tablename__ = "topology_layouts"
+
+    view_key: Mapped[str] = mapped_column(String(255), primary_key=True)  # e.g. device:JKT, regency:Jawa Timur|Jawa Timur
+    positions: Mapped[dict] = mapped_column(JSONType)  # node id -> {"x": float, "y": float}
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class AppState(Base):
     """Small shared counters, e.g. the read-model cache version every API process watches."""
 

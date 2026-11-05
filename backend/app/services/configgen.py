@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from .. import models as m
 from . import running_config
+from .l2vpn_peers import pw_usage
 from .vendors import DIALECT_LABELS, dialect_for
 
 VC_ID_BASE = 100000  # services without a VLAN: 100000 + service id
@@ -51,6 +52,10 @@ class Addressing:
     policer: bool = False
     vlans: list[int] | None = None  # VPLS batch: one sub-interface + instance per VLAN instead of the service VLAN
     vc_ids: dict[int, int] | None = None  # per-VLAN VC id, for VLANs whose default (VC id = VLAN) clashes
+    # L2VPN neighbour written on site A / B (the far PE's loopback) when not the inventory loopback: an existing
+    # neighbour picked from the running config, or a new destination typed in.
+    a_peer: str | None = None
+    b_peer: str | None = None
 
 
 @dataclass
@@ -101,6 +106,16 @@ def parse_cidr(value: str | None) -> tuple[str, str, int] | None:
     if not 8 <= iface.network.prefixlen <= 31 or "/" not in value:
         raise AddressError(f"Alamat {value} harus dengan prefix /8–/31")
     return str(iface.ip), str(iface.netmask), iface.network.prefixlen
+
+
+def parse_peer(value: str | None) -> str | None:
+    """L2VPN neighbour: a plain IPv4 address (the far PE's loopback), no prefix."""
+    if not value or not value.strip():
+        return None
+    try:
+        return str(ipaddress.IPv4Address(value.strip()))
+    except ValueError as exc:
+        raise AddressError(f"Neighbour tidak valid: {value} (contoh 10.0.0.1)") from exc
 
 
 def parse_vlans(value: str | None) -> list[int] | None:
@@ -162,10 +177,10 @@ def generate(db: Session, service: m.Service, addressing: Addressing | None = No
     `config_source` reads a device's running config (ZTE pw allocation); RANCID gitweb unless given."""
     addressing = addressing or Addressing()
     config_source = config_source or (lambda device_id: running_config.fetch(db, device_id))
-    customer = db.get(m.Customer, service.customer_id)
+    customer = db.get(m.Customer, service.customer_id) if service.customer_id else None
     ends = {
-        "A": (service.a_device_id, service.a_interface, service.b_device_id, addressing.a_ip),
-        "B": (service.b_device_id, service.b_interface, service.a_device_id, addressing.b_ip),
+        "A": (service.a_device_id, service.a_interface, service.b_device_id, addressing.a_ip, addressing.a_peer),
+        "B": (service.b_device_id, service.b_interface, service.a_device_id, addressing.b_ip, addressing.b_peer),
     }
     dialects = {label: _dialect(db, device_id) for label, (device_id, *_rest) in ends.items()}
     vlans = _vlans(service, addressing)
@@ -173,9 +188,9 @@ def generate(db: Session, service: m.Service, addressing: Addressing | None = No
                               "service_type": service.service_type, "vlans": vlans,
                               "vc_id": vc_id_for(service, addressing, vlans[0] if vlans else None),
                               "policer": addressing.policer, "endpoints": {}}
-    for label, (device_id, port, peer_id, ip) in ends.items():
+    for label, (device_id, port, peer_id, ip, peer_ip) in ends.items():
         peer_dialect = dialects["B" if label == "A" else "A"]
-        result["endpoints"][label] = _endpoint(db, service, customer, label, device_id, port, peer_id, ip,
+        result["endpoints"][label] = _endpoint(db, service, customer, label, device_id, port, peer_id, ip, peer_ip,
                                                addressing, peer_dialect, vlans, config_source)
     return result
 
@@ -195,6 +210,11 @@ def vc_id_for(service: m.Service, addressing: Addressing, vlan: int | None = Non
     return (addressing.vc_id if single else None) or vlan or VC_ID_BASE + service.id
 
 
+def dialect_of(db: Session, device_id: int | None) -> str | None:
+    """Generator dialect of a device (vrp, zte, iosxr, fiberhome), None when unsupported or unknown."""
+    return _dialect(db, device_id)
+
+
 def _dialect(db: Session, device_id: int | None) -> str | None:
     device = db.get(m.Device, device_id) if device_id else None
     if device is None:
@@ -204,7 +224,7 @@ def _dialect(db: Session, device_id: int | None) -> str | None:
 
 
 def _endpoint(db: Session, service: m.Service, customer: m.Customer | None, label: str, device_id: int | None,
-              port: str | None, peer_id: int | None, ip: str | None, addressing: Addressing,
+              port: str | None, peer_id: int | None, ip: str | None, peer_ip: str | None, addressing: Addressing,
               peer_dialect: str | None, vlans: list[int], config_source: ConfigSource) -> dict[str, Any]:
     device = db.get(m.Device, device_id) if device_id else None
     out: dict[str, Any] = {"label": label, "device_id": device_id, "device": device.hostname if device else None,
@@ -225,7 +245,7 @@ def _endpoint(db: Session, service: m.Service, customer: m.Customer | None, labe
         out["warnings"].append(f"{service.service_type.upper()} tidak dibuat untuk {DIALECT_LABELS[dialect]}: perangkat "
                                "jenis ini di jaringan hanya membawa L2 (VPLS), tidak ada contoh konfigurasinya.")
         return out
-    contexts = [_context(db, service, customer, device, port, peer_id, ip, addressing, vlan, first=i == 0)
+    contexts = [_context(db, service, customer, device, port, peer_id, ip, peer_ip, addressing, vlan, first=i == 0)
                 for i, vlan in enumerate(vlans or [None])]
     warnings: list[str] = []
     if kind == "l2vpn" and peer_dialect and (dialect == "fiberhome") != (peer_dialect == "fiberhome"):
@@ -233,8 +253,8 @@ def _endpoint(db: Session, service: m.Service, customer: m.Customer | None, labe
                         "control-word: samakan pengaturan control-word di kedua ujung.")
     if addressing.vc_id and len(contexts) > 1:
         warnings.append("VC id manual diabaikan untuk batch beberapa VLAN: isi VC id per VLAN.")
-    if dialect == "zte" and kind == "l2vpn":
-        _zte_from_running_config(contexts, config_source, device.id, out["notes"], warnings)
+    if kind == "l2vpn":
+        _check_running_config(contexts, config_source, device.id, dialect, out["notes"], warnings)
     config: list[str] = []
     rollback: list[str] = []
     for ctx in contexts:
@@ -273,20 +293,31 @@ def allocate_pw(used: set[str], count: int) -> list[str]:
     return names
 
 
-def _zte_from_running_config(contexts: list[_Ctx], config_source: ConfigSource, device_id: int, notes: list[str],
-                             warnings: list[str]) -> None:
+def _check_running_config(contexts: list[_Ctx], config_source: ConfigSource, device_id: int, dialect: str,
+                          notes: list[str], warnings: list[str]) -> None:
+    """PW / VC ids already used towards the same neighbour (every dialect), and ZTE pw names from the RANCID config."""
     try:
         text = config_source(device_id)
     except running_config.RunningConfigError as exc:
-        warnings.append(f"{exc} pw dinamai pw<VC id>; cek manual bahwa nama itu belum dipakai.")
+        if dialect == "zte":
+            warnings.append(f"{exc} pw dinamai pw<VC id>; cek manual bahwa nama itu belum dipakai.")
+        else:
+            notes.append(f"PW id belum dicek ke config perangkat: {exc}")
         return
-    used, vcids = zte_pw_usage(text)
-    for ctx, pw in zip(contexts, allocate_pw(used, len(contexts))):
-        ctx.pw = pw
-        if (ctx.peer_loopback, ctx.vc_id) in vcids:
+    in_use = set(pw_usage(text, dialect))
+    for ctx in contexts:
+        if (ctx.peer_loopback, ctx.vc_id) in in_use:
             ctx.vc_conflicts.append(f"sudah ada di config RANCID (neighbour {ctx.peer_loopback})")
             warnings.append(f"vcid {ctx.vc_id} ke neighbour {ctx.peer_loopback} sudah ada di config perangkat: "
                             "isi VC id lain.")
+    if dialect == "zte":
+        _allocate_zte_pw(contexts, text, notes, warnings)
+
+
+def _allocate_zte_pw(contexts: list[_Ctx], text: str, notes: list[str], warnings: list[str]) -> None:
+    used, _vcids = zte_pw_usage(text)
+    for ctx, pw in zip(contexts, allocate_pw(used, len(contexts))):
+        ctx.pw = pw
         if re.search(rf"^interface {re.escape(ctx.sub)}\s*$", text, re.M):
             warnings.append(f"Sub-interface {ctx.sub} sudah ada di config perangkat.")
     notes.append(f"{len(used)} pw sudah terpakai di config RANCID; dialokasikan: "
@@ -319,7 +350,8 @@ def _vc_clash(db: Session, service: m.Service, vc_id: int) -> str | None:
 
 
 def _context(db: Session, service: m.Service, customer: m.Customer | None, device: m.Device, port: str,
-             peer_id: int | None, ip: str | None, addressing: Addressing, vlan: int | None, first: bool) -> _Ctx:
+             peer_id: int | None, ip: str | None, peer_ip: str | None, addressing: Addressing, vlan: int | None,
+             first: bool) -> _Ctx:
     warnings: list[str] = []
     sub = f"{port}.{vlan}" if vlan else port
     if not vlan:
@@ -327,11 +359,12 @@ def _context(db: Session, service: m.Service, customer: m.Customer | None, devic
     elif db.scalar(select(m.Interface.id).where(m.Interface.device_id == device.id, m.Interface.name == sub)):
         warnings.append(f"Sub-interface {sub} sudah ada di inventory: pastikan tidak dipakai layanan lain.")
     peer = db.get(m.Device, peer_id) if peer_id else None
+    peer_loopback = peer_ip or (peer.loopback_ipv4 if peer else None)
     vc_id = vc_id_for(service, addressing, vlan)
     vc_conflicts: list[str] = []
     if _kind(service.service_type) == "l2vpn":
-        if not (peer and peer.loopback_ipv4):
-            warnings.append("Loopback PE lawan belum diketahui: isi <loopback-peer> secara manual.")
+        if not peer_loopback:
+            warnings.append("Loopback PE lawan belum diketahui: pilih neighbour atau isi <loopback-peer> secara manual.")
         clash = _vc_clash(db, service, vc_id)
         if clash:
             vc_conflicts.append(f"dipakai layanan {clash} antara dua PE yang sama")
@@ -360,7 +393,7 @@ def _context(db: Session, service: m.Service, customer: m.Customer | None, devic
         service=service, customer=customer.name if customer else "",
         name=instance_name(service, customer, vlan), group=f"xg_{customer_slug or 'NADIEN'}",
         port=port, sub=sub, vlan=vlan,
-        peer_loopback=peer.loopback_ipv4 if peer and peer.loopback_ipv4 else "<loopback-peer>",
+        peer_loopback=peer_loopback or "<loopback-peer>",
         vc_id=vc_id, kbps=service.bandwidth_mbps * 1000, policer=addressing.policer,
         ip=parsed[0] if parsed else None, mask=parsed[1] if parsed else None,
         vrf=service.vrf_name or "<vrf>", rd=rd or "<rd>", rt=rts or ["<rt>"], asn=asn or "<asn>",
