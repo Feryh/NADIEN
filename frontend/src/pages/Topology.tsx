@@ -555,6 +555,22 @@ function runLayout(cy: Core, view: View, onMap: boolean, keep?: Map<string, Pos>
   } as cytoscape.LayoutOptions).run()
 }
 
+function devicePositions(cy: Core): { id: string; deviceId: number; pos: Pos }[] {
+  return cy.nodes('[kind="device"]').map((n) => ({ id: n.id(), deviceId: Number(n.data('device_id')), pos: { ...n.position() } }))
+}
+
+/** Devices more than a pixel away from their saved place (a click without a drag must not count). */
+function countMoved(cy: Core, saved: Map<string, Pos>): number {
+  return devicePositions(cy).filter((d) => {
+    const s = saved.get(d.id)
+    return !s || Math.abs(s.x - d.pos.x) > 1 || Math.abs(s.y - d.pos.y) > 1
+  }).length
+}
+
+function confirmDiscard(dirty: boolean): boolean {
+  return !dirty || window.confirm('Ada perubahan posisi perangkat yang belum disimpan. Tinggalkan tanpa menyimpan?')
+}
+
 const LIVE_INTERVAL_MS = 30_000
 const FRESH_FOR_MS = 10 * 60_000  // how long new elements and links that went down stay highlighted
 
@@ -594,22 +610,28 @@ const TABS: { key: Tab; label: string }[] = [
 export default function Topology() {
   const [params, setParams] = useSearchParams()
   const tab = (TABS.some((t) => t.key === params.get('tab')) ? params.get('tab') : 'map') as Tab
+  // Leaving the map tab unmounts it: unsaved position changes would be lost silently.
+  const mapDirtyRef = useRef(false)
   return (
     <div className="topology-page">
       <div className="config-menu topology-tabs" role="tablist" aria-label="Topologi">
         {TABS.map((t) => (
           <button key={t.key} type="button" role="tab" aria-selected={tab === t.key} className={tab === t.key ? 'active' : ''}
-            onClick={() => setParams(t.key === 'map' ? {} : { tab: t.key })}>{t.label}</button>
+            onClick={() => {
+              if (t.key === tab || !confirmDiscard(tab === 'map' && mapDirtyRef.current)) return
+              mapDirtyRef.current = false
+              setParams(t.key === 'map' ? {} : { tab: t.key })
+            }}>{t.label}</button>
         ))}
       </div>
-      {tab === 'map' && <TopologyMap />}
+      {tab === 'map' && <TopologyMap dirtyRef={mapDirtyRef} />}
       {tab === 'naming' && <NamingStandard />}
       {tab === 'changes' && <TopologyChanges />}
     </div>
   )
 }
 
-function TopologyMap() {
+function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }) {
   const [params, setParams] = useSearchParams()
   const level = (params.get('level') as Level) || 'area'
   const area = params.get('area') ?? undefined
@@ -634,7 +656,12 @@ function TopologyMap() {
   const [colorFilter, setColorFilter] = useState<'all' | 'warn' | 'red'>('all')
   const [edgeLabels, setEdgeLabels] = useState(false)
   const [syncPhase, setSyncPhase] = useState<string | null>(null)
-  const [dirty, setDirty] = useState(false)
+  // Device id -> position as last saved (or as first laid out); moved = devices that differ from it.
+  const savedPosRef = useRef(new Map<string, Pos>())
+  const [moved, setMoved] = useState(0)
+  const [saving, setSaving] = useState(false)
+  const dirty = moved > 0
+  dirtyRef.current = dirty
   const [busy, setBusy] = useState(false)
   const [segmentsShown, setSegmentsShown] = useState<Set<Segment>>(() => defaultSegments(level))
   const [colorMode, setColorMode] = useState<ColorMode>(() => stored('nadien.topology.color', 'utilization'))
@@ -655,6 +682,7 @@ function TopologyMap() {
 
   const go = useCallback(
     (next: { level: Level; area?: string; pop?: string; device_id?: number; depth?: number; focus?: string }) => {
+      if (!confirmDiscard(dirtyRef.current)) return
       const p: Record<string, string> = { level: next.level }
       if (next.area) p.area = next.area
       if (next.pop) p.pop = next.pop
@@ -678,7 +706,7 @@ function TopologyMap() {
   const load = useCallback(async () => {
     setLoading(true)
     setSelected(null)
-    setDirty(false)
+    setMoved(0)
     try {
       setView(await api.get<View>(viewPath))
     } catch (e) {
@@ -783,6 +811,8 @@ function TopologyMap() {
   }, [onMap, basemap.length])
 
   function toggleMap(on: boolean) {
+    if (!confirmDiscard(dirty)) return
+    setMoved(0)
     setMapOn(on)
     try {
       localStorage.setItem(MAP_KEY, on ? '1' : '0')
@@ -831,7 +861,9 @@ function TopologyMap() {
       else if (n.kind === 'pop' || n.kind === 'external_pop') go({ level: 'device', pop: n.label })
       else if (n.kind === 'device' && n.device_id != null) go({ level: 'neighbors', device_id: n.device_id, depth: 1 })
     })
-    cy.on('dragfree', 'node[kind="device"]', () => setDirty(true))
+    // Positions are only stored for the device level drawn as a graph; on the map they come from coordinates.
+    const positionsEditable = view.level === 'device' && !onMap
+    if (positionsEditable) cy.on('dragfree', 'node', () => setMoved(countMoved(cy, savedPosRef.current)))
     cyRef.current = cy
     // The basemap is drawn in degrees; keep it under the graph through every pan and zoom.
     let lastZoom = 0
@@ -846,6 +878,15 @@ function TopologyMap() {
     }
     cy.on('viewport', syncMap)
     runLayout(cy, view, onMap, keep?.positions)
+    if (positionsEditable) {
+      // After a live refresh the unsaved moves survive in `keep`: compare against the saved positions, not the kept ones.
+      const before = keep ? savedPosRef.current : new Map<string, Pos>()
+      savedPosRef.current = new Map(devicePositions(cy).map((d) => [d.id, before.get(d.id) ?? d.pos] as [string, Pos]))
+      setMoved(countMoved(cy, savedPosRef.current))
+    } else {
+      savedPosRef.current = new Map()
+      setMoved(0)
+    }
     if (keep) {
       // Live refresh: stay where the user was looking.
       cy.viewport({ zoom: keep.zoom, pan: keep.pan })
@@ -926,19 +967,55 @@ function TopologyMap() {
   async function savePositions() {
     const cy = cyRef.current
     if (!cy) return
-    const positions = cy.nodes('[kind="device"]').map((n) => ({
-      device_id: Number(n.data('device_id')),
-      x: Math.round(n.position('x')),
-      y: Math.round(n.position('y')),
-    }))
+    if (saving) return
+    // Every device is stored, not only the moved ones, so the whole drawing reopens exactly as it is now.
+    const current = devicePositions(cy)
+    const positions = current.map((d) => ({ device_id: d.deviceId, x: Math.round(d.pos.x), y: Math.round(d.pos.y) }))
+    setSaving(true)
     try {
       await api.put('/topology/positions', positions)
-      setDirty(false)
-      setMessage({ text: `Posisi ${positions.length} perangkat di ${pop} disimpan.` })
+      savedPosRef.current = new Map(current.map((d) => [d.id, d.pos] as [string, Pos]))
+      setMessage({ text: `Perubahan disimpan: ${moved} perangkat dipindah, posisi ${positions.length} perangkat di ${pop} tersimpan.` })
+      setMoved(0)
     } catch (e) {
       setMessage({ text: (e as Error).message, error: true })
+    } finally {
+      setSaving(false)
     }
   }
+
+  function discardMoves() {
+    const cy = cyRef.current
+    if (!cy) return
+    cy.nodes('[kind="device"]').forEach((n) => {
+      const pos = savedPosRef.current.get(n.id())
+      if (pos) n.animate({ position: pos }, { duration: 250 })
+    })
+    setMoved(0)
+  }
+
+  const saveRef = useRef(savePositions)
+  saveRef.current = savePositions
+  // While there are unsaved moves: Ctrl+S saves, and closing or reloading the tab asks first.
+  useEffect(() => {
+    if (!dirty) return
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault()
+        saveRef.current()
+      }
+    }
+    const onUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('beforeunload', onUnload)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('beforeunload', onUnload)
+    }
+  }, [dirty])
 
   async function autoAssign() {
     try {
@@ -1040,11 +1117,6 @@ function TopologyMap() {
             Isi area otomatis
           </button>
         )}
-        {level === 'device' && !onMap && (
-          <button onClick={savePositions} disabled={!dirty}>
-            Simpan posisi
-          </button>
-        )}
         <button
           className="primary"
           onClick={discover}
@@ -1121,6 +1193,16 @@ function TopologyMap() {
             </svg>
           )}
           <div className="graph-canvas" ref={container} />
+          {dirty && (
+            <div className="unsaved-bar" role="status">
+              <span className="unsaved-dot" />
+              <span><b>{moved} perangkat</b> dipindah · perubahan belum disimpan</span>
+              <button type="button" onClick={discardMoves} disabled={saving}>Batalkan</button>
+              <button type="button" className="primary" onClick={savePositions} disabled={saving} title="Simpan posisi perangkat (Ctrl+S)">
+                {saving ? 'Menyimpan…' : 'Simpan perubahan'}
+              </button>
+            </div>
+          )}
           {loading && <div className="graph-loading">Memuat…</div>}
           <TopologyLegend open={legendOpen} colorMode={colorMode} level={level}
             onToggle={() => { setLegendOpen(!legendOpen); remember('nadien.topology.legend', legendOpen ? '0' : '1') }} />
