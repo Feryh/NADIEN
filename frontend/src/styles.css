@@ -512,3 +512,14 @@ a.button.primary { background: var(--accent-strong); border-color: var(--accent-
 @media (max-width: 700px) {
   .unsaved-bar { left: 12px; right: 12px; transform: none; white-space: normal; flex-wrap: wrap; }
 }
+
+/* Config Generator: L2VPN from two hostnames */
+.l2-source { margin: 4px 0 10px; }
+.l2vpn-hostname { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px; }
+.l2vpn-hostname .mop-meta label.span-2 { grid-column: span 2; }
+.l2vpn-hostname select, .l2vpn-hostname input { width: 100%; }
+.pw-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; padding: 8px 12px; margin-bottom: 10px;
+  border: 1px solid var(--accent); border-radius: 8px; background: #0ea5e914; }
+.pw-summary b { font-size: 18px; color: var(--accent); }
+.text-bad { color: #f87171; }
+@media (max-width: 700px) { .l2vpn-hostname .mop-meta label.span-2 { grid-column: 1 / -1; } }
