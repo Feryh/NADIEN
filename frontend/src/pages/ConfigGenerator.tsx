@@ -346,19 +346,99 @@ function useNeighbours(deviceId: number | null): { list: NeighbourList | null; l
   return { list, loading }
 }
 
-/** Physical ports of a PE, offered while typing the access port. */
-function usePorts(deviceId: number | null): string[] {
-  const [ports, setPorts] = useState<string[]>([])
+interface AccessPort {
+  name: string
+  kind: 'bundle' | 'physical'
+  speed_gbps: number | null
+  description: string | null
+  members: string[]
+  direction: 'downlink' | 'unknown'
+  basis: 'link' | 'lldp' | 'description' | null
+  far: { hostname: string; role: string | null; source: string } | null
+}
+interface AccessPortList { ports: AccessPort[]; hidden_uplinks: number; total_up: number }
+
+/** UP ports of a PE towards OLT / access, bundles first (backend decides from links, LLDP and descriptions). */
+function useAccessPorts(deviceId: number | null): { list: AccessPortList | null; loading: boolean; error: string | null } {
+  const [list, setList] = useState<AccessPortList | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   useEffect(() => {
-    setPorts([])
+    setList(null)
+    setError(null)
     if (deviceId == null) return
     let alive = true
-    api.get<{ name: string }[]>(`/interfaces?device_id=${deviceId}&if_type=physical&limit=10000`)
-      .then((rows) => alive && setPorts(rows.map((r) => r.name)))
-      .catch(() => undefined)
+    setLoading(true)
+    api.get<AccessPortList>(`/configs/l2vpn/ports?device_id=${deviceId}`)
+      .then((l) => alive && setList(l))
+      .catch((e: Error) => alive && setError(e.message))
+      .finally(() => alive && setLoading(false))
     return () => { alive = false }
   }, [deviceId])
-  return ports
+  return { list, loading, error }
+}
+
+function portLabel(p: AccessPort): string {
+  const speed = p.speed_gbps ? ` ${p.speed_gbps >= 1 ? `${p.speed_gbps}G` : `${p.speed_gbps * 1000}M`}` : ''
+  const members = p.kind === 'bundle' && p.members.length ? ` (${p.members.length} anggota)` : ''
+  const far = p.far ? ` → ${p.far.hostname}${p.far.role ? ` · ${p.far.role.toUpperCase()}` : ''}` : ''
+  const description = !p.far && p.description ? ` · ${p.description.slice(0, 50)}` : ''
+  return `${p.name}${speed}${members}${far}${description}`
+}
+
+/** Access port picker: downlink ports to OLT / access first (bundles on top), other UP ports, or typed in. */
+function PortPicker({ label, deviceId, value, onChange }: {
+  label: string
+  deviceId: number | null
+  value: string
+  onChange: (port: string) => void
+}) {
+  const { list, loading, error } = useAccessPorts(deviceId)
+  const [manual, setManual] = useState(false)
+  useEffect(() => setManual(false), [deviceId])
+  const ports = list?.ports ?? []
+  const downlink = ports.filter((p) => p.direction === 'downlink')
+  const other = ports.filter((p) => p.direction !== 'downlink')
+  const chosen = ports.find((p) => p.name === value)
+  const typed = manual || (value !== '' && !chosen && list != null)
+  return (
+    <label className="span-2">
+      <span>{label}</span>
+      <select value={typed ? MANUAL : value} disabled={deviceId == null}
+        onChange={(e) => {
+          if (e.target.value === MANUAL) { setManual(true); onChange('') }
+          else { setManual(false); onChange(e.target.value) }
+        }}>
+        <option value="">{deviceId == null ? 'Pilih PE dulu' : loading ? 'Membaca port…' : 'Pilih port akses'}</option>
+        {downlink.length > 0 && (
+          <optgroup label={`Ke arah downlink / OLT (${downlink.length})`}>
+            {downlink.map((p) => <option key={p.name} value={p.name}>{portLabel(p)}</option>)}
+          </optgroup>
+        )}
+        {other.length > 0 && (
+          <optgroup label={`Port UP lainnya, arah belum diketahui (${other.length})`}>
+            {other.map((p) => <option key={p.name} value={p.name}>{portLabel(p)}</option>)}
+          </optgroup>
+        )}
+        <option value={MANUAL}>Ketik nama port…</option>
+      </select>
+      {typed && (
+        <input value={value} placeholder="mis. GigabitEthernet0/3/1" maxLength={64} autoFocus
+          onChange={(e) => onChange(e.target.value)} />
+      )}
+      <small className="muted">
+        {error ? `Daftar port tidak terbaca: ${error}`
+          : chosen ? [
+              chosen.kind === 'bundle' && chosen.members.length ? `Bundle: ${chosen.members.join(', ')}` : null,
+              chosen.far ? `ke ${chosen.far.hostname} (${chosen.far.source === 'link' ? 'link topologi' : 'LLDP'})` : null,
+              chosen.basis === 'description' ? 'arah dari deskripsi port' : null,
+              chosen.description,
+            ].filter(Boolean).join(' · ')
+          : list ? `${list.total_up} port UP, ${downlink.length} ke arah downlink${list.hidden_uplinks ? `; ${list.hidden_uplinks} uplink/core disembunyikan` : ''}.`
+          : ''}
+      </small>
+    </label>
+  )
 }
 
 interface PeerChoice { choice: string; manual: string }  // choice: '' = inventory loopback, an IP, or MANUAL
@@ -458,8 +538,6 @@ function L2vpnHostnameForm({ devices, baseQuery, standardPw, vlanMode, vcIds, on
   const b = find(bText)
   const aNeighbours = useNeighbours(a?.id ?? null)
   const bNeighbours = useNeighbours(b?.id ?? null)
-  const aPorts = usePorts(a?.id ?? null)
-  const bPorts = usePorts(b?.id ?? null)
   const hasVlan = new URLSearchParams(baseQuery).has('vlans')
 
   const query = useMemo(() => {
@@ -493,23 +571,13 @@ function L2vpnHostnameForm({ devices, baseQuery, standardPw, vlanMode, vcIds, on
   return (
     <div className="l2vpn-hostname">
       <datalist id="l2vpn-devices">{devices.map((d) => <option key={d.id} value={d.hostname}>{d.role}</option>)}</datalist>
-      <datalist id="l2vpn-ports-a">{aPorts.map((p) => <option key={p} value={p} />)}</datalist>
-      <datalist id="l2vpn-ports-b">{bPorts.map((p) => <option key={p} value={p} />)}</datalist>
       <div className="mop-meta">
         <DeviceField label="PE site A (sumber)" devices={devices} text={aText}
-          onText={(t) => { setAText(t); setBPeer({ choice: '', manual: '' }) }} />
-        <label>
-          <span>Port akses PE A</span>
-          <input list="l2vpn-ports-a" value={aPort} placeholder="mis. GigabitEthernet0/3/1" maxLength={64}
-            onChange={(e) => setAPort(e.target.value)} />
-        </label>
+          onText={(t) => { setAText(t); setAPort(''); setBPeer({ choice: '', manual: '' }) }} />
+        <PortPicker label="Port akses PE A" deviceId={a?.id ?? null} value={aPort} onChange={setAPort} />
         <DeviceField label="PE site B (tujuan)" devices={devices} text={bText} optional
-          onText={(t) => { setBText(t); setAPeer({ choice: '', manual: '' }) }} />
-        <label>
-          <span>Port akses PE B</span>
-          <input list="l2vpn-ports-b" value={bPort} placeholder={b ? 'mis. GigabitEthernet0/3/2' : 'isi PE B dulu'}
-            maxLength={64} disabled={!b} onChange={(e) => setBPort(e.target.value)} />
-        </label>
+          onText={(t) => { setBText(t); setBPort(''); setAPeer({ choice: '', manual: '' }) }} />
+        <PortPicker label="Port akses PE B" deviceId={b?.id ?? null} value={bPort} onChange={setBPort} />
         <label>
           <span>Nama instance / pelanggan</span>
           <input value={name} placeholder="L2VPN → L2VPN_<VLAN>" maxLength={40} onChange={(e) => setName(e.target.value)} />

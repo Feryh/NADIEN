@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from .. import models as m
 from ..database import get_db
 from ..services import running_config
+from ..services.access_ports import access_ports
 from ..services.configgen import (AddressError, Addressing, as_text, check_vc_ids, dialect_of, generate, parse_cidr,
                                   parse_peer, parse_vc_ids, parse_vlans)
 from ..services.l2vpn_peers import neighbours
@@ -107,6 +108,16 @@ def l2vpn_neighbours(device_id: int, db: Session = Depends(get_db)):
         return out
     out["neighbours"] = [{**row, "hostname": by_loopback.get(row["ip"])} for row in neighbours(text, dialect)]
     return out
+
+
+@router.get("/l2vpn/ports")
+def l2vpn_ports(device_id: int, db: Session = Depends(get_db)):
+    """UP ports of a PE towards OLT / access (bundles first when their members' LLDP name one neighbour), for
+    picking the access port of a new L2VPN. Uplinks to the core are left out and only counted."""
+    try:
+        return access_ports(db, device_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 def l2vpn_service_params(
