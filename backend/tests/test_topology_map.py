@@ -40,19 +40,19 @@ def test_should_center_area_on_its_located_pops_when_drawing_the_map(client, net
 
 
 def test_should_estimate_unlocated_pop_near_its_linked_neighbour(client, network):
-    nodes = {n["label"]: n for n in client.get("/api/topology/view?level=pop&area=Sumatera").json()["nodes"]}
+    nodes = {n.get("code", n["label"]): n for n in client.get("/api/topology/view?level=pop&area=Sumatera").json()["nodes"]}
     assert nodes["PLG"]["estimated"] is False
     assert nodes["XQA"]["estimated"] is True
     assert abs(nodes["XQA"]["lat"] - -2.95) < 0.1 and abs(nodes["XQA"]["lon"] - 104.73) < 0.1
 
 
 def test_should_place_unlocated_pop_at_its_city_centre_when_code_names_a_city(client, network):
-    lsm = next(n for n in client.get("/api/topology/view?level=pop&area=Sumatera").json()["nodes"] if n["label"] == "LSM")
+    lsm = next(n for n in client.get("/api/topology/view?level=pop&area=Sumatera").json()["nodes"] if n.get("code") == "LSM")
     assert lsm["estimated"] is True and (lsm["lat"], lsm["lon"]) == (5.18, 97.15)
 
 
 def test_should_ring_unlinked_unlocated_pop_around_area_center(client, network):
-    xqb = next(n for n in client.get("/api/topology/view?level=pop&area=Sumatera").json()["nodes"] if n["label"] == "XQB")
+    xqb = next(n for n in client.get("/api/topology/view?level=pop&area=Sumatera").json()["nodes"] if n.get("code") == "XQB")
     assert xqb["estimated"] is True and xqb["lat"] is not None
 
 
@@ -63,7 +63,7 @@ def test_should_place_device_at_its_own_site_and_others_around_their_pop(client,
     db.add(m.Device(hostname="PLG-AAL-OLT1-FH", pop_id=plg_device.pop_id, role="olt"))
     db.add(m.DeviceLocation(device_id=plg_device.id, latitude=-2.93, longitude=104.70, placemark="ODC Alang-Alang Lebar"))
     db.commit()
-    nodes = {n["label"]: n for n in client.get("/api/topology/view?level=device&pop=PLG").json()["nodes"]}
+    nodes = {n.get("code", n["label"]): n for n in client.get("/api/topology/view?level=device&pop=PLG").json()["nodes"]}
     own, ringed = nodes["PLG-NDC-ME1"], nodes["PLG-AAL-OLT1-FH"]
     assert (own["lat"], own["lon"], own["located"], own["estimated"]) == (-2.93, 104.70, True, False)
     assert ringed["located"] is False and ringed["estimated"] is True

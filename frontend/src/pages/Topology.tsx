@@ -10,10 +10,18 @@ import { CAPACITY_HEX, fmtG } from '../components/ui'
 
 // Drill-down topology:
 //   area      — areas west→east as a schematic, trunks between them
-//   pop       — POPs of one area in rows by their highest role, other areas as the top (uplink) row
+//   province  — provinces of one area (other areas they link to drawn dashed)
+//   regency   — kabupaten/kota of one province (other provinces / areas drawn dashed)
+//   pop       — POPs of one area, province or regency in rows by their highest role, other groups on top
 //   device    — devices of one POP in role rows (Core → PE/BNG → Metro → OLT/Access), other POPs on top
 //   neighbors — one device and everything within 1–2 hops, same role rows
-type Level = 'area' | 'pop' | 'device' | 'neighbors'
+type Level = 'area' | 'province' | 'regency' | 'pop' | 'device' | 'neighbors'
+type GroupKind = 'area' | 'province' | 'regency'
+type NodeKind = GroupKind | 'pop' | 'device' | 'external_area' | 'external_province' | 'external_regency' | 'external_pop'
+
+const GROUP_KINDS: string[] = ['area', 'province', 'regency']
+const isGroup = (kind: string) => GROUP_KINDS.includes(kind)
+const isGroupLevel = (level: Level) => level === 'area' || level === 'province' || level === 'regency'
 
 export type Segment = 'backbone' | 'distribution' | 'last_mile'
 export const SEGMENTS: Segment[] = ['backbone', 'distribution', 'last_mile']
@@ -48,10 +56,14 @@ interface EdgeData extends Totals {
 
 interface NodeData {
   id: string
-  kind: 'area' | 'pop' | 'device' | 'external_area' | 'external_pop'
-  label: string
+  kind: NodeKind
+  label: string  // POPs: the city they serve; `code` is the POP code
+  code?: string
   name?: string
   area?: string
+  province?: string
+  regency?: string
+  city?: string | null
   pop?: string
   pops?: number
   devices?: number
@@ -81,6 +93,9 @@ interface NodeData {
 interface View {
   level: Level
   area?: string
+  province?: string
+  regency?: string
+  city?: string | null
   pop?: string
   pop_name?: string
   pop_id?: number
@@ -154,7 +169,7 @@ const STYLE = [
     },
   },
   {
-    selector: 'node[kind="area"]',
+    selector: 'node[kind="area"], node[kind="province"], node[kind="regency"]',
     style: {
       shape: 'round-rectangle',
       width: 'data(w)',
@@ -187,7 +202,7 @@ const STYLE = [
     },
   },
   {
-    selector: 'node[kind="external_area"], node[kind="external_pop"]',
+    selector: 'node[kind="external_area"], node[kind="external_province"], node[kind="external_regency"], node[kind="external_pop"]',
     style: {
       shape: 'round-rectangle',
       width: 'data(w)',
@@ -256,15 +271,60 @@ function edgeWidth(capacity: number): number {
 function nodeDisplay(n: NodeData): string {
   switch (n.kind) {
     case 'area':
+    case 'province':
+    case 'regency':
       return `${n.label}\n${n.pops} POP · ${n.devices} perangkat`
-    case 'pop':
-      return n.label
     case 'external_area':
+    case 'external_province':
+    case 'external_regency':
     case 'external_pop':
       return `→ ${n.label}`
     default:
       return n.label
   }
+}
+
+interface Target {
+  level: Level
+  area?: string
+  province?: string
+  regency?: string
+  pop?: string
+  device_id?: number
+  depth?: number
+  focus?: string
+}
+
+/** What opening a node shows: one level down in Area > Provinsi > Kab/Kota > POP > Perangkat. */
+function drillTarget(n: NodeData): Target | null {
+  switch (n.kind) {
+    case 'area':
+    case 'external_area':
+      return { level: 'province', area: n.area ?? n.label }
+    case 'province':
+    case 'external_province':
+      return { level: 'regency', area: n.area, province: n.province }
+    case 'regency':
+    case 'external_regency':
+      return { level: 'pop', area: n.area, province: n.province, regency: n.regency }
+    case 'pop':
+    case 'external_pop':
+      return { level: 'device', pop: n.code ?? n.label }
+    case 'device':
+      return n.device_id != null ? { level: 'neighbors', device_id: n.device_id, depth: 1 } : null
+  }
+}
+
+const DRILL_LABEL: Record<NodeKind, string> = {
+  area: 'Buka provinsi di area ini', external_area: 'Buka provinsi di area ini',
+  province: 'Buka kabupaten/kota', external_province: 'Buka kabupaten/kota',
+  regency: 'Buka POP', external_regency: 'Buka POP',
+  pop: 'Buka perangkat', external_pop: 'Buka perangkat', device: 'Lihat tetangga perangkat',
+}
+
+const GROUP_LABEL: Record<string, string> = {
+  area: 'Area', province: 'Provinsi', regency: 'Kab/Kota', external_area: 'Area', external_province: 'Provinsi',
+  external_regency: 'Kab/Kota', external_pop: 'POP',
 }
 
 /**
@@ -286,6 +346,27 @@ function areaLayout(view: View): Record<string, Pos> {
   place(north, 0)
   place(south, 230)
   place(other, 460)
+  return pos
+}
+
+/** Provinces or regencies west→east in a few rows, the groups outside this one on a row above. */
+function groupLayout(view: View): Record<string, Pos> {
+  const pos: Record<string, Pos> = {}
+  const byLon = (a: NodeData, b: NodeData) => (a.lon ?? 999) - (b.lon ?? 999)
+  const inside = view.nodes.filter((n) => isGroup(n.kind)).sort(byLon)
+  const outside = view.nodes.filter((n) => !isGroup(n.kind)).sort(byLon)
+  const dx = 250
+  const dy = 190
+  const perLine = Math.max(4, Math.ceil(Math.sqrt(inside.length * 2)))
+  const width = Math.min(perLine, Math.max(inside.length, outside.length, 1)) * dx
+  const place = (row: NodeData[], top: number) =>
+    row.forEach((n, i) => {
+      const line = Math.floor(i / perLine)
+      const inLine = Math.min(perLine, row.length - line * perLine)
+      pos[n.id] = { x: (width - inLine * dx) / 2 + (i % perLine) * dx, y: top + line * dy }
+    })
+  place(outside, 0)
+  place(inside, outside.length ? Math.ceil(outside.length / perLine) * 120 + 80 : 0)
   return pos
 }
 
@@ -361,7 +442,7 @@ const BAND_LABEL: Record<number, string> = {
   [-1]: 'Terhubung ke luar', 0: 'Core · P / DCI', 1: 'Edge · PE / BNG', 2: 'Distribusi · Metro / Agg', 3: 'Akses · OLT / CSR / Switch', 4: 'Lainnya',
 }
 const POP_BAND_LABEL: Record<number, string> = {
-  [-1]: 'Area lain', 0: 'POP core', 1: 'POP edge', 2: 'POP distribusi', 3: 'POP akses', 4: 'POP lainnya',
+  [-1]: 'Wilayah lain', 0: 'POP core', 1: 'POP edge', 2: 'POP distribusi', 3: 'POP akses', 4: 'POP lainnya',
 }
 
 /** Row a node sits in on the schematic: other POPs/areas (external) on top, then by role tier. */
@@ -411,7 +492,7 @@ function buildElements(view: View, options: BuildOptions): ElementDefinition[] {
         display,
         roleColor: ROLE_COLOR[n.role ?? ''] ?? '#64748b',
         tierColor: TIER_COLOR[n.tier ?? 4],
-        w: n.kind === 'area' ? 170 + 60 * scale : n.kind === 'pop' ? Math.max(60, n.label.length * 10 + 24) : Math.max(70, display.length * 7 + 26),
+        w: isGroup(n.kind) ? 170 + 60 * scale : n.kind === 'pop' ? Math.max(60, n.label.length * 10 + 24) : Math.max(70, display.length * 7 + 26),
         h: 70 + 40 * scale,
       },
     }
@@ -433,6 +514,8 @@ function buildElements(view: View, options: BuildOptions): ElementDefinition[] {
 // that size at any zoom, like map markers), and the on-screen gap kept between overlapping nodes.
 const MAP_SCALE: Partial<Record<Level, { pxPerDegree: number; markerScale: number; minScreenGap: number }>> = {
   area: { pxPerDegree: 60, markerScale: 0.9, minScreenGap: 10 },
+  province: { pxPerDegree: 100, markerScale: 0.9, minScreenGap: 10 },
+  regency: { pxPerDegree: 160, markerScale: 0.9, minScreenGap: 8 },
   pop: { pxPerDegree: 200, markerScale: 0.9, minScreenGap: 6 },
   device: { pxPerDegree: 3000, markerScale: 1, minScreenGap: 4 },  // one city: ~30 px per km
   neighbors: { pxPerDegree: 1500, markerScale: 1, minScreenGap: 4 },
@@ -443,7 +526,7 @@ const MAX_SHIFT_HEIGHTS = 3
 
 /** Normal (zoom 1) size of a node, before the map's marker scale. */
 function nodeSize(n: { kind: string; w?: number }): { width: number; height: number } {
-  if (n.kind === 'area') return { width: 150, height: 56 }
+  if (isGroup(n.kind)) return { width: 150, height: 56 }
   if (n.kind === 'pop') return { width: n.w ?? 80, height: 34 }
   if (n.kind.startsWith('external')) return { width: n.w ?? 120, height: 30 }
   return { width: 26, height: 26 }
@@ -459,9 +542,9 @@ function applyMarkerScale(cy: Core, level: Level) {
       n.style({
         width: width * scale,
         height: height * scale,
-        'font-size': (kind === 'area' ? 13 : 12) * scale,
+        'font-size': (isGroup(kind) ? 13 : 12) * scale,
         'border-width': 2 * scale,
-        'text-max-width': `${(kind === 'area' ? 150 : 160) * scale}px`,
+        'text-max-width': `${(isGroup(kind) ? 150 : 160) * scale}px`,
       })
     })
     cy.edges().forEach((e) => {
@@ -527,9 +610,9 @@ function mapLayout(cy: Core, view: View) {
   } as cytoscape.LayoutOptions).run()
 }
 
-/** Schematic views with tier bands: every level except the area overview and the map. */
+/** Schematic views with tier bands: POPs and devices, not the area / province / regency overviews or the map. */
 function usesBands(level: Level, onMap: boolean): boolean {
-  return !onMap && level !== 'area'
+  return !onMap && !isGroupLevel(level)
 }
 
 /**
@@ -538,8 +621,8 @@ function usesBands(level: Level, onMap: boolean): boolean {
  */
 function runLayout(cy: Core, view: View, onMap: boolean, keep?: Map<string, Pos>) {
   if (onMap) return mapLayout(cy, view)
-  if (view.level === 'area') {
-    const pos = areaLayout(view)
+  if (isGroupLevel(view.level)) {
+    const pos = view.level === 'area' ? areaLayout(view) : groupLayout(view)
     cy.layout({ name: 'preset', padding: 50, positions: (n: cytoscape.NodeSingular) => keep?.get(n.id()) ?? pos[n.id()] } as cytoscape.LayoutOptions).run()
     return
   }
@@ -635,6 +718,8 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   const [params, setParams] = useSearchParams()
   const level = (params.get('level') as Level) || 'area'
   const area = params.get('area') ?? undefined
+  const province = params.get('province') ?? undefined
+  const regency = params.get('regency') ?? undefined
   const pop = params.get('pop') ?? undefined
   const deviceId = params.get('device_id') ?? undefined
   const depth = params.get('depth') ?? '1'
@@ -648,7 +733,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   const [view, setView] = useState<View | null>(null)
   // Devices go on the map only where at least one has its own site coordinates.
   const devicesLocated = view?.nodes.filter((n) => n.kind === 'device' && n.located).length ?? 0
-  const mapAvailable = level === 'area' || level === 'pop' || devicesLocated > 0
+  const mapAvailable = isGroupLevel(level) || level === 'pop' || devicesLocated > 0
   const onMap = mapOn && mapAvailable && view?.level === level
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<{ node?: NodeData; edge?: EdgeData } | null>(null)
@@ -681,15 +766,17 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   viewRef.current = view
 
   const go = useCallback(
-    (next: { level: Level; area?: string; pop?: string; device_id?: number; depth?: number; focus?: string }) => {
-      if (!confirmDiscard(dirtyRef.current)) return
+    (next: Target, replace = false) => {
+      if (!replace && !confirmDiscard(dirtyRef.current)) return
       const p: Record<string, string> = { level: next.level }
       if (next.area) p.area = next.area
+      if (next.province) p.province = next.province
+      if (next.regency) p.regency = next.regency
       if (next.pop) p.pop = next.pop
       if (next.device_id != null) p.device_id = String(next.device_id)
       if (next.depth) p.depth = String(next.depth)
       if (next.focus) p.focus = next.focus
-      setParams(p)
+      setParams(p, { replace })
     },
     [setParams],
   )
@@ -697,25 +784,42 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   const viewPath = useMemo(() => {
     const q = new URLSearchParams({ level })
     if (area) q.set('area', area)
+    if (province) q.set('province', province)
+    if (regency) q.set('regency', regency)
     if (pop) q.set('pop', pop)
     if (deviceId) q.set('device_id', deviceId)
     if (level === 'neighbors') q.set('depth', depth)
     return `/topology/view?${q}`
-  }, [level, area, pop, deviceId, depth])
+  }, [level, area, province, regency, pop, deviceId, depth])
 
+  // A province/regency holding a single group comes back one level deeper: the URL follows it, and the
+  // view already fetched is used for that new URL instead of being fetched again.
+  const deeperRef = useRef<View | null>(null)
   const load = useCallback(async () => {
     setLoading(true)
     setSelected(null)
     setMoved(0)
     try {
-      setView(await api.get<View>(viewPath))
+      const ready = deeperRef.current
+      deeperRef.current = null
+      if (ready && ready.level === level && ready.area === area && ready.province === province && ready.regency === regency) {
+        setView(ready)
+        return
+      }
+      const next = await api.get<View>(viewPath)
+      if (next.level !== level) {
+        deeperRef.current = next
+        go({ level: next.level, area: next.area, province: next.province, regency: next.regency }, true)
+        return
+      }
+      setView(next)
     } catch (e) {
       setMessage({ text: (e as Error).message, error: true })
       setView(null)
     } finally {
       setLoading(false)
     }
-  }, [viewPath])
+  }, [viewPath, level, area, province, regency, go])
 
   useEffect(() => {
     load()
@@ -787,7 +891,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
 
   // Edge labels on by default only where there are few edges (area level).
   useEffect(() => {
-    setEdgeLabels(level === 'area')
+    setEdgeLabels(isGroupLevel(level))
   }, [level])
 
   // A running collector sync rebuilds topology itself and holds the DB writer; block manual discovery.
@@ -856,10 +960,8 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
       }
     })
     cy.on('dbltap', 'node', (e) => {
-      const n = e.target.data() as NodeData
-      if (n.kind === 'area' || n.kind === 'external_area') go({ level: 'pop', area: n.label })
-      else if (n.kind === 'pop' || n.kind === 'external_pop') go({ level: 'device', pop: n.label })
-      else if (n.kind === 'device' && n.device_id != null) go({ level: 'neighbors', device_id: n.device_id, depth: 1 })
+      const target = drillTarget(e.target.data() as NodeData)
+      if (target) go(target)
     })
     // Positions are only stored for the device level drawn as a graph; on the map they come from coordinates.
     const positionsEditable = view.level === 'device' && !onMap
@@ -1063,6 +1165,8 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   const edge = selected?.edge
   const nameOf = (id: string) => view?.nodes.find((n) => n.id === id)?.label ?? id
   const viewArea = view?.area ?? area
+  const viewProvince = view?.province ?? province
+  const viewRegency = view?.regency ?? regency
   const viewPop = view?.pop ?? pop
 
   return (
@@ -1075,16 +1179,36 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
           {level !== 'area' && viewArea && (
             <>
               <span>›</span>
-              <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'pop', area: viewArea }) }} className={level === 'pop' ? 'current' : ''}>
+              <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'province', area: viewArea }) }}
+                className={level === 'province' || (level === 'pop' && !viewProvince) ? 'current' : ''}>
                 {viewArea}
+              </a>
+            </>
+          )}
+          {level !== 'area' && level !== 'province' && viewArea && viewProvince && (
+            <>
+              <span>›</span>
+              <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'regency', area: viewArea, province: viewProvince }) }}
+                className={level === 'regency' || (level === 'pop' && !viewRegency) ? 'current' : ''}>
+                {viewProvince}
+              </a>
+            </>
+          )}
+          {(level === 'pop' || level === 'device' || level === 'neighbors') && viewArea && viewProvince && viewRegency && (
+            <>
+              <span>›</span>
+              <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'pop', area: viewArea, province: viewProvince, regency: viewRegency }) }}
+                className={level === 'pop' ? 'current' : ''}>
+                {viewRegency}
               </a>
             </>
           )}
           {(level === 'device' || level === 'neighbors') && viewPop && (
             <>
               <span>›</span>
-              <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'device', pop: viewPop }) }} className={level === 'device' ? 'current' : ''}>
-                {viewPop}{level === 'device' && view?.pop_name && view.pop_name !== viewPop ? ` · ${view.pop_name}` : ''}
+              <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'device', pop: viewPop }) }} className={level === 'device' ? 'current' : ''}
+                title={`POP ${viewPop}${view?.pop_name && view.pop_name !== viewPop ? ` · ${view.pop_name}` : ''}`}>
+                {(level === 'device' && view?.city) || viewPop}
               </a>
             </>
           )}
@@ -1221,8 +1345,8 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
               )}
           {level === 'device' && view?.pop_id != null && !node && !edge && (
             <div className="detail">
-              <h3>POP {view.pop}</h3>
-              <div className="small muted">Area: {view.area}</div>
+              <h3>{view.city ?? `POP ${view.pop}`}</h3>
+              <div className="small muted">POP {view.pop} · {[view.regency, view.province, view.area].filter(Boolean).join(' · ')}</div>
               <PopAreaEditor popId={view.pop_id} region={view.region} onSaved={(a) => areaSaved(view.pop ?? '', a)} />
             </div>
           )}
@@ -1230,15 +1354,18 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
             <div className="detail">
               <h3>{node.label}</h3>
               <dl>
-                {node.kind === 'area' && (
+                {isGroup(node.kind) && (
                   <>
+                    {node.kind !== 'area' && (<><dt>Wilayah</dt><dd>{[node.province !== node.label && node.province, node.area].filter(Boolean).join(' · ')}</dd></>)}
                     <dt>POP</dt><dd>{node.pops}</dd>
                     <dt>Perangkat</dt><dd>{node.devices}</dd>
                   </>
                 )}
                 {node.kind === 'pop' && (
                   <>
+                    <dt>Kode POP</dt><dd>{node.code}</dd>
                     <dt>Nama</dt><dd>{node.name}</dd>
+                    <dt>Kab/Kota</dt><dd>{node.regency} · {node.province}</dd>
                     <dt>Area</dt><dd>{node.area}{node.region ? '' : ' (otomatis)'}</dd>
                     <dt>Perangkat</dt><dd>{node.devices} di {node.sites} site</dd>
                     <dt>Kategori</dt>
@@ -1253,15 +1380,17 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
                     <dt>Status</dt><dd>{node.status}</dd>
                   </>
                 )}
-                {(node.kind === 'external_area' || node.kind === 'external_pop') && (
+                {node.kind.startsWith('external') && (
                   <>
-                    <dt>Area</dt><dd>{node.area ?? node.label}</dd>
+                    <dt>{GROUP_LABEL[node.kind]}</dt><dd>{node.kind === 'external_pop' ? `${node.label} (${node.code})` : node.label}</dd>
+                    {node.kind !== 'external_area' && <><dt>Area</dt><dd>{node.area}</dd></>}
+                    {node.links != null && (<><dt>Link ke sini</dt><dd>{node.links}</dd></>)}
                     {node.devices != null && (<><dt>Perangkat terhubung</dt><dd>{node.devices}</dd></>)}
                   </>
                 )}
               </dl>
               {node.kind === 'pop' && node.pop_id != null && (
-                <PopAreaEditor popId={node.pop_id} region={node.region} onSaved={(a) => areaSaved(node.label, a)} />
+                <PopAreaEditor popId={node.pop_id} region={node.region} onSaved={(a) => areaSaved(node.code ?? node.label, a)} />
               )}
               {node.internal && node.internal.links > 0 && (
                 <p className="small muted">
@@ -1270,17 +1399,11 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
                 </p>
               )}
               <div className="detail-actions">
-                {(node.kind === 'area' || node.kind === 'external_area') && (
-                  <button onClick={() => go({ level: 'pop', area: node.label })}>Buka POP di area ini →</button>
+                {drillTarget(node) && (
+                  <button onClick={() => go(drillTarget(node)!)}>{DRILL_LABEL[node.kind]} →</button>
                 )}
-                {(node.kind === 'pop' || node.kind === 'external_pop') && (
-                  <button onClick={() => go({ level: 'device', pop: node.label })}>Buka perangkat di {node.label} →</button>
-                )}
-                {node.kind === 'device' && node.device_id != null && (
-                  <>
-                    <button onClick={() => go({ level: 'neighbors', device_id: node.device_id, depth: 1 })}>Lihat tetangga perangkat →</button>
-                    <RouterLink to={`/ports?q=${encodeURIComponent(node.label)}`}>Lihat port perangkat →</RouterLink>
-                  </>
+                {node.kind === 'device' && (
+                  <RouterLink to={`/ports?q=${encodeURIComponent(node.label)}`}>Lihat port perangkat →</RouterLink>
                 )}
               </div>
             </div>
