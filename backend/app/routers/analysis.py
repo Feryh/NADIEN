@@ -610,7 +610,28 @@ def topology_view(
     A province or regency level with a single group inside answers with the next level down
     (the response's `level` says which), so no click opens a view of one box."""
     key = ("topology", level, area, province, regency, (pop or "").upper(), device_id, depth)
-    return cache.cached(key, lambda: _topology_view(db, level, area, province, regency, pop, device_id, depth))
+    return cache.cached(key, lambda: _with_layout(db, _topology_view(db, level, area, province, regency, pop,
+                                                                     device_id, depth)))
+
+
+def layout_key(view: dict) -> str:
+    """Which saved arrangement a view uses: one per area overview, province, regency, POP list, POP and
+    neighbourhood (device:JKT, regency:Jawa Tengah & DIY|Jawa Tengah, neighbors:42:1)."""
+    level = view["level"]
+    if level == "area":
+        return "area"
+    if level == "device":
+        return f"device:{view['pop']}"
+    if level == "neighbors":
+        return f"neighbors:{view['device_id']}:{view['depth']}"
+    return f"{level}:" + "|".join(view.get(k) or "" for k in ("area", "province", "regency"))
+
+
+def _with_layout(db: Session, view: dict) -> dict:
+    view["layout_key"] = layout_key(view)
+    row = db.get(m.TopologyLayout, view["layout_key"])
+    view["layout"] = row.positions if row else {}
+    return view
 
 
 def _topology_view(db: Session, level: str, area: str | None, province: str | None, regency: str | None,

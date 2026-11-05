@@ -75,6 +75,27 @@ def save_positions(positions: list[s.NodePosition], db: Session = Depends(get_db
     db.commit()
 
 
+@router.put("/layouts", status_code=204)
+def save_layout(layout: s.TopologyLayoutIn, db: Session = Depends(get_db)):
+    """Store the arrangement of one view; the view returns it as `layout` from then on."""
+    row = db.get(m.TopologyLayout, layout.view_key) or m.TopologyLayout(view_key=layout.view_key)
+    row.positions = {node: {"x": round(p.x, 1), "y": round(p.y, 1)} for node, p in layout.positions.items()}
+    db.add(row)
+    db.commit()
+
+
+@router.delete("/layouts", status_code=204)
+def reset_layout(view_key: str, db: Session = Depends(get_db)):
+    """Back to the automatic layout for one view (device positions saved the old way included)."""
+    db.execute(delete(m.TopologyLayout).where(m.TopologyLayout.view_key == view_key))
+    if view_key.startswith("device:"):
+        code = view_key.removeprefix("device:")
+        pop = db.scalar(select(m.Pop).where(m.Pop.code == code))
+        for device in db.scalars(select(m.Device).where(m.Device.pop_id == pop.id)) if pop else []:
+            device.map_x = device.map_y = None
+    db.commit()
+
+
 @router.delete("/positions", status_code=204)
 def reset_positions(db: Session = Depends(get_db)):
     for device in db.scalars(select(m.Device)):

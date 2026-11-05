@@ -104,6 +104,8 @@ interface View {
   device_id?: number
   depth?: number
   truncated?: boolean
+  layout_key?: string  // which saved arrangement this view uses
+  layout?: Record<string, Pos>  // node id -> position arranged by hand and saved
   nodes: NodeData[]
   edges: EdgeData[]
   segments: Record<Segment, Totals>
@@ -621,37 +623,36 @@ function usesBands(level: Level, onMap: boolean): boolean {
  */
 function runLayout(cy: Core, view: View, onMap: boolean, keep?: Map<string, Pos>) {
   if (onMap) return mapLayout(cy, view)
-  if (isGroupLevel(view.level)) {
-    const pos = view.level === 'area' ? areaLayout(view) : groupLayout(view)
-    cy.layout({ name: 'preset', padding: 50, positions: (n: cytoscape.NodeSingular) => keep?.get(n.id()) ?? pos[n.id()] } as cytoscape.LayoutOptions).run()
-    return
-  }
-  const auto = layeredLayout(view, 120)
-  const saved: Record<string, Pos> = {}
+  // Saved arrangement of this view first (every node kind), then the device positions saved the old way.
+  const arranged: Record<string, Pos> = { ...(view.layout ?? {}) }
   if (view.level === 'device') {
-    for (const n of view.nodes) if (n.kind === 'device' && n.x != null && n.y != null) saved[n.id] = { x: n.x, y: n.y }
+    for (const n of view.nodes) {
+      if (n.kind === 'device' && n.x != null && n.y != null && !arranged[n.id]) arranged[n.id] = { x: n.x, y: n.y }
+    }
   }
+  const auto = view.level === 'area' ? areaLayout(view) : isGroupLevel(view.level) ? groupLayout(view) : layeredLayout(view, 120)
   cy.nodes().not('[kind="band"]').layout({
     name: 'preset',
-    padding: 30,
-    positions: (n: cytoscape.NodeSingular) => keep?.get(n.id()) ?? saved[n.id()] ?? auto[n.id()] ?? { x: 0, y: 0 },
+    padding: isGroupLevel(view.level) ? 50 : 30,
+    positions: (n: cytoscape.NodeSingular) => keep?.get(n.id()) ?? arranged[n.id()] ?? auto[n.id()] ?? { x: 0, y: 0 },
   } as cytoscape.LayoutOptions).run()
 }
 
-function devicePositions(cy: Core): { id: string; deviceId: number; pos: Pos }[] {
-  return cy.nodes('[kind="device"]').map((n) => ({ id: n.id(), deviceId: Number(n.data('device_id')), pos: { ...n.position() } }))
+/** Every node the user can arrange: all but the role bands, which wrap their rows. */
+function nodePositions(cy: Core): { id: string; pos: Pos }[] {
+  return cy.nodes().not('[kind="band"]').nodes().map((n) => ({ id: n.id(), pos: { ...n.position() } }))
 }
 
-/** Devices more than a pixel away from their saved place (a click without a drag must not count). */
+/** Nodes more than a pixel away from their saved place (a click without a drag must not count). */
 function countMoved(cy: Core, saved: Map<string, Pos>): number {
-  return devicePositions(cy).filter((d) => {
+  return nodePositions(cy).filter((d) => {
     const s = saved.get(d.id)
     return !s || Math.abs(s.x - d.pos.x) > 1 || Math.abs(s.y - d.pos.y) > 1
   }).length
 }
 
 function confirmDiscard(dirty: boolean): boolean {
-  return !dirty || window.confirm('Ada perubahan posisi perangkat yang belum disimpan. Tinggalkan tanpa menyimpan?')
+  return !dirty || window.confirm('Ada perubahan tata letak topologi yang belum disimpan. Tinggalkan tanpa menyimpan?')
 }
 
 const LIVE_INTERVAL_MS = 30_000
@@ -963,9 +964,11 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
       const target = drillTarget(e.target.data() as NodeData)
       if (target) go(target)
     })
-    // Positions are only stored for the device level drawn as a graph; on the map they come from coordinates.
-    const positionsEditable = view.level === 'device' && !onMap
+    // Every schematic view can be arranged and saved. On the map positions follow coordinates, so nodes stay put
+    // there instead of moving and silently snapping back on the next visit.
+    const positionsEditable = !onMap
     if (positionsEditable) cy.on('dragfree', 'node', () => setMoved(countMoved(cy, savedPosRef.current)))
+    else cy.autoungrabify(true)
     cyRef.current = cy
     // The basemap is drawn in degrees; keep it under the graph through every pan and zoom.
     let lastZoom = 0
@@ -983,7 +986,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
     if (positionsEditable) {
       // After a live refresh the unsaved moves survive in `keep`: compare against the saved positions, not the kept ones.
       const before = keep ? savedPosRef.current : new Map<string, Pos>()
-      savedPosRef.current = new Map(devicePositions(cy).map((d) => [d.id, before.get(d.id) ?? d.pos] as [string, Pos]))
+      savedPosRef.current = new Map(nodePositions(cy).map((d) => [d.id, before.get(d.id) ?? d.pos] as [string, Pos]))
       setMoved(countMoved(cy, savedPosRef.current))
     } else {
       savedPosRef.current = new Map()
@@ -1068,16 +1071,16 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
 
   async function savePositions() {
     const cy = cyRef.current
-    if (!cy) return
-    if (saving) return
-    // Every device is stored, not only the moved ones, so the whole drawing reopens exactly as it is now.
-    const current = devicePositions(cy)
-    const positions = current.map((d) => ({ device_id: d.deviceId, x: Math.round(d.pos.x), y: Math.round(d.pos.y) }))
+    const viewKey = viewRef.current?.layout_key
+    if (!cy || !viewKey || saving) return
+    // Every node is stored, not only the moved ones, so the whole drawing reopens exactly as it is now.
+    const current = nodePositions(cy)
+    const positions = Object.fromEntries(current.map((d) => [d.id, { x: Math.round(d.pos.x), y: Math.round(d.pos.y) }]))
     setSaving(true)
     try {
-      await api.put('/topology/positions', positions)
+      await api.put('/topology/layouts', { view_key: viewKey, positions })
       savedPosRef.current = new Map(current.map((d) => [d.id, d.pos] as [string, Pos]))
-      setMessage({ text: `Perubahan disimpan: ${moved} perangkat dipindah, posisi ${positions.length} perangkat di ${pop} tersimpan.` })
+      setMessage({ text: `Tata letak disimpan: ${moved} node dipindah. Tampilan ini akan dibuka dengan susunan yang sama.` })
       setMoved(0)
     } catch (e) {
       setMessage({ text: (e as Error).message, error: true })
@@ -1086,10 +1089,22 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
     }
   }
 
+  async function resetLayout() {
+    const viewKey = view?.layout_key
+    if (!viewKey || !window.confirm('Kembalikan tampilan ini ke tata letak otomatis? Susunan yang tersimpan dihapus.')) return
+    try {
+      await api.del(`/topology/layouts?view_key=${encodeURIComponent(viewKey)}`)
+      setMessage({ text: 'Tata letak dikembalikan ke susunan otomatis.' })
+      await load()
+    } catch (e) {
+      setMessage({ text: (e as Error).message, error: true })
+    }
+  }
+
   function discardMoves() {
     const cy = cyRef.current
     if (!cy) return
-    cy.nodes('[kind="device"]').forEach((n) => {
+    cy.nodes().not('[kind="band"]').forEach((n) => {
       const pos = savedPosRef.current.get(n.id())
       if (pos) n.animate({ position: pos }, { duration: 250 })
     })
@@ -1236,6 +1251,11 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
           onClick={() => { setLive(!live); remember('nadien.topology.live', live ? '0' : '1') }}>
           <span className="live-dot" />{live ? 'Live' : 'Live mati'}
         </button>
+        {!onMap && view && (Object.keys(view.layout ?? {}).length > 0 || view.nodes.some((n) => n.kind === 'device' && n.x != null)) && (
+          <button onClick={resetLayout} title="Hapus susunan yang tersimpan untuk tampilan ini dan kembali ke tata letak otomatis">
+            Atur ulang tata letak
+          </button>
+        )}
         {level === 'area' && view?.nodes.some((n) => n.label === 'Belum dipetakan') && (
           <button onClick={autoAssign} title="Isi area POP yang masih kosong dari kode kota (tidak menimpa yang sudah diisi)">
             Isi area otomatis
@@ -1320,9 +1340,9 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
           {dirty && (
             <div className="unsaved-bar" role="status">
               <span className="unsaved-dot" />
-              <span><b>{moved} perangkat</b> dipindah · perubahan belum disimpan</span>
+              <span><b>{moved} node</b> dipindah · tata letak belum disimpan</span>
               <button type="button" onClick={discardMoves} disabled={saving}>Batalkan</button>
-              <button type="button" className="primary" onClick={savePositions} disabled={saving} title="Simpan posisi perangkat (Ctrl+S)">
+              <button type="button" className="primary" onClick={savePositions} disabled={saving} title="Simpan tata letak tampilan ini (Ctrl+S)">
                 {saving ? 'Menyimpan…' : 'Simpan perubahan'}
               </button>
             </div>

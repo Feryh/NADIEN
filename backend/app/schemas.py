@@ -299,6 +299,18 @@ class NodePosition(BaseModel):
     y: float
 
 
+class LayoutPoint(BaseModel):
+    x: float = Field(ge=-1e7, le=1e7)
+    y: float = Field(ge=-1e7, le=1e7)
+
+
+class TopologyLayoutIn(BaseModel):
+    """Positions of every node on one topology view, as `layout_key` of that view names it."""
+
+    view_key: str = Field(min_length=1, max_length=255)
+    positions: dict[str, LayoutPoint] = Field(max_length=5000)
+
+
 class DiscoveryResult(BaseModel):
     lldp_links: int
     config_links: int
