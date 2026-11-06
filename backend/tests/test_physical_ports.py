@@ -17,9 +17,26 @@ from app.main import app
     ("dcn_eth1", "", "virtual"),                       # no ifType known: the name says management
     ("MEth0/0/1", "", "virtual"),
     ("Eth-Trunk1", "propMultiplexor", "bundle"),
+    ("smartgroup82", "ethernetCsmacd", "bundle"),
+    ("bme0", "ethernetCsmacd", "virtual"),             # Juniper internal management
+    ("StackPort1", "other", "virtual"),
+    ("pptp-out1", "ppp", "virtual"),
+    ("pipe1", "ethernetCsmacd", "physical"),           # a short internal name is matched as a whole word only
 ])
 def test_should_classify_port_from_observium_iftype_and_name(name, if_type, kind):
     assert classify_port(name, if_type) == kind
+
+
+@pytest.mark.parametrize("name, speed_known, kind", [
+    ("dwdm0/2/1/0", False, "virtual"),                 # ifType other, no speed: controller, not a data port
+    ("xe-0/0/1", True, "physical"),                    # ifType other with a speed: a real port on some vendors
+])
+def test_should_use_speed_when_iftype_is_other(name, speed_known, kind):
+    assert classify_port(name, "other", speed_known) == kind
+
+
+def test_should_keep_real_port_with_unknown_speed_as_physical():
+    assert classify_port("ge-0/0/1", "ethernetCsmacd", False) == "physical"
 
 
 def test_should_keep_observium_iftype_and_speed_when_parsing_a_port():
