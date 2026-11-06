@@ -43,20 +43,23 @@ _TOKEN_SPLIT = re.compile(r"[-_.\s]+")
 MAX_IFNAME = 128
 MAX_DESCRIPTION = 512
 
-BUNDLE_NAME = re.compile(r"^(bundle-ether|be|eth-trunk|ae|lag-?|port-channel|po)\d+$", re.IGNORECASE)
+BUNDLE_NAME = re.compile(r"^(bundle-ether|be|eth-trunk|ae|lag-?|port-channel|po|smartgroup)\d+$", re.IGNORECASE)
 LAG_IFTYPES = {"ieee8023adlag", "propmultiplexor"}
 # ifType (IANAifType, as Observium reports it by name or number) of logical interfaces: not a physical port, so
 # never counted in port capacity. PON ports (PonStatus) and optical/SONET ports are physical and stay.
 VIRTUAL_IFTYPES = {
     "propvirtual", "l2vlan", "l3ipvlan", "l3ipxvlan", "softwareloopback", "tunnel", "mpls", "mplstunnel", "bridge",
-    "virtualipaddress", "ipforward", "pppmultilinkbundle",
-    "53", "135", "136", "137", "24", "131", "166", "150", "209", "112", "142", "108",
+    "virtualipaddress", "ipforward", "pppmultilinkbundle", "ppp", "bits",
+    "53", "135", "136", "137", "24", "131", "166", "150", "209", "112", "142", "108", "23",
 }
 # Logical interfaces recognised by name where no ifType is known (config-only ports, data from before ifType was
 # kept): SVIs/VLANs, management (meth, dcn, qx, console), virtual templates, tunnels, bridge domains.
 VIRTUAL_NAME = re.compile(
     r"^(vlan|vl\d|bvi|bdi|bdif|vbdif|vbui|supervlan|virtual|ve-group|te_tunnel|tunnel-te|pw-ether|dcn|meth|"
-    r"gpon[-_]onu|nve|vsi|vxlan|bridge|dialer|mgmt_eth|qx|spi-|console|fti\d|dloopback|ipip|tap\d|aux)",
+    r"gpon[-_]onu|nve|vsi|vxlan|bridge|dialer|mgmt_eth|qx|spi-|console|fti\d|dloopback|ipip|aux|stack|opticalamplifier|"
+    # Short internal names (Juniper bme0/vme/jsrv/pime…, VPN clients): the whole word, so "pipe1" or "esi2x" stay.
+    r"(?:bme|vme|jsrv|vtep|dsc|cbp|esi|pip|tap|pime|pimd|mtun|mtunnel|demux|rbeb|mif|vrrp|vpls|vtnet|<?pptp|<?l2tp)"
+    r"(?![a-z]))",
     re.IGNORECASE)
 # Logical/internal ports that never carry a Metro link.
 SKIP_PORT = re.compile(r"^(null|nu|mgmt|management|fxp|em\d|me\d|lo|loopback|inloopback|tunnel|tu|vlanif|irb|dummy|sit|gre)", re.IGNORECASE)
@@ -126,6 +129,9 @@ def role_from_hostname(hostname: str) -> str | None:
     """Role written in the hostname, or None when no token names one."""
     if csr_parts(hostname):  # BAL-BA-BLI-0004-ME1-ZTE: a cell-site router despite its ME1 token
         return "csr"
+    tokens = _tokens(hostname)
+    if tokens and tokens[0].startswith("DS"):  # DS1-…, DS9-…, DSI-…, DSIN1-…: this network's switches
+        return "switch"
     return next((role for token in _tokens(hostname) if (role := _role_word(token))), None)
 
 
@@ -231,13 +237,17 @@ class PortRecord:
     mib_type: str | None = None  # Observium ifType as reported (ethernetCsmacd, propVirtual, PonStatus …)
 
 
-def classify_port(name: str, if_type: str) -> str:
-    """physical | bundle | subinterface | virtual, from the name and Observium's ifType."""
+def classify_port(name: str, if_type: str, speed_known: bool = True) -> str:
+    """physical | bundle | subinterface | virtual, from the name and Observium's ifType. ifType `other` without any
+    speed is an internal interface or controller (dwdm0/2/1/0, tap, jsrv), not a data port; `other` with a speed is
+    a real port on some vendors and stays."""
     if "." in name or ":" in name.split("/")[-1]:
         return "subinterface"
     if if_type.lower() in LAG_IFTYPES or BUNDLE_NAME.match(name):
         return "bundle"
     if if_type.lower() in VIRTUAL_IFTYPES or VIRTUAL_NAME.match(name):
+        return "virtual"
+    if if_type.lower() == "other" and not speed_known:
         return "virtual"
     return "physical"
 
@@ -271,7 +281,7 @@ def parse_port(row: dict[str, Any]) -> PortRecord | None:
         observium_id=str(row.get("port_id")),
         observium_device_id=str(row.get("device_id")),
         name=name[:MAX_IFNAME],
-        if_type=classify_port(name, if_type),
+        if_type=classify_port(name, if_type, bool(speed_gbps)),
         speed_gbps=round(speed_gbps, 3) if speed_gbps else None,
         mtu=mtu if mtu and 64 <= mtu <= 16000 else None,  # SNMP reports 0 on many logical ports
         admin_status=_status(row.get("ifAdminStatus")),
