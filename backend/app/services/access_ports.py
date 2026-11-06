@@ -20,15 +20,18 @@ from sqlalchemy.orm import Session
 from .. import models as m
 from .areas import ROLE_TIER
 from .segments import UNKNOWN_TIER
-from .topology import norm_host, norm_if
+from .topology import host_key, norm_host, norm_if
 
 Direction = Literal["downlink", "uplink", "peer", "unknown"]
 
 _NOT_ACCESS = re.compile(
     r"^(loopback|inloopback|lo\d|null|vlanif|vlan|meth|mgmt|management|tunnel|nve|virtual|dialer|bdif|vbdif|"
-    r"ve\d|irb|bvi|ptp|console|aux)", re.I)
-# [ACC] is this network's description tag for access-facing ports (INTERNAL:[ACC]TO-S5700-…).
-_DOWNLINK_WORDS = re.compile(r"\b(olt|ont|gpon|epon|xgpon|pon|acc|access|akses|cpe|csr|downlink|dl)\b", re.I)
+    r"ve\d|irb|bvi|ptp|console|aux|dcn|dloopback|qx\d|spi-|te_tunnel)", re.I)
+# ZTE internals: dcn_ethN (DCN management), dloopbackN, qxN (management), spi-* (internal), te_tunnelN (TE tunnels)
+# [ACC] is this network's description tag for access-facing ports (INTERNAL:[ACC]TO-S5700-…). A number may follow
+# the word (OLT6 in sg_BKS-NBK-OLT6-HW), letters may not (no "acc" inside "account").
+_DOWNLINK_WORDS = re.compile(r"(?<![a-z])(olt|ont|gpon|epon|xgpon|pon|acc|access|akses|cpe|csr|downlink|dl)(?![a-z])",
+                             re.I)
 _UPLINK_WORDS = re.compile(r"\b(uplink|ul|core|backbone|to[-_ ]?p\d|to[-_ ]?pe)\b", re.I)
 
 
@@ -50,7 +53,24 @@ class Candidate:
     direction: Direction = "unknown"
 
 
-def _direction(local_role: str | None, far: Far | None, description: str | None) -> Direction:
+def _named_target(description: str | None, by_key: dict[str, m.Device]) -> m.Device | None:
+    """Device a description says the port goes to: "to-BKS-LBJ-BNG2-M6K-8SP via BKS-LJB-SW1" names the BNG
+    behind an L2 switch. Only the part before "via" counts; the longest inventory hostname found wins."""
+    target = re.split(r"\bvia\b", (description or "").lower())[0]
+    words = "-".join(p for p in re.split(r"[^a-z0-9]+", target) if p)
+    if not words:
+        return None
+    found = [device for key, device in by_key.items() if len(key) >= 6 and f"-{key}-" in f"-{words}-"]
+    return max(found, key=lambda d: len(d.hostname), default=None)
+
+
+def _direction(local_role: str | None, far: Far | None, description: str | None,
+               named: m.Device | None = None) -> Direction:
+    # A port whose description names an upstream device (BNG/PE/P behind a switch) is an uplink, whatever
+    # the L2 box it physically lands on.
+    local_tier = ROLE_TIER.get(local_role or "", UNKNOWN_TIER)
+    if named is not None and ROLE_TIER.get(named.role or "", UNKNOWN_TIER) < local_tier:
+        return "uplink"
     if far is not None and far.role is not None:
         local, remote = ROLE_TIER.get(local_role or "", UNKNOWN_TIER), ROLE_TIER.get(far.role, UNKNOWN_TIER)
         if remote == UNKNOWN_TIER:
@@ -72,6 +92,7 @@ def access_ports(db: Session, device_id: int) -> dict:
     interfaces = list(db.scalars(select(m.Interface).where(m.Interface.device_id == device_id)))
     devices = {d.id: d for d in db.scalars(select(m.Device))}
     by_host = {norm_host(d.hostname): d for d in devices.values()}
+    by_key = {host_key(d.hostname): d for d in devices.values()}
 
     def far_device(other: m.Device | None, source: Literal["link", "lldp"]) -> Far | None:
         return Far(other.hostname, other.role, source) if other else None
@@ -118,7 +139,7 @@ def access_ports(db: Session, device_id: int) -> dict:
         candidate = Candidate(name=iface.name, kind="bundle" if iface.if_type == "bundle" else "physical",
                               speed_gbps=iface.speed_gbps, description=iface.description,
                               members=sorted(mbr.name for mbr in members[iface.id]), far=far)
-        candidate.direction = _direction(device.role, far, iface.description)
+        candidate.direction = _direction(device.role, far, iface.description, _named_target(iface.description, by_key))
         candidates.append(candidate)
 
     order = {"downlink": 0, "unknown": 1, "peer": 2, "uplink": 3}
