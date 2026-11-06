@@ -214,12 +214,18 @@ def parse_output(text: str) -> dict[str, list[tuple[datetime, float, float]] | s
     return results
 
 
-def _targets(db: Session, source: RrdSource) -> tuple[list[Target], int]:
-    # History comes from the main Observium; a CSR port id would name some other port there.
-    refs = {r.interface_id: r for r in db.scalars(select(m.ObserviumPort).where(m.ObserviumPort.source == "main"))}
+def _targets(db: Session, source: RrdSource, server: str = "main") -> tuple[list[Target], int]:
+    """Links to read from `server`, through a port of that server: port ids of two Observiums overlap. A link with a
+    port on the main server is read from there, so the CSR server only serves links the main one cannot."""
+    all_refs = list(db.scalars(select(m.ObserviumPort)))
+    refs = {r.interface_id: r for r in all_refs if r.source == server}
+    main_ports = {r.interface_id for r in all_refs if r.source == "main"}
     targets, unmapped = [], 0
     for link in db.scalars(select(m.Link)):
-        for iface_id, swapped in ((link.a_interface_id, False), (link.b_interface_id, True)):
+        ends = (link.a_interface_id, link.b_interface_id)
+        if server != "main" and (not any(i in refs for i in ends) or any(i in main_ports for i in ends)):
+            continue
+        for iface_id, swapped in ((ends[0], False), (ends[1], True)):
             ref = refs.get(iface_id or -1)
             if ref is not None and source.usable(ref):
                 targets.append(Target(link, ref, swapped))
@@ -230,9 +236,9 @@ def _targets(db: Session, source: RrdSource) -> tuple[list[Target], int]:
 
 
 def sync_rrd(db: Session, source: RrdSource, days: int = 90,
-             progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+             progress: Callable[[str], None] | None = None, server: str = "main") -> dict[str, Any]:
     step = progress or (lambda _p: None)
-    targets, unmapped = _targets(db, source)
+    targets, unmapped = _targets(db, source, server)
     report: dict[str, Any] = {"source": source.name, "days": days, "links": len(targets) + unmapped,
                               "links_without_port_map": unmapped, "links_with_history": 0, "missing_files": 0,
                               "errors": [], "error_count": 0, "samples": 0, "days_without_data": 0,

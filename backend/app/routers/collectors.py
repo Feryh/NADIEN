@@ -181,6 +181,20 @@ def observium_csr_sync():
     return _start("observium-csr", job)
 
 
+@router.post("/observium-csr/rrd", status_code=202)
+def observium_csr_rrd(days: int = Query(90, ge=7, le=365)):
+    """Start a background job: daily traffic peaks of the links only the CSR Observium can see."""
+    try:
+        ObserviumClient(base_url=settings.observium_csr_url).close()  # credentials checked now
+    except ObserviumError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+    def job(db: Session, progress) -> dict:
+        return jobs.run_rrd_csr(db, days, progress=progress)
+
+    return _start("observium-csr-rrd", job)
+
+
 @router.post("/observium/rrd", status_code=202)
 def observium_rrd(days: int = Query(90, ge=7, le=365)):
     """Start a background job: daily peak in/out for every link from Observium's RRD files over the

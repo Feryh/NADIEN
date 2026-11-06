@@ -232,6 +232,13 @@ export default function Collectors() {
           >
             Ambil histori RRD
           </button>
+          <button
+            disabled={!!busy || jobRunning || !status?.observium_csr.configured}
+            title="Histori link yang hanya terlihat oleh Observium CSR; link dengan port di server utama tetap memakai server utama"
+            onClick={() => startJob(`/collectors/observium-csr/rrd?days=${rrdDays}`)}
+          >
+            Histori CSR
+          </button>
         </div>
         {status?.rrd.mode === 'api' ? (
           <p className="hint">
