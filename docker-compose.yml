@@ -16,6 +16,7 @@ services:
 
   backend:
     build: ./backend
+    user: "0:0"  # ./backups is a bind mount owned by the host user; Kubernetes uses the image's unprivileged user
     environment:
       NADIEN_DATABASE_URL: postgresql+psycopg://nadien:nadien@db:5432/nadien
       NADIEN_BACKUP_DIR: /backups
@@ -34,7 +35,7 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "8080:80"
+      - "8080:8080"
     depends_on:
       - backend
 

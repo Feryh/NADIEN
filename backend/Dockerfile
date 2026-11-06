@@ -18,9 +18,18 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY alembic.ini .
 COPY app ./app
 
+# Runs as an unprivileged user: Kubernetes "restricted" pods need it. Docker Compose bind-mounts ./backups, which
+# belongs to the host user, so docker-compose.yml overrides this with root (see there).
+RUN useradd --uid 10001 --no-create-home --home-dir /tmp --shell /usr/sbin/nologin nadien \
+ && install -d -o 10001 -g 10001 /backups
+USER 10001
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+
 EXPOSE 8000
 # NADIEN_SEED_DEMO=true fills an empty database with demo data (development only).
 # WEB_CONCURRENCY = uvicorn worker processes; job state and the daily schedule live in the DB, so
 # workers and replicas never run the same sync twice.
-ENV WEB_CONCURRENCY=1 NADIEN_SEED_DEMO=false
-CMD ["sh", "-c", "if [ \"$NADIEN_SEED_DEMO\" = true ]; then python -m app.seed; fi; exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY} --proxy-headers --forwarded-allow-ips='*'"]
+# Keep-alive outlasts nginx's 60 s for idle upstream connections, so nginx is the side that closes them.
+# One proxy: the frontend nginx. Add one for each proxy in front of it (NADIEN_TRUSTED_PROXY_HOPS in app/config.py).
+ENV WEB_CONCURRENCY=1 NADIEN_SEED_DEMO=false NADIEN_TRUSTED_PROXY_HOPS=1
+CMD ["sh", "-c", "if [ \"$NADIEN_SEED_DEMO\" = true ]; then python -m app.seed; fi; exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY} --proxy-headers --forwarded-allow-ips='*' --timeout-graceful-shutdown 30 --timeout-keep-alive 75"]

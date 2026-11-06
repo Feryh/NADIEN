@@ -130,6 +130,8 @@ def reject_change(change_id: int, payload: ReviewIn, db: Session = Depends(get_d
 def start_run(change_id: int, payload: RunIn, db: Session = Depends(get_db),
               me: CurrentUser = Depends(require("engineer"))):
     """Starts one CLI session; follow it with GET …/runs/{run_id}. The password is never stored or logged."""
+    if payload.protocol == "telnet" and not settings.device_telnet_enabled:
+        raise HTTPException(422, "Telnet dinonaktifkan di server ini. Gunakan SSH.")
     change = _get(db, change_id)
     try:
         svc.check_can_run(change, _runs(db, change_id), payload.site, payload.phase)

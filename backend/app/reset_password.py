@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from . import models as m
 from .config import settings
 from .database import SessionLocal, init_schema
-from .services.auth import hash_password, password_problem
+from .services.auth import LOGIN_UNLOCKED, audit, hash_password, password_problem
 
 
 class ResetError(Exception):
@@ -41,6 +41,7 @@ def reset_password(db: Session, username: str) -> str:
     user.failed_logins = 0
     user.locked_until = None
     user.active = True
+    audit(db, user.username, LOGIN_UNLOCKED, f"user {user.username}", "reset dari console server")
     db.commit()
     return password
 

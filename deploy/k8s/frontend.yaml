@@ -4,7 +4,7 @@ metadata:
   name: nadien-frontend
 spec:
   selector: { app: nadien-frontend }
-  ports: [{ port: 80 }]
+  ports: [{ port: 80, targetPort: 8080 }]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -12,21 +12,64 @@ metadata:
   name: nadien-frontend
 spec:
   replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
   selector:
     matchLabels: { app: nadien-frontend }
   template:
     metadata:
       labels: { app: nadien-frontend }
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: nadien-frontend }
       containers:
         - name: nginx
           image: nadien-frontend
           env:
             - { name: API_UPSTREAM, value: "nadien-api:8000" }
             - { name: WORKER_UPSTREAM, value: "nadien-worker:8000" }
-          ports: [{ containerPort: 80 }]
+          ports: [{ containerPort: 8080 }]
           readinessProbe:
-            httpGet: { path: /, port: 80 }
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 20
+          lifecycle:
+            preStop:
+              exec: { command: ["sleep", "5"] }
           resources:
             requests: { cpu: 100m, memory: 64Mi }
             limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:  # the entrypoint renders the config template here; nginx keeps its pid and buffers in /tmp
+            - { name: conf, mountPath: /etc/nginx/conf.d }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: conf
+          emptyDir: { sizeLimit: 1Mi }
+        - name: tmp
+          emptyDir: { sizeLimit: 256Mi }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nadien-frontend
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: nadien-frontend }

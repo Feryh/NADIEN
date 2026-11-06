@@ -1,13 +1,10 @@
-# NADIEN on Kubernetes (RKE2 guest cluster on Harvester, storage class "harvester").
-#   kubectl create namespace nadien
-#   kubectl -n nadien create secret generic nadien-db --from-literal=POSTGRES_PASSWORD='<random>'
-#   kubectl -n nadien create secret generic nadien-env --from-env-file=backend.env   # NADIEN_* (Observium, gitweb, ...)
-#   kubectl apply -k deploy/k8s
-# Images: build and push backend/ and frontend/ to your registry, then set them below.
+# NADIEN on Kubernetes (RKE2 guest cluster on Harvester, storage class "harvester"). Steps: README.md in this folder.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: nadien
 resources:
+  - namespace.yaml
+  - networkpolicy.yaml
   - postgres.yaml
   - backend.yaml
   - frontend.yaml
@@ -25,6 +22,8 @@ configMapGenerator:
     literals:
       - NADIEN_BACKUP_DIR=/backups
       - NADIEN_SEED_DEMO=false
+      - NADIEN_DOCS_ENABLED=false
+      - NADIEN_TRUSTED_PROXY_HOPS=2
       - NADIEN_CACHE_TTL_S=60
       - NADIEN_SCHEDULE_TIMEZONE=Asia/Jakarta
       - NADIEN_CORS_ORIGINS=["https://nadien.example.co.id"]

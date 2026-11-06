@@ -1,5 +1,6 @@
 import csv
 import io
+import logging
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -12,8 +13,12 @@ from sqlalchemy.orm import Session
 from .. import models as m
 from ..config import settings
 from ..database import get_db
-from ..services.auth import (COOKIE, CurrentUser, Role, as_current, audit, check_password, current_user, hash_password,
-                             locked_for, record_failure, require, session_token, user_from_token, verify_password)
+from ..services.auth import (COOKIE, LOGIN_FAILED, LOGIN_OK, LOGIN_REFUSED, LOGIN_UNLOCKED, CurrentUser, Role,
+                             address_blocked, as_current, audit, check_password, client_ip, current_user,
+                             hash_password, locked_for, pair_locked, record_failure, require, session_token,
+                             stored_hash_for_login, user_from_token, verify_password)
+
+log = logging.getLogger(__name__)
 
 # Reachable without a session: status, login, logout (and the SSO redirects in routers/sso.py).
 public = APIRouter(prefix="/auth", tags=["Auth"])
@@ -83,22 +88,26 @@ def auth_status(request: Request, db: Session = Depends(get_db)):
 @public.post("/login")
 def login(payload: LoginIn, request: Request, response: Response, db: Session = Depends(get_db)):
     name = payload.username.strip()
+    ip = client_ip(request)
+    wait = {"Retry-After": str(settings.login_lock_minutes * 60)}
+    if address_blocked(db, ip):
+        log.warning("login diblokir untuk alamat %s: terlalu banyak percobaan gagal", ip)
+        raise HTTPException(429, "Terlalu banyak percobaan login dari alamat ini. Coba lagi nanti.", headers=wait)
     user = db.scalar(select(m.User).where(func.lower(m.User.username) == name.lower()))
-    if user is not None and locked_for(user):
-        audit(db, user.username, "auth.login_locked", "login", request=request)
+    label = user.username if user is not None else name[:64] or "-"
+    if (user is not None and locked_for(user)) or pair_locked(db, label, ip):
+        audit(db, label, LOGIN_REFUSED, "login", request=request)
         db.commit()
-        raise HTTPException(429, f"Akun dikunci sementara karena terlalu banyak percobaan gagal. "
-                                 f"Coba lagi dalam {locked_for(user)} menit.")
-    if user is not None and user.auth_source != "local":
-        raise HTTPException(401, "Akun ini login melalui SSO.")
-    if user is None or not user.active or not verify_password(payload.password, user.password_hash):
-        if user is not None and user.active:
+        raise HTTPException(429, "Terlalu banyak percobaan gagal. Coba lagi nanti atau hubungi admin.", headers=wait)
+    stored = stored_hash_for_login(user)
+    if not verify_password(payload.password, stored):  # the stored hash of an account that cannot log in never matches
+        if user is not None and stored == user.password_hash:
             record_failure(user)
-        audit(db, name[:64] or "-", "auth.login_failed", "login", request=request)
+        audit(db, label, LOGIN_FAILED, "login", request=request)
         db.commit()
         raise HTTPException(401, "Username atau password salah.")
     start_session(request, response, db, user)
-    audit(db, user.username, "auth.login", "login", request=request)
+    audit(db, user.username, LOGIN_OK, "login", request=request)
     db.commit()
     return as_current(user).__dict__
 
@@ -196,6 +205,7 @@ def update_user(user_id: int, payload: UserPatch, request: Request, db: Session 
         changes.append("password direset")
     if payload.unlock or payload.password:
         user.failed_logins, user.locked_until = 0, None
+        audit(db, user.username, LOGIN_UNLOCKED, f"user {user.username}", f"oleh {me.username}", request)
         if payload.unlock:
             changes.append("dibuka kuncinya")
     audit(db, me.username, "user.update", f"user {user.username}", "; ".join(changes) or None, request)

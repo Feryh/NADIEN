@@ -1,5 +1,7 @@
 from typing import Literal
 
+from cryptography.fernet import Fernet
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -110,14 +112,27 @@ class Settings(BaseSettings):
     # Login and roles. With auth off (tests, single-user dev) every request acts as a local admin.
     auth_enabled: bool = True
     session_hours: float = 12.0
-    # Built-in local admin, created on first start when there are no users. Without a password here a random
-    # one is printed once in the server log. Either way it must be changed at first login.
+    # Built-in local admin, created on first start when there are no users. Without a password here, set one with
+    # `python -m app.reset_password`. Either way it must be changed at first login.
     admin_username: str = "admin"
     admin_password: str | None = None
     password_min_length: int = 10
-    login_max_attempts: int = 5  # failed logins before the account is locked for login_lock_minutes
+    # Failed logins within login_lock_minutes. Per username + address, so an attacker elsewhere cannot lock the owner
+    # out; per account, higher, against guessing from many addresses; per address, against trying many usernames.
+    login_max_attempts: int = 5
+    login_account_max_attempts: int = 50
+    login_ip_max_failures: int = 30
     login_lock_minutes: int = 15
+    # Proxies in front of this process that append to X-Forwarded-For; the client address is that many entries from
+    # the right, since anything further left is what the client itself sent. 0 = not behind a proxy: the header is
+    # ignored. Too low makes every user share the proxy's address, and with it the login limit per address.
+    trusted_proxy_hops: int = 0
     ingest_token: str | None = None  # Bearer token for external systems posting to /api/integrations
+    # Bearer token for schedulers starting syncs (Kubernetes CronJobs) on /api/collectors. Acts as an engineer, so
+    # collector credentials (admin) stay out of reach.
+    job_token: str | None = None
+    # Swagger UI and the OpenAPI schema (/docs, /openapi.json). They need no login: turn off in production.
+    docs_enabled: bool = True
 
     # Pushing changes to devices (SSH/telnet). Engineers type their own device credentials per run; they are
     # never stored. A jump host, when set, is reached with the same credentials unless a jump user is given.
@@ -127,11 +142,28 @@ class Settings(BaseSettings):
     device_timeout_s: float = 30.0
     # Host keys seen on first connect are kept here and enforced afterwards (default: next to the backups).
     device_known_hosts: str | None = None
+    # false: a device whose key is not in that file is refused, so the first connect cannot be intercepted.
+    device_ssh_trust_new_hosts: bool = True
+    # Telnet sends device passwords in clear text. false once all devices take SSH.
+    device_telnet_enabled: bool = True
 
     # Read-model cache for heavy views (topology, capacity, dashboard); cleared on every write.
     cache_ttl_s: float = 60.0
     db_pool_size: int = 10
     db_max_overflow: int = 20
+
+    @field_validator("secret_key")
+    @classmethod
+    def _secret_key_is_a_fernet_key(cls, value: str | None) -> str | None:
+        """Checked at start: otherwise a wrong key only fails once a secret is saved, and from then on no process
+        starts."""
+        if value:
+            try:
+                Fernet(value.encode())
+            except ValueError as exc:
+                raise ValueError("NADIEN_SECRET_KEY harus kunci Fernet: python -c \"from cryptography.fernet import "
+                                 "Fernet; print(Fernet.generate_key().decode())\"") from exc
+        return value
 
 
 settings = Settings()

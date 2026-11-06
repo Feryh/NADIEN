@@ -37,6 +37,13 @@ def test_should_open_nested_archive_when_file_is_kmz_inside_zip():
     assert len(read_placemarks(nested, "POP MTI.kmz.zip")) == 2
 
 
+def test_should_refuse_kml_when_its_entities_are_hidden_in_utf16():
+    kml = ('<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE x [<!ENTITY a "aaaa">]><kml><Placemark><name>&a;</name>'
+           '<Point><coordinates>106.8,-6.2</coordinates></Point></Placemark></kml>').encode("utf-16")
+    with pytest.raises(KmlError):
+        read_placemarks(kml)
+
+
 def test_should_refuse_kml_when_it_declares_entities():
     with pytest.raises(KmlError):
         read_placemarks(b'<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "aaaa">]><kml>&a;</kml>')

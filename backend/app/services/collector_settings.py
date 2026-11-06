@@ -12,6 +12,8 @@ Every API process applies the saved values to the shared `settings` object: at s
 each collector request / scheduled run (`refresh()`; a handful of rows, cheap).
 """
 
+import hashlib
+import hmac
 import logging
 import os
 import stat
@@ -99,11 +101,14 @@ def _fernet(db: Session, create: bool = False) -> Fernet | None:
 
 
 def signing_key(db: Session) -> bytes:
-    """Raw bytes of the same key, for HMAC-signed login sessions (created on first use like the secrets)."""
+    """For HMAC-signed login sessions: derived from the encryption key (created on first use like the secrets), so
+    the key that decrypts stored secrets is not used directly for anything else."""
     if settings.secret_key:
-        return settings.secret_key.encode()
-    _fernet(db, create=True)
-    return _key_file(db).read_bytes().strip()
+        root = settings.secret_key.encode()
+    else:
+        _fernet(db, create=True)
+        root = _key_file(db).read_bytes().strip()
+    return hmac.new(root, b"nadien-session-signing-v1", hashlib.sha256).digest()
 
 
 def encrypt_secret(db: Session, value: str) -> str:

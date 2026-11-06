@@ -1,3 +1,4 @@
+from bisect import bisect_left
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -14,12 +15,13 @@ from ..services import cache
 from ..services.areas import bucket_sort_key, speed_bucket
 from ..services.capacity import (
     MIN_TREND_DAYS,
+    TrendFit,
     calculate,
     fit_trend,
     forecast_series,
     hotspot_level,
+    peak_series,
     port_utilization_pct,
-    trend_gbps_per_month,
 )
 from ..services.olt import PonUsage, is_pon_port, olt_layout, onts_online, pon_level, pon_port_occupancy
 
@@ -28,27 +30,30 @@ router = APIRouter(prefix="/capacity", tags=["Capacity Planning"])
 TREND_WINDOWS = (7, 30, 90)
 
 
-def _window(samples, days: int):
-    """Samples of the last `days` days, measured back from the newest sample (no clock/tz mixing)."""
-    if not samples:
+def _window(series: list[tuple[float, float]], days: int) -> list[tuple[float, float]]:
+    """Points of the last `days` days, measured back from the newest one (no clock/tz mixing)."""
+    if not series:
         return []
-    newest = max(s.ts.timestamp() for s in samples)
-    return [s for s in samples if s.ts.timestamp() >= newest - days * 86400]
+    return series[bisect_left(series, series[-1][0] - days, key=lambda point: point[0]):]
+
+
+def _trend_fits(series: list[tuple[float, float]]) -> dict[int, TrendFit | None]:
+    """One fit per window. With 9k links × 90 daily samples this runs ~1M points per recomputation, so each
+    link's samples are converted once and each window fitted once."""
+    return {days: fit_trend(_window(series, days)) for days in {*TREND_WINDOWS, settings.trend_window_days}}
+
+
+def _growth_per_window(fits: dict[int, TrendFit | None]) -> dict[str, float | None]:
+    return {str(days): round(fits[days].growth_per_month, 3) if fits[days] else None for days in TREND_WINDOWS}
 
 
 def growth_trends(samples) -> dict[str, float | None]:
-    out = {}
-    for days in TREND_WINDOWS:
-        g = trend_gbps_per_month(_window(samples, days))
-        out[str(days)] = round(g, 3) if g is not None else None
-    return out
+    return _growth_per_window(_trend_fits(peak_series(samples)))
 
 
-def _forecast_inputs(manual_growth: float | None, samples) -> tuple[float | None, str, Any]:
+def _forecast_inputs(manual_growth: float | None, fit: TrendFit | None) -> tuple[float | None, str, Any]:
     """(growth, source, trend) — the trend over NADIEN_TREND_WINDOW_DAYS drives both the growth and,
     with enough history, the level the forecast starts from."""
-    fit = fit_trend([(x.ts.timestamp() / 86400, max(x.in_gbps or 0, x.out_gbps or 0))
-                     for x in _window(samples, settings.trend_window_days)])
     trend = fit if fit is not None and fit.days >= MIN_TREND_DAYS else None
     if manual_growth is not None:
         return manual_growth, "manual", trend
@@ -56,7 +61,9 @@ def _forecast_inputs(manual_growth: float | None, samples) -> tuple[float | None
 
 
 def _link_capacity(link, samples, devices, pops) -> s.LinkCapacity:
-    growth, source, trend = _forecast_inputs(link.growth_gbps_per_month, samples)
+    series = peak_series(samples)
+    fits = _trend_fits(series)
+    growth, source, trend = _forecast_inputs(link.growth_gbps_per_month, fits[settings.trend_window_days])
     result = calculate(link.capacity_gbps, link.current_gbps, link.reserved_gbps, growth_abs=growth,
                        growth_source=source, trend=trend)
     a, b = devices.get(link.a_device_id), devices.get(link.b_device_id)
@@ -70,16 +77,9 @@ def _link_capacity(link, samples, devices, pops) -> s.LinkCapacity:
         b_device=b.hostname if b else "?",
         a_pop=pops.get(a.pop_id) if a else None,
         b_pop=pops.get(b.pop_id) if b else None,
-        growth_trends=growth_trends(samples),
-        samples_days=_span_days(samples),
+        growth_trends=_growth_per_window(fits),
+        samples_days=round(series[-1][0] - series[0][0]) if len(series) >= 2 else 0,
     )
-
-
-def _span_days(samples) -> int:
-    if len(samples) < 2:
-        return 0
-    stamps = [s.ts.timestamp() for s in samples]
-    return round((max(stamps) - min(stamps)) / 86400)
 
 
 def _context(db: Session):
@@ -318,6 +318,10 @@ def _link_ends(db: Session) -> dict[int, dict[str, Any]]:
 @router.get("/hotspots")
 def hotspots(limit: int = Query(100, ge=1, le=2000), db: Session = Depends(get_db)):
     """Busiest links by utilization (warning ≥ 70%, critical ≥ 90%) and devices by port occupancy."""
+    return cache.cached(("capacity", "hotspots", limit), lambda: _hotspots(db, limit))
+
+
+def _hotspots(db: Session, limit: int) -> dict[str, Any]:
     from .analysis import device_port_usage  # late import: analysis is the heavier module
 
     links = sorted(all_link_capacity(db), key=lambda l: -l.utilization_pct)

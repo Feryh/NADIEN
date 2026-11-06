@@ -160,6 +160,13 @@ def test_should_not_take_ok_line_for_prompt_when_device_name_is_known():
     assert not session._is_prompt("show run\n[OK]") and session._is_prompt("show run\n<PE1>")
 
 
+def test_should_refuse_telnet_run_when_telnet_is_disabled(team, change, devices, monkeypatch):
+    monkeypatch.setattr(settings, "device_telnet_enabled", False)
+    response = team["eng"].post(f"/api/changes/{change['id']}/runs", json={
+        "site": "a", "phase": "precheck", "protocol": "telnet", "username": "u", "password": "p"})
+    assert response.status_code == 422 and devices["created"] == {}
+
+
 def test_should_refuse_option_and_strip_iac_when_telnet_server_negotiates():
     class Sock:
         sent = b""

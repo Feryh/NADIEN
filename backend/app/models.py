@@ -10,6 +10,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -149,7 +150,7 @@ class Interface(TimestampMixin, Base):
     if_type: Mapped[str] = mapped_column(String(32), default="physical")  # physical | bundle | subinterface | virtual
     # ifType as Observium reports it (ethernetCsmacd, propVirtual, PonStatus …); None for config-only ports.
     mib_type: Mapped[str | None] = mapped_column(String(64))
-    parent_id: Mapped[int | None] = mapped_column(ForeignKey("interfaces.id"))
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("interfaces.id"), index=True)
     speed_gbps: Mapped[float | None] = mapped_column(Float)
     mtu: Mapped[int | None] = mapped_column(Integer)
     admin_status: Mapped[str] = mapped_column(String(16), default="up")
@@ -275,7 +276,8 @@ class Link(TimestampMixin, Base):
     """Logical IP/Metro-E link between two router interfaces (a physical port or a bundle)."""
 
     __tablename__ = "links"
-    __table_args__ = (Index("ix_links_a_device", "a_device_id"), Index("ix_links_b_device", "b_device_id"))
+    __table_args__ = (Index("ix_links_a_device", "a_device_id"), Index("ix_links_b_device", "b_device_id"),
+                      Index("ix_links_a_interface", "a_interface_id"), Index("ix_links_b_interface", "b_interface_id"))
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
@@ -305,7 +307,7 @@ class ObserviumPort(Base):
 
     interface_id: Mapped[int] = mapped_column(ForeignKey("interfaces.id", ondelete="CASCADE"), primary_key=True)
     observium_port_id: Mapped[int] = mapped_column(Integer)
-    if_index: Mapped[int | None] = mapped_column(Integer)
+    if_index: Mapped[int | None] = mapped_column(BigInteger)  # SNMP ifIndex is unsigned 32-bit
     observium_hostname: Mapped[str] = mapped_column(String(255))
     # Which Observium the ids belong to (main | csr): port ids of two servers overlap.
     source: Mapped[str] = mapped_column(String(16), default="main", server_default="main")
@@ -423,15 +425,15 @@ class Service(TimestampMixin, Base):
     __tablename__ = "services"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id", ondelete="CASCADE"))
+    customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id", ondelete="CASCADE"), index=True)
     circuit_id: Mapped[str] = mapped_column(String(64), unique=True)
     service_type: Mapped[str] = mapped_column(String(16))  # internet | iplc | l2vpn | l3vpn
     bandwidth_mbps: Mapped[int] = mapped_column(Integer)
     a_pop_id: Mapped[int | None] = mapped_column(ForeignKey("pops.id"))
-    a_device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id"))
+    a_device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id"), index=True)
     a_interface: Mapped[str | None] = mapped_column(String(64))
     b_pop_id: Mapped[int | None] = mapped_column(ForeignKey("pops.id"))
-    b_device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id"))
+    b_device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id"), index=True)
     b_interface: Mapped[str | None] = mapped_column(String(64))
     vlan_id: Mapped[int | None] = mapped_column(Integer)
     vrf_name: Mapped[str | None] = mapped_column(String(64))
@@ -448,7 +450,7 @@ class ServicePath(TimestampMixin, Base):
     __tablename__ = "service_paths"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    service_id: Mapped[int] = mapped_column(ForeignKey("services.id", ondelete="CASCADE"))
+    service_id: Mapped[int] = mapped_column(ForeignKey("services.id", ondelete="CASCADE"), index=True)
     role: Mapped[str] = mapped_column(String(16))  # primary | backup
     device_ids: Mapped[list] = mapped_column(JSONType)
     link_ids: Mapped[list] = mapped_column(JSONType)
@@ -613,7 +615,7 @@ class TopologyEvent(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     kind: Mapped[str] = mapped_column(String(24))  # link_added | link_down | link_up | discovery
-    link_id: Mapped[int | None] = mapped_column(ForeignKey("links.id", ondelete="SET NULL"))
-    device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id", ondelete="SET NULL"))
+    link_id: Mapped[int | None] = mapped_column(ForeignKey("links.id", ondelete="SET NULL"), index=True)
+    device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id", ondelete="SET NULL"), index=True)
     title: Mapped[str] = mapped_column(String(255))
     detail: Mapped[str | None] = mapped_column(Text)

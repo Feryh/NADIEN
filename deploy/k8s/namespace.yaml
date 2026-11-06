@@ -1,0 +1,10 @@
+# "restricted" is the strictest Pod Security level: every pod here is non-root, read-only where it can be, with all
+# capabilities dropped. The cluster refuses a pod that loses any of that later.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nadien
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

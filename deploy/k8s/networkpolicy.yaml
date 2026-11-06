@@ -1,0 +1,74 @@
+# Inbound only: nothing reaches a pod except along the paths below. The backend still calls out to Observium, gitweb,
+# network devices and AI providers, so outbound stays open. Needs a CNI that enforces policies (RKE2's canal does).
+#
+# The backend trusts X-Forwarded-* from anything that reaches it (--forwarded-allow-ips='*'), so this is also what
+# keeps those headers honest: only the frontend nginx can talk to it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend-from-ingress-controller
+spec:
+  podSelector:
+    matchLabels: { app: nadien-frontend }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              # RKE2 runs ingress-nginx in kube-system; a standard install has its own namespace.
+              - { key: kubernetes.io/metadata.name, operator: In, values: [kube-system, ingress-nginx] }
+      ports: [{ port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-from-frontend
+spec:
+  podSelector:
+    matchLabels: { app: nadien-api }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: nadien-frontend }
+      ports: [{ port: 8000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker-from-frontend-and-cron
+spec:
+  podSelector:
+    matchLabels: { app: nadien-worker }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: nadien-frontend }
+        - podSelector:
+            matchLabels: { app: nadien-cron }
+      ports: [{ port: 8000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-from-backend
+spec:
+  podSelector:
+    matchLabels: { app: nadien-db }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: nadien-api }
+        - podSelector:
+            matchLabels: { app: nadien-worker }
+      ports: [{ port: 5432 }]

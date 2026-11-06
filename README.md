@@ -72,7 +72,7 @@ dalam satu area, core (P/agg) dimigrasi sebelum edge. Layanan tetap di LDP sampa
 Semua halaman dan `/api` butuh login (cookie sesi HttpOnly, `NADIEN_SESSION_HOURS`, default 12 jam).
 
 - **Admin lokal bawaan.** Saat start pertama, bila belum ada pengguna, dibuat user `admin` (`NADIEN_ADMIN_USERNAME`).
-  Passwordnya diambil dari `NADIEN_ADMIN_PASSWORD`. Bila kosong, password acak dicetak **sekali** di log API.
+  Passwordnya diambil dari `NADIEN_ADMIN_PASSWORD`. Bila kosong, buat dengan `python -m app.reset_password`.
   Password ini wajib diganti saat login pertama. Admin lokal tetap bisa login walau SSO aktif, sebagai jalur darurat.
 - **Kebijakan password.** Minimal `NADIEN_PASSWORD_MIN_LENGTH` karakter (default 10), berisi huruf dan angka, dan
   tidak memuat username. Pengguna baru dan password hasil reset admin wajib diganti saat login berikutnya.
