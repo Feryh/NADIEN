@@ -296,8 +296,11 @@ export default function Collectors() {
       <div className="card">
         <div className="toolbar">
           <h2>Konfigurasi device</h2>
-          <span className={`pill ${status?.rancid.configured ? 'pill-ok' : 'pill-bad'}`}>
-            RANCID {status?.rancid.configured ? 'siap' : 'belum di-set'}
+          {/* Device configs arrive through either RANCID path: the SSH/folder archive here or gitweb above. */}
+          <span className={`pill ${status?.rancid.configured || status?.gitweb.configured ? 'pill-ok' : 'pill-bad'}`}
+            title={!status?.rancid.configured && status?.gitweb.configured
+              ? 'Config perangkat diambil lewat RANCID gitweb; akses SSH/folder RANCID tidak diperlukan' : undefined}>
+            {status?.rancid.configured ? 'RANCID siap' : status?.gitweb.configured ? 'Lewat RANCID gitweb' : 'RANCID belum di-set'}
           </span>
           {status?.oxidized.configured && <span className="pill pill-ok">Oxidized siap</span>}
           <div className="spacer" />
@@ -306,20 +309,33 @@ export default function Collectors() {
               Sync dari Oxidized
             </button>
           )}
-          <button
-            className="primary"
-            disabled={!!busy || jobRunning || !status?.rancid.configured}
-            onClick={() => startJob('/collectors/configs/rancid/sync')}
-          >
-            Sync semua dari RANCID
-          </button>
+          {status?.rancid.configured || !status?.gitweb.configured ? (
+            <button
+              className="primary"
+              disabled={!!busy || jobRunning || !status?.rancid.configured}
+              onClick={() => startJob('/collectors/configs/rancid/sync')}
+            >
+              Sync semua dari RANCID
+            </button>
+          ) : (
+            <button className="primary" disabled={!!busy || jobRunning} onClick={() => startJob('/collectors/configs/gitweb/sync')}
+              title="Sama dengan “Ambil perubahan terbaru” di kartu RANCID gitweb">
+              Sync dari RANCID gitweb
+            </button>
+          )}
         </div>
         <p className="hint">
           API Observium tidak menyediakan config, jadi config dibaca dari arsip RANCID yang dipakai Observium
           {status?.rancid.source ? <> (<code>{status.rancid.source}</code>)</> : null}. Config melengkapi: keanggotaan LAG, IP &amp; MTU
           interface, loopback, IS-IS NET, SRv6 locator.
         </p>
-        {!status?.rancid.configured && (
+        {!status?.rancid.configured && status?.gitweb.configured && (
+          <p className="hint">
+            Config semua perangkat sudah diambil lewat <b>RANCID gitweb</b> (kartu di atas), jadi tidak ada yang perlu di-set di sini.
+            Akses SSH/folder RANCID hanya alternatif bila gitweb tidak tersedia.
+          </p>
+        )}
+        {!status?.rancid.configured && !status?.gitweb.configured && (
           <p className="hint">
             Set di <code>backend/.env</code>: <code>NADIEN_RANCID_SSH_HOST</code> + <code>NADIEN_RANCID_SSH_USER</code> +{' '}
             <code>NADIEN_RANCID_SSH_KEY_FILE</code> (SFTP read-only ke server Observium, path default{' '}
