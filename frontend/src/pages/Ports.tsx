@@ -15,6 +15,7 @@ interface Usage {
 }
 interface Summary {
   totals: Usage
+  config_only_ports: number  // physical ports Observium does not report: not counted
   by_speed: { speed: string }[]
   categories: Record<string, string>
   vendors: string[]
@@ -183,8 +184,12 @@ export default function Ports() {
           </select>
         </div>
         <p className="hint">
-          Port fisik saja (bundle/LAG dan sub-interface tidak dihitung). <b>Terpakai</b> = oper up · <b>Idle</b> = admin up tapi
+          Port fisik yang dilaporkan Observium saja, dengan kecepatan dari ifSpeed/ifHighSpeed. Bundle/LAG, sub-interface, dan
+          interface virtual (VLAN/SVI, manajemen, tunnel) tidak dihitung. <b>Terpakai</b> = oper up · <b>Idle</b> = admin up tapi
           oper down (siap dipakai) · <b>Disabled</b> = admin down (shutdown).
+          {summary && summary.config_only_ports > 0 && (
+            <> {n(summary.config_only_ports)} port yang hanya ada di config RANCID (tanpa data Observium) tidak ikut dihitung.</>
+          )}
         </p>
         {error && <div className="error">{error}</div>}
         {summary && (

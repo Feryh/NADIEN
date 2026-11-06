@@ -146,7 +146,9 @@ class Interface(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(128))
-    if_type: Mapped[str] = mapped_column(String(32), default="physical")  # physical | bundle | subinterface
+    if_type: Mapped[str] = mapped_column(String(32), default="physical")  # physical | bundle | subinterface | virtual
+    # ifType as Observium reports it (ethernetCsmacd, propVirtual, PonStatus …); None for config-only ports.
+    mib_type: Mapped[str | None] = mapped_column(String(64))
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("interfaces.id"))
     speed_gbps: Mapped[float | None] = mapped_column(Float)
     mtu: Mapped[int | None] = mapped_column(Integer)

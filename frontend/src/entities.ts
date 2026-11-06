@@ -190,7 +190,8 @@ export const ENTITIES: Entity[] = [
     fields: [
       { name: 'device_id', label: 'Device', type: 'ref', ref: 'devices', required: true },
       { name: 'name', label: 'Name', required: true },
-      { name: 'if_type', label: 'Type', type: 'select', options: ['physical', 'bundle', 'subinterface'] },
+      { name: 'if_type', label: 'Type', type: 'select', options: ['physical', 'bundle', 'subinterface', 'virtual'] },
+      { name: 'mib_type', label: 'ifType (Observium)', readonly: true, hideInTable: true },
       { name: 'parent_id', label: 'Bundle', type: 'ref', ref: 'interfaces' },
       { name: 'speed_gbps', label: 'Speed G', type: 'number' },
       { name: 'mtu', label: 'MTU', type: 'number' },

@@ -108,6 +108,9 @@ def net(db):
         i = m.Interface(device_id=d[dev].id, name=name, speed_gbps=speed, admin_status=admin, oper_status=oper,
                         if_type=if_type)
         db.add(i)
+        db.flush()
+        # Reported by Observium: port capacity only counts such ports.
+        db.add(m.ObserviumPort(interface_id=i.id, observium_port_id=i.id, observium_hostname=dev))
         return i
 
     p1 = port("JKT-ABW-P1-NCS", "Hu0/0/0/0", 100)
