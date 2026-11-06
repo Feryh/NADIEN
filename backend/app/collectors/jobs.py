@@ -22,7 +22,7 @@ from .configs.oxidized import OxidizedClient, sync_oxidized
 from .configs.rancid import FileSystem, open_from_settings, sync_rancid
 from .observium.client import ObserviumClient
 from .observium.rrd import RrdSource, open_source, sync_rrd
-from .observium.sync import sync_observium
+from .observium.sync import CSR_PARTS, sync_observium
 
 CHANGES_INVENTORY = {"inventory", "neighbours"}
 Progress = Callable[[str], None]
@@ -71,6 +71,20 @@ def run_observium(
         else:
             backup = {"status": "skipped", "detail": "utilization only"}
         report = sync_observium(db, client, parts, discover, progress).as_dict()
+    finally:
+        if own_client:
+            client.close()
+    return {"backup": backup, **report}
+
+
+def run_observium_csr(db: Session, client: ObserviumClient | None = None, progress: Progress = _noop) -> dict:
+    """The CSR Observium: cell-site routers, their ports and traffic (backup first; no LLDP, no link discovery)."""
+    own_client = client is None
+    client = client or ObserviumClient(base_url=settings.observium_csr_url)
+    try:
+        progress("backup")
+        backup = backup_before(db, "observium-csr")
+        report = sync_observium(db, client, CSR_PARTS, False, progress, source="csr").as_dict()
     finally:
         if own_client:
             client.close()

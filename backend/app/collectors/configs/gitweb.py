@@ -280,8 +280,11 @@ class _Sync:
             self.report.counts["roles_set_csr"] += 1
 
     def _config_only_ports(self, device: m.Device) -> None:
-        """No SNMP for this device: speed from the port name; described, enabled ports count as in service."""
-        for iface in self.db.scalars(select(m.Interface).where(m.Interface.device_id == device.id)):
+        """No SNMP for this port: speed from the port name; described, enabled ports count as in service. Ports
+        Observium reports keep its speed and status (CSR devices are created from config, then monitored)."""
+        reported = select(m.ObserviumPort.interface_id)
+        for iface in self.db.scalars(select(m.Interface).where(m.Interface.device_id == device.id,
+                                                               m.Interface.id.not_in(reported))):
             if iface.speed_gbps is None:
                 iface.speed_gbps = speed_from_name(iface.name)
             if iface.admin_status == "up" and iface.description:
