@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from ... import models as m
 from ...config import settings
-from ...services.areas import FUNCTION_TOKENS, is_city_code
+from ...services.areas import FUNCTION_TOKENS, csr_parts, is_city_code
 from ...services.topology import discover_links, legacy_host_key, norm_host, norm_if
 from .client import ObserviumClient
 from .parsers import (
@@ -50,6 +50,9 @@ PORT_FIELDS = (
 PAGE_SIZE = 5000
 WRITE_BATCH = 20000
 SOURCE_NAME = "Observium"
+CSR_SOURCE_NAME = "Observium CSR"
+# The CSR Observium only completes the cell-site routers: ports and traffic, no LLDP, so the topology stays as is.
+CSR_PARTS = frozenset({"inventory", "utilization"})
 UNASSIGNED = "UNASSIGNED"
 
 Progress = Callable[[str], None]
@@ -226,7 +229,9 @@ def sync_observium(
     parts: set[str] | frozenset[str] = ALL_PARTS,
     discover: bool = True,
     progress: Progress | None = None,
+    source: str = "main",
 ) -> SyncReport:
+    """`source="csr"`: the second Observium. It also monitors servers and other boxes; only cell-site routers count."""
     started = time.monotonic()
     step = progress or (lambda _phase: None)
     parts = set(parts) & ALL_PARTS
@@ -239,6 +244,9 @@ def sync_observium(
     device_by_obs: dict[str, m.Device] = {}
     obs_hostname: dict[str, str] = {}
     for rec in _device_records(client.fetch("devices"), set(writer.pops), report):
+        if source == "csr" and not _prepare_csr(rec, writer):
+            report.counts["devices_skipped_not_csr"] += 1
+            continue
         obs_hostname[rec.observium_id] = rec.observium_hostname
         if write_inventory:
             device_by_obs[rec.observium_id] = writer.device(rec)
@@ -275,7 +283,7 @@ def sync_observium(
     db.flush()  # ids for the last batch of new interfaces
     rates = {iface_by_port[p].id: r for p, r in rates_by_port.items()}
     report.counts["ports_seen"] = len(iface_by_port)
-    _write_rrd_map(db, iface_by_port, rrd_ref)
+    _write_rrd_map(db, iface_by_port, rrd_ref, source)
 
     if write_inventory:
         step("addresses")
@@ -302,14 +310,26 @@ def sync_observium(
         _write_utilization(db, rates, report)
 
     report.diagnostics["observium_responses"] = client.meta
-    _record_source(db, report)
+    _record_source(db, report, source)
     report.duration_s = time.monotonic() - started
     return report
 
 
+def _prepare_csr(rec: DeviceRecord, writer: "_Writer") -> bool:
+    """Whether a device of the CSR Observium is a cell-site router; new ones get the inventory's upper-case name."""
+    existing = writer.devices.get(norm_host(rec.hostname))
+    if existing is not None:
+        return existing.role == "csr"
+    if not csr_parts(rec.hostname):
+        return False
+    rec.hostname = rec.hostname.upper()
+    return True
+
+
 def _write_rrd_map(db: Session, iface_by_port: dict[str, m.Interface],
-                   rrd_ref: dict[str, tuple[int | None, str]]) -> None:
-    """Remember where each interface's RRD lives (rebuilt every sync — ifIndex can change on reboot)."""
+                   rrd_ref: dict[str, tuple[int | None, str]], source: str = "main") -> None:
+    """Remember where each interface's RRD lives (rebuilt every sync — ifIndex can change on reboot). Only this
+    server's rows are rebuilt: the other Observium's ports stay mapped."""
     rows, seen = [], set()
     for port_id, iface in iface_by_port.items():
         if_index, hostname = rrd_ref.get(port_id, (None, ""))
@@ -317,10 +337,13 @@ def _write_rrd_map(db: Session, iface_by_port: dict[str, m.Interface],
             continue
         seen.add(iface.id)
         rows.append({"interface_id": iface.id, "observium_port_id": int(port_id), "if_index": if_index,
-                     "observium_hostname": hostname})
-    db.execute(delete(m.ObserviumPort))
+                     "observium_hostname": hostname, "source": source})
+    db.execute(delete(m.ObserviumPort).where(m.ObserviumPort.source == source))
     for i in range(0, len(rows), WRITE_BATCH):
-        db.execute(insert(m.ObserviumPort), rows[i:i + WRITE_BATCH])
+        batch = rows[i:i + WRITE_BATCH]
+        # A device on both servers: the last server synced owns its ports.
+        db.execute(delete(m.ObserviumPort).where(m.ObserviumPort.interface_id.in_([r["interface_id"] for r in batch])))
+        db.execute(insert(m.ObserviumPort), batch)
     db.commit()
 
 
@@ -437,11 +460,12 @@ def _narrower(speed: float | None, other: float | None) -> bool:
     return bool(speed and other and speed < other)
 
 
-def _record_source(db: Session, report: SyncReport) -> None:
-    source = db.scalar(select(m.IntegrationSource).where(m.IntegrationSource.name == SOURCE_NAME))
+def _record_source(db: Session, report: SyncReport, kind: str = "main") -> None:
+    name, url = (CSR_SOURCE_NAME, settings.observium_csr_url) if kind == "csr" else (SOURCE_NAME, settings.observium_url)
+    source = db.scalar(select(m.IntegrationSource).where(m.IntegrationSource.name == name))
     if source is None:
-        source = m.IntegrationSource(name=SOURCE_NAME, system_type="nms", target_entity="devices",
-                                     base_url=settings.observium_url, auth_type="basic", enabled=True)
+        source = m.IntegrationSource(name=name, system_type="nms", target_entity="devices",
+                                     base_url=url, auth_type="basic", enabled=True)
         db.add(source)
     c = report.counts
     source.last_sync_at = datetime.now(timezone.utc)

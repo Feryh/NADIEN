@@ -307,6 +307,8 @@ class ObserviumPort(Base):
     observium_port_id: Mapped[int] = mapped_column(Integer)
     if_index: Mapped[int | None] = mapped_column(Integer)
     observium_hostname: Mapped[str] = mapped_column(String(255))
+    # Which Observium the ids belong to (main | csr): port ids of two servers overlap.
+    source: Mapped[str] = mapped_column(String(16), default="main", server_default="main")
 
 
 class GitwebFile(Base):

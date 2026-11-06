@@ -16,7 +16,7 @@ from ..collectors.observium.client import ObserviumClient, ObserviumError
 from ..collectors.observium.rrd import RrdError
 from ..collectors.observium.rrd import open_source as open_rrd_source
 from ..collectors.runner import JobBusy, ensure_idle, runner
-from ..collectors.observium.sync import ALL_PARTS, SOURCE_NAME
+from ..collectors.observium.sync import ALL_PARTS, CSR_SOURCE_NAME, SOURCE_NAME
 from ..config import settings
 from ..database import get_db
 from ..services import collector_settings
@@ -36,6 +36,7 @@ MAX_CONFIG_BYTES = 5_000_000
 def status(db: Session = Depends(get_db)):
     """Which collectors are configured (credentials are never echoed back)."""
     source = db.scalar(select(m.IntegrationSource).where(m.IntegrationSource.name == SOURCE_NAME))
+    csr_source = db.scalar(select(m.IntegrationSource).where(m.IntegrationSource.name == CSR_SOURCE_NAME))
     auth = "token" if settings.observium_token else ("basic" if settings.observium_user and settings.observium_password else None)
     return {
         "observium": {
@@ -44,6 +45,12 @@ def status(db: Session = Depends(get_db)):
             "auth": auth,
             "last_sync_at": source.last_sync_at if source else None,
             "last_status": source.last_status if source else None,
+        },
+        "observium_csr": {
+            "url": settings.observium_csr_url,
+            "configured": auth is not None and bool(settings.observium_csr_url),
+            "last_sync_at": csr_source.last_sync_at if csr_source else None,
+            "last_status": csr_source.last_status if csr_source else None,
         },
         "rancid": {
             "source": settings.rancid_path
@@ -100,13 +107,14 @@ def put_settings(payload: SettingsIn, db: Session = Depends(get_db)):
 
 
 @router.post("/settings/test")
-def test_connection(target: str = Query(..., pattern="^(observium|gitweb)$")):
+def test_connection(target: str = Query(..., pattern="^(observium|observium_csr|gitweb)$")):
     """Try the saved settings: one Observium API call / the gitweb repository list. Read-only."""
     try:
-        if target == "observium":
-            with ObserviumClient() as client:
+        if target in ("observium", "observium_csr"):
+            url = settings.observium_csr_url if target == "observium_csr" else settings.observium_url
+            with ObserviumClient(base_url=url) as client:
                 data = client._get("/devices/", {"pagesize": 1, "pageno": 1})
-            return {"ok": True, "detail": f"Terhubung ke {settings.observium_url}: {data.get('count', '?')} perangkat"}
+            return {"ok": True, "detail": f"Terhubung ke {url}: {data.get('count', '?')} perangkat"}
         client = GitwebClient()
         try:
             repos = client.repos()
@@ -154,6 +162,23 @@ def observium_sync(
 
     kind = "observium-utilization" if selected == {"utilization"} else "observium"
     return _start(kind, job)
+
+
+@router.post("/observium-csr/sync", status_code=202)
+def observium_csr_sync():
+    """Start a background job on the CSR Observium: back up the DB, then its cell-site routers, ports and traffic."""
+    try:
+        client = ObserviumClient(base_url=settings.observium_csr_url)  # credentials checked now
+    except ObserviumError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+    def job(db: Session, progress) -> dict:
+        try:
+            return jobs.run_observium_csr(db, client=client, progress=progress)
+        finally:
+            client.close()
+
+    return _start("observium-csr", job)
 
 
 @router.post("/observium/rrd", status_code=202)

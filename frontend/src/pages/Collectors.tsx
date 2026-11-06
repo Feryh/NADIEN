@@ -36,6 +36,7 @@ const PHASES: Record<string, string> = {
 
 interface CollectorStatus {
   observium: { url: string; configured: boolean; auth: string | null; last_sync_at: string | null; last_status: string | null }
+  observium_csr: { url: string; configured: boolean; last_sync_at: string | null; last_status: string | null }
   rancid: { source: string | null; configured: boolean }
   oxidized: { url: string | null; configured: boolean }
   gitweb: {
@@ -165,6 +166,11 @@ export default function Collectors() {
           <button disabled={!!busy || jobRunning} onClick={() => startJob('/collectors/observium/sync?parts=utilization')}>
             Utilisasi saja
           </button>
+          <button disabled={!!busy || jobRunning || !status?.observium_csr.configured}
+            title="Perangkat CSR, port, dan trafiknya dari Observium CSR"
+            onClick={() => startJob('/collectors/observium-csr/sync')}>
+            Sync CSR
+          </button>
           <button className="primary" disabled={!!busy || jobRunning} onClick={() => startJob('/collectors/observium/sync')}>
             Full sync
           </button>
@@ -181,6 +187,14 @@ export default function Collectors() {
           {status?.observium.url} · device, port, IPv4, LLDP neighbour, dan rate port → inventory, topologi, sampel utilisasi.
           {status?.observium.last_sync_at && ` Terakhir: ${new Date(status.observium.last_sync_at).toLocaleString()} — ${status.observium.last_status}`}
         </p>
+        {status?.observium_csr.url && (
+          <p className="hint">
+            CSR: {status.observium_csr.url} · perangkat CSR, port, dan rate port (tanpa LLDP).
+            {status.observium_csr.last_sync_at
+              ? ` Terakhir: ${new Date(status.observium_csr.last_sync_at).toLocaleString()} — ${status.observium_csr.last_status}`
+              : ' Belum pernah di-sync.'}
+          </p>
+        )}
         {!status?.observium.configured && (
           <p className="hint">
             Isi URL dan token/login Observium di <Link to="/settings">Pengaturan Collector</Link> (tanpa restart), atau di{' '}

@@ -215,7 +215,8 @@ def parse_output(text: str) -> dict[str, list[tuple[datetime, float, float]] | s
 
 
 def _targets(db: Session, source: RrdSource) -> tuple[list[Target], int]:
-    refs = {r.interface_id: r for r in db.scalars(select(m.ObserviumPort))}
+    # History comes from the main Observium; a CSR port id would name some other port there.
+    refs = {r.interface_id: r for r in db.scalars(select(m.ObserviumPort).where(m.ObserviumPort.source == "main"))}
     targets, unmapped = [], 0
     for link in db.scalars(select(m.Link)):
         for iface_id, swapped in ((link.a_interface_id, False), (link.b_interface_id, True)):

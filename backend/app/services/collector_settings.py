@@ -44,6 +44,7 @@ class FieldSpec:
 
 FIELDS: list[FieldSpec] = [
     FieldSpec("observium_url", "observium", "URL Observium", help="mis. http://172.17.42.136"),
+    FieldSpec("observium_csr_url", "observium", "URL Observium CSR", help="Observium khusus CSR; login sama dengan di atas"),
     FieldSpec("observium_token", "observium", "API token", "secret", help="Disarankan: token read-only, dibatasi IP server NADIEN"),
     FieldSpec("observium_user", "observium", "Username", help="Hanya dipakai kalau token kosong"),
     FieldSpec("observium_password", "observium", "Password", "secret"),
@@ -62,6 +63,7 @@ FIELD_BY_KEY = {f.key: f for f in FIELDS}
 # Changing one of these URLs needs that system's credentials in the same request.
 CREDENTIALS_FOR_URL = {
     "observium_url": ("observium_token", "observium_user", "observium_password"),
+    "observium_csr_url": ("observium_token", "observium_user", "observium_password"),
     "gitweb_url": ("gitweb_user", "gitweb_password"),
 }
 

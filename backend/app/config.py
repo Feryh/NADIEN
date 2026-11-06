@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     # Credentials come only from the environment / .env — never commit them.
     # Prefer a read-only API token restricted to this server's IP over a user password.
     observium_url: str = "http://172.17.42.136"
+    # Second Observium that monitors the cell-site routers; same credentials as the main one.
+    observium_csr_url: str = "http://172.17.12.112"
     observium_token: str | None = None
     observium_user: str | None = None
     observium_password: str | None = None

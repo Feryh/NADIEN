@@ -19,10 +19,10 @@ interface SettingsResponse {
   fields: SettingField[]
 }
 
-const GROUPS: { key: SettingField['group']; title: string; test: string; hint: string }[] = [
+const GROUPS: { key: SettingField['group']; title: string; test: string; hint: string; extraTest?: { target: string; label: string } }[] = [
   {
-    key: 'observium', title: 'Observium', test: 'observium',
-    hint: 'Satu login untuk semua data collector: perangkat, port, IP, LLDP/CDP, utilisasi, dan histori RRD (graph.php).',
+    key: 'observium', title: 'Observium', test: 'observium', extraTest: { target: 'observium_csr', label: 'Tes Observium CSR' },
+    hint: 'Satu login untuk semua data collector: perangkat, port, IP, LLDP/CDP, utilisasi, dan histori RRD (graph.php). Login yang sama dipakai untuk Observium CSR.',
   },
   {
     key: 'gitweb', title: 'RANCID gitweb', test: 'gitweb',
@@ -133,6 +133,11 @@ export default function CollectorSettings() {
                     title={changed.length ? 'Simpan dulu perubahan, lalu tes' : 'Tes dengan pengaturan yang tersimpan'}>
               {testing === group.test ? 'Mengetes…' : 'Tes koneksi'}
             </button>
+            {group.extraTest && (
+              <button type="button" onClick={() => test(group.extraTest!.target)} disabled={!!testing || changed.length > 0}>
+                {testing === group.extraTest.target ? 'Mengetes…' : group.extraTest.label}
+              </button>
+            )}
           </div>
           <p className="hint">{group.hint}</p>
           <div className="settings-grid">
