@@ -82,7 +82,7 @@ class DeviceCreate(BaseModel):
     vendor_id: int | None = None
     model_id: int | None = None
     software_id: int | None = None
-    role: Literal["p", "pe", "agg", "csr", "access", "dci", "olt", "bng"] = "pe"
+    role: Literal["p", "pe", "agg", "switch", "csr", "access", "dci", "olt", "bng"] = "pe"
     mgmt_ip: str | None = None
     loopback_ipv4: str | None = None
     isis_net: str | None = None
@@ -90,6 +90,7 @@ class DeviceCreate(BaseModel):
     status: Literal["active", "planned", "maintenance", "decommissioned"] = "active"
     map_x: float | None = None
     map_y: float | None = None
+    pop_locked: bool = False  # POP chosen by hand: never moved by sync or the hostname rules
 
 
 class DeviceRead(DeviceCreate, ORMRead):

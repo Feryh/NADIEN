@@ -58,7 +58,13 @@ _ENTITIES = [
     ("/customers", m.Customer, s.CustomerCreate, s.CustomerRead, "Customer Database", "name"),
     ("/services", m.Service, s.ServiceCreate, s.ServiceRead, "Customer Database", "circuit_id"),
 ]
-_GUARDS = {"/pops": _pop_guard}
+def _device_guard(device: m.Device, changes: dict[str, Any] | None) -> None:
+    """A POP picked by hand in the inventory is final: lock it so sync and the hostname rules keep it."""
+    if changes and "pop_id" in changes and changes["pop_id"] != device.pop_id:
+        changes["pop_locked"] = True
+
+
+_GUARDS = {"/pops": _pop_guard, "/devices": _device_guard}
 
 for prefix, model, create, read, tag, search in _ENTITIES:
     router.include_router(crud_router(prefix, model, create, read, tag, search, guard=_GUARDS.get(prefix)))

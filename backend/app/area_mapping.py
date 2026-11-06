@@ -136,6 +136,7 @@ def import_(db: Session, folder: Path) -> dict:
             pops[code] = pop
             report["pops_created"].append(code)
         device.pop_id = pop.id
+        device.pop_locked = True  # the mapping file is a manual choice
         report["devices_moved"].append(f"{device.hostname} -> {code}")
     db.commit()
     return report

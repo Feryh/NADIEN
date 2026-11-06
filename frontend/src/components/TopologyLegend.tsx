@@ -3,7 +3,7 @@ import { CAPACITY_HEX } from './ui'
 // Legend of the topology map: what colours, line styles and markers mean.
 
 const ROLES: [string, string][] = [
-  ['P / DCI', '#6366f1'], ['PE', '#0ea5e9'], ['BNG', '#e879f9'], ['Metro / Agg', '#14b8a6'],
+  ['P / DCI', '#6366f1'], ['PE', '#0ea5e9'], ['BNG', '#e879f9'], ['Metro / Agg', '#14b8a6'], ['Switch (DS)', '#22d3ee'],
   ['CSR', '#fb7185'], ['OLT', '#a3e635'], ['Switch akses', '#64748b'],
 ]
 const SEGMENTS: [string, string, string][] = [

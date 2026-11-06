@@ -33,7 +33,8 @@ ROLE_TOKENS: dict[str, str] = {
     "DCI": "dci",
     "P": "p", "CORE": "p", "CR": "p",
     "PE": "pe", "PEIN": "pe", "PESH": "pe", "CGW": "pe", "NNI": "pe", "BR": "pe",
-    "ME": "agg", "AGG": "agg", "DS": "agg", "CS": "agg",
+    "ME": "agg", "AGG": "agg", "CS": "agg",
+    "DS": "switch",  # DS1-S6730-…, DS2-C3750-…: distribution switches, not routers
     "SW": "access", "ACC": "access", "AC": "access", "CSG": "access",
 }
 _TOKEN_SPLIT = re.compile(r"[-_.\s]+")
