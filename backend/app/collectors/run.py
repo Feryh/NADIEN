@@ -3,6 +3,7 @@
     python -m app.collectors.run observium                     # full sync (backup first)
     python -m app.collectors.run observium --parts utilization # rates only, no backup (run every 5–15 min)
     python -m app.collectors.run observium-csr                 # cell-site routers from the CSR Observium (backup first)
+    python -m app.collectors.run rrd-csr --days 90             # same, for links only the CSR Observium can see
     python -m app.collectors.run rrd --days 90                 # daily peaks from Observium RRDs (no backup)
     python -m app.collectors.run rancid                        # configs from Observium's RANCID archive (backup first)
     python -m app.collectors.run gitweb [--full]               # all RANCID repos via gitweb, changed files only (backup if any)
@@ -41,6 +42,8 @@ def main(argv: list[str] | None = None) -> int:
     obs.add_argument("--parts", default=",".join(sorted(ALL_PARTS)))
     obs.add_argument("--no-discover", action="store_true")
     sub.add_parser("observium-csr")
+    rrd_csr = sub.add_parser("rrd-csr")
+    rrd_csr.add_argument("--days", type=int, default=90)
     rrd = sub.add_parser("rrd")
     rrd.add_argument("--days", type=int, default=90)
     sub.add_parser("rancid")
@@ -62,6 +65,8 @@ def main(argv: list[str] | None = None) -> int:
                 report = jobs.run_observium(db, set(args.parts.split(",")), not args.no_discover)
             elif args.cmd == "observium-csr":
                 report = jobs.run_observium_csr(db)
+            elif args.cmd == "rrd-csr":
+                report = jobs.run_rrd_csr(db, max(7, min(args.days, 365)))
             elif args.cmd == "rrd":
                 report = jobs.run_rrd(db, max(7, min(args.days, 365)))
             elif args.cmd == "rancid":

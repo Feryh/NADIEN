@@ -1,5 +1,6 @@
 """Second Observium for cell-site routers: only CSRs come in, and the two servers do not overwrite each other."""
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from urllib.parse import parse_qs
 
@@ -12,7 +13,7 @@ from app.config import settings
 from app.routers import collectors as collectors_router
 from app.collectors.configs.gitweb import _Sync
 from app.collectors.observium.client import ObserviumClient
-from app.collectors.observium.rrd import _targets
+from app.collectors.observium.rrd import _targets, sync_rrd
 from app.collectors.observium.sync import CSR_PARTS, sync_observium
 from app.database import get_db
 from app.main import app
@@ -71,6 +72,42 @@ def test_should_not_ask_main_rrd_history_for_a_csr_port(db):
     db.commit()
     targets, unmapped = _targets(db, SimpleNamespace(usable=lambda ref: True))
     assert targets == [] and unmapped == 1
+
+
+def _link_between(db, a: m.Interface | None, b: m.Interface | None) -> m.Link:
+    device = (a or b).device_id
+    link = m.Link(name=f"l{a and a.id}-{b and b.id}", a_device_id=device, a_interface_id=a.id if a else None,
+                  b_device_id=device, b_interface_id=b.id if b else None)
+    db.add(link)
+    return link
+
+
+def test_should_read_csr_history_only_for_links_the_main_server_cannot_see(db):
+    _csr_sync(db)
+    csr_port = db.scalar(select(m.Interface))
+    main_port = m.Interface(device_id=csr_port.device_id, name="Hu0/0/0/0")
+    plain_port = m.Interface(device_id=csr_port.device_id, name="Hu0/0/0/1")
+    db.add_all([main_port, plain_port])
+    db.flush()
+    db.add(m.ObserviumPort(interface_id=main_port.id, observium_port_id=5, observium_hostname="pe", source="main"))
+    only_csr = _link_between(db, plain_port, csr_port)
+    _link_between(db, main_port, csr_port)  # the main server serves this one
+    _link_between(db, main_port, plain_port)
+    db.commit()
+    targets, unmapped = _targets(db, SimpleNamespace(usable=lambda ref: True), "csr")
+    assert [(t.link.id, t.swapped, t.ref.source) for t in targets] == [(only_csr.id, True, "csr")] and unmapped == 0
+
+
+def test_should_store_csr_daily_peaks_on_the_link_through_the_csr_port(db):
+    _csr_sync(db)
+    port = db.scalar(select(m.Interface))
+    link = _link_between(db, port, None)
+    db.commit()
+    day = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    source = SimpleNamespace(name="api", chunk_size=10, usable=lambda ref: True,
+                             fetch=lambda chunk, days: {str(link.id): [(day, 0.5, 0.2)]})
+    report = sync_rrd(db, source, 90, server="csr")
+    assert report["links_with_history"] == 1 and link.current_gbps == 0.5
 
 
 def test_should_keep_observium_status_when_gitweb_rereads_a_csr_config(db):

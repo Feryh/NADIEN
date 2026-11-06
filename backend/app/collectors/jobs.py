@@ -21,6 +21,7 @@ from .configs.gitweb import GitwebClient, apply_changes, list_changes
 from .configs.oxidized import OxidizedClient, sync_oxidized
 from .configs.rancid import FileSystem, open_from_settings, sync_rancid
 from .observium.client import ObserviumClient
+from .observium.graph_api import GraphApiSource
 from .observium.rrd import RrdSource, open_source, sync_rrd
 from .observium.sync import CSR_PARTS, sync_observium
 
@@ -97,6 +98,18 @@ def run_rrd(db: Session, days: int = 90, source: "RrdSource | None" = None, prog
     source = source or open_source()
     try:
         return {"backup": {"status": "skipped", "detail": "utilization only"}, **sync_rrd(db, source, days, progress)}
+    finally:
+        if own:
+            source.close()
+
+
+def run_rrd_csr(db: Session, days: int = 90, source: "RrdSource | None" = None, progress: Progress = _noop) -> dict:
+    """Daily peaks of links only the CSR Observium can see, through its graph API. No backup: it only adds samples."""
+    own = source is None
+    source = source or GraphApiSource(ObserviumClient(base_url=settings.observium_csr_url))
+    try:
+        report = sync_rrd(db, source, days, progress, server="csr")
+        return {"backup": {"status": "skipped", "detail": "utilization only"}, **report}
     finally:
         if own:
             source.close()
