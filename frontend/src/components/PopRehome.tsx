@@ -9,6 +9,7 @@ interface RehomeResult {
   pops_created: string[]
   pops_deleted: string[]
   non_city_pops_left: { code: string; devices: number }[] | null
+  devices_kept_manual: number  // devices whose POP was chosen by hand: never proposed for a move
 }
 
 /** Review POPs against the hostname rule (first registered city code wins), preview first, then apply. */
@@ -32,6 +33,20 @@ export default function PopRehome({ onApplied }: { onApplied: () => void }) {
     }
   }
 
+  // "Ikuti manual": the POP the devices sit in now was chosen by hand; lock them there and preview again.
+  async function keep(pop: string) {
+    setBusy(true)
+    setError(null)
+    try {
+      await api.post(`/pops/rehome/keep?pop=${encodeURIComponent(pop)}`)
+      setResult(await api.post<RehomeResult>('/pops/rehome?apply=false'))
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="card">
       <div className="toolbar">
@@ -45,7 +60,8 @@ export default function PopRehome({ onApplied }: { onApplied: () => void }) {
       <p className="hint">
         POP diambil dari kode kota terdaftar pertama di hostname, dibaca dari kiri. Kata fungsi seperti NAP, CGN, NIX, MPLS
         dilewati, dan kode 4 huruf seperti JKTU/JKTS tetap dipakai (bagian dari JKT). Perangkat di POP yang bukan kode kota
-        dipindah ke POP itu, lalu POP yang jadi kosong dihapus.
+        dipindah ke POP itu, lalu POP yang jadi kosong dihapus. Perangkat yang POP-nya diatur manual (diubah di Inventory,
+        atau ditandai <b>Ikuti manual</b>) tidak pernah dipindah, juga oleh sync Observium.
       </p>
       {error && <div className="error">{error}</div>}
       {result && (
@@ -59,16 +75,25 @@ export default function PopRehome({ onApplied }: { onApplied: () => void }) {
               : result.devices_moved
                 ? `Pratinjau: ${result.devices_moved} perangkat akan dipindah (belum ada yang diubah).`
                 : 'Tidak ada perangkat yang perlu dipindah.'}
+            {result.devices_kept_manual > 0 && ` ${result.devices_kept_manual} perangkat tetap di POP pilihan manual.`}
           </div>
           {result.moves.length > 0 && (
             <div className="table-wrap">
               <table>
-                <thead><tr><th>Dari POP</th><th>Ke POP</th><th className="num">Perangkat</th><th>Contoh</th></tr></thead>
+                <thead><tr><th>Dari POP</th><th>Ke POP</th><th className="num">Perangkat</th><th>Contoh</th><th /></tr></thead>
                 <tbody>
                   {result.moves.map((mv) => (
                     <tr key={`${mv.from}>${mv.to}`}>
                       <td>{mv.from}</td><td>{mv.to}</td><td className="num">{mv.devices}</td>
                       <td className="small">{mv.examples.join(', ')}</td>
+                      <td>
+                        {!result.applied && (
+                          <button onClick={() => keep(mv.from)} disabled={busy}
+                            title={`POP ${mv.from} sudah benar (diatur manual): kunci semua perangkatnya di sana`}>
+                            Ikuti manual
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

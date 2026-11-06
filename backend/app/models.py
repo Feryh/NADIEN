@@ -19,6 +19,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -112,6 +113,9 @@ class Device(TimestampMixin, Base):
     # Saved manual position on the topology map (drag & drop).
     map_x: Mapped[float | None] = mapped_column(Float)
     map_y: Mapped[float | None] = mapped_column(Float)
+    # POP chosen by hand (inventory edit, mapping import, "ikuti manual"): sync and the hostname rules never
+    # move such a device to another POP.
+    pop_locked: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     pop: Mapped[Pop] = relationship(back_populates="devices")
     interfaces: Mapped[list["Interface"]] = relationship(

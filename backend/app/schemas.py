@@ -90,6 +90,7 @@ class DeviceCreate(BaseModel):
     status: Literal["active", "planned", "maintenance", "decommissioned"] = "active"
     map_x: float | None = None
     map_y: float | None = None
+    pop_locked: bool = False  # POP chosen by hand: never moved by sync or the hostname rules
 
 
 class DeviceRead(DeviceCreate, ORMRead):

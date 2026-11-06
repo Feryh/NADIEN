@@ -163,7 +163,8 @@ class _Writer:
             misplaced = (current is None or current.code == UNASSIGNED or is_role_word(current.code)
                          or current.code in FUNCTION_TOKENS
                          or (not is_city_code(current.code) and is_city_code(rec.pop_code)))
-            if rec.pop_code and misplaced and (current is None or current.code != rec.pop_code):
+            # A POP chosen by hand (pop_locked) is kept, whatever the hostname says.
+            if rec.pop_code and misplaced and not device.pop_locked and (current is None or current.code != rec.pop_code):
                 device.pop_id = self.pop(rec).id
                 self.report.counts["devices_pop_assigned"] += 1
         device.vendor_id = vendor.id if vendor else device.vendor_id

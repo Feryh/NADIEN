@@ -237,7 +237,7 @@ def auto_assign_areas(db: Session = Depends(get_db)):
     moved: Counter = Counter()
     created: list[str] = []
     if unassigned is not None:
-        for device in db.scalars(select(m.Device).where(m.Device.pop_id == unassigned.id)):
+        for device in db.scalars(select(m.Device).where(m.Device.pop_id == unassigned.id, m.Device.pop_locked.is_(False))):
             code = pop_code_for_hostname(device.hostname)
             if not code:
                 continue
@@ -299,10 +299,14 @@ def rehome_pops(apply: bool = False, db: Session = Depends(get_db)):
     by_id = {p.id: p for p in pops.values()}
     moves: dict[tuple[str, str], list[str]] = defaultdict(list)
     created: list[str] = []
+    kept = 0
     for device in db.scalars(select(m.Device)):
         current = by_id.get(device.pop_id)
         if current is None or is_city_code(current.code):
             continue  # registered city POPs are curated as they are
+        if device.pop_locked:
+            kept += 1  # POP chosen by hand: the rule never overrides it
+            continue
         target = _rule_pop(device.hostname)
         if not target or target == current.code.upper():
             continue
@@ -334,7 +338,22 @@ def rehome_pops(apply: bool = False, db: Session = Depends(get_db)):
         "pops_created": created,
         "pops_deleted": deleted,
         "non_city_pops_left": remaining,
+        "devices_kept_manual": kept,
     }
+
+
+@router.post("/pops/rehome/keep")
+def keep_manual_pop(pop: str, db: Session = Depends(get_db)):
+    """"Ikuti manual": lock every device of a POP where it is, so the hostname rule (and sync) stop proposing
+    to move it. The POP chosen by hand wins over the city code in the hostname."""
+    target = db.scalar(select(m.Pop).where(func.upper(m.Pop.code) == pop.upper()))
+    if target is None:
+        raise HTTPException(404, f"POP {pop} not found")
+    devices = list(db.scalars(select(m.Device).where(m.Device.pop_id == target.id, m.Device.pop_locked.is_(False))))
+    for device in devices:
+        device.pop_locked = True
+    db.commit()
+    return {"pop": target.code, "devices_locked": len(devices)}
 
 
 def _rule_pop(hostname: str) -> str | None:

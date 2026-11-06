@@ -59,6 +59,8 @@ export const ENTITIES: Entity[] = [
     fields: [
       { name: 'hostname', label: 'Hostname', required: true },
       { name: 'pop_id', label: 'POP', type: 'ref', ref: 'pops', required: true },
+      // Set by itself when the POP is changed here; sync and "Rapikan POP" never move a locked device.
+      { name: 'pop_locked', label: 'POP dikunci (diatur manual)', type: 'bool', hideInTable: true },
       { name: 'role', label: 'Role', type: 'select', options: ['p', 'pe', 'agg', 'switch', 'csr', 'access', 'dci', 'olt', 'bng'] },
       { name: 'vendor_id', label: 'Vendor', type: 'ref', ref: 'vendors' },
       { name: 'model_id', label: 'Model', type: 'ref', ref: 'device-models' },
