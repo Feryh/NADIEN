@@ -45,6 +45,19 @@ MAX_DESCRIPTION = 512
 
 BUNDLE_NAME = re.compile(r"^(bundle-ether|be|eth-trunk|ae|lag-?|port-channel|po)\d+$", re.IGNORECASE)
 LAG_IFTYPES = {"ieee8023adlag", "propmultiplexor"}
+# ifType (IANAifType, as Observium reports it by name or number) of logical interfaces: not a physical port, so
+# never counted in port capacity. PON ports (PonStatus) and optical/SONET ports are physical and stay.
+VIRTUAL_IFTYPES = {
+    "propvirtual", "l2vlan", "l3ipvlan", "l3ipxvlan", "softwareloopback", "tunnel", "mpls", "mplstunnel", "bridge",
+    "virtualipaddress", "ipforward", "pppmultilinkbundle",
+    "53", "135", "136", "137", "24", "131", "166", "150", "209", "112", "142", "108",
+}
+# Logical interfaces recognised by name where no ifType is known (config-only ports, data from before ifType was
+# kept): SVIs/VLANs, management (meth, dcn, qx, console), virtual templates, tunnels, bridge domains.
+VIRTUAL_NAME = re.compile(
+    r"^(vlan|vl\d|bvi|bdi|bdif|vbdif|vbui|supervlan|virtual|ve-group|te_tunnel|tunnel-te|pw-ether|dcn|meth|"
+    r"gpon[-_]onu|nve|vsi|vxlan|bridge|dialer|mgmt_eth|qx|spi-|console|fti\d|dloopback|ipip|tap\d|aux)",
+    re.IGNORECASE)
 # Logical/internal ports that never carry a Metro link.
 SKIP_PORT = re.compile(r"^(null|nu|mgmt|management|fxp|em\d|me\d|lo|loopback|inloopback|tunnel|tu|vlanif|irb|dummy|sit|gre)", re.IGNORECASE)
 
@@ -215,13 +228,17 @@ class PortRecord:
     in_gbps: float | None
     out_gbps: float | None
     if_index: int | None = None  # RRD file is port-<ifIndex>.rrd
+    mib_type: str | None = None  # Observium ifType as reported (ethernetCsmacd, propVirtual, PonStatus …)
 
 
 def classify_port(name: str, if_type: str) -> str:
+    """physical | bundle | subinterface | virtual, from the name and Observium's ifType."""
     if "." in name or ":" in name.split("/")[-1]:
         return "subinterface"
     if if_type.lower() in LAG_IFTYPES or BUNDLE_NAME.match(name):
         return "bundle"
+    if if_type.lower() in VIRTUAL_IFTYPES or VIRTUAL_NAME.match(name):
+        return "virtual"
     return "physical"
 
 
@@ -263,6 +280,7 @@ def parse_port(row: dict[str, Any]) -> PortRecord | None:
         in_gbps=_rate_gbps(row, "ifInOctets_rate"),
         out_gbps=_rate_gbps(row, "ifOutOctets_rate"),
         if_index=_int(row.get("ifIndex")),
+        mib_type=if_type[:64] or None,
     )
 
 

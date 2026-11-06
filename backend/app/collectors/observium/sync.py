@@ -189,6 +189,7 @@ class _Writer:
         # A config parser may already have marked this port as a bundle member/bundle; keep that.
         if iface.if_type != "bundle":
             iface.if_type = rec.if_type
+        iface.mib_type = rec.mib_type or iface.mib_type
         iface.speed_gbps = rec.speed_gbps if rec.speed_gbps is not None else iface.speed_gbps
         iface.mtu = rec.mtu if rec.mtu is not None else iface.mtu
         iface.admin_status = rec.admin_status

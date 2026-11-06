@@ -100,7 +100,8 @@ class DeviceRead(DeviceCreate, ORMRead):
 class InterfaceCreate(BaseModel):
     device_id: int
     name: str
-    if_type: Literal["physical", "bundle", "subinterface"] = "physical"
+    if_type: Literal["physical", "bundle", "subinterface", "virtual"] = "physical"
+    mib_type: str | None = None  # Observium ifType
     parent_id: int | None = None
     speed_gbps: float | None = Field(default=None, ge=0)
     mtu: int | None = Field(default=None, ge=64, le=16000)

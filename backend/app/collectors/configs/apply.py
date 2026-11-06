@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from ... import models as m
 from ...services.topology import norm_host, norm_if
-from ..observium.parsers import SKIP_PORT
+from ..observium.parsers import SKIP_PORT, VIRTUAL_NAME
 from .base import ParsedConfig
 
 
@@ -28,7 +28,9 @@ LOGICAL_PORT = re.compile(
 def _classify(name: str, is_bundle: bool) -> str:
     if is_bundle:
         return "bundle"
-    return "subinterface" if "." in name else "physical"
+    if "." in name:
+        return "subinterface"
+    return "virtual" if VIRTUAL_NAME.match(name) else "physical"
 
 
 def apply_config(db: Session, device: m.Device, cfg: ParsedConfig, create_ports: bool = True) -> dict:

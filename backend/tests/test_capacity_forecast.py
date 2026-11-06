@@ -95,9 +95,11 @@ def test_should_mark_capacity_suspect_when_utilization_is_far_above_100_percent(
 
 def test_should_rank_devices_by_port_occupancy_when_listing_hotspots(db, client):
     link = _network(db, [10.0])
-    for i in range(4):
-        db.add(m.Interface(device_id=link.a_device_id, name=f"ge-{i}", oper_status="up" if i else "down"))
-    db.add(m.Interface(device_id=link.b_device_id, name="ge-0", oper_status="down"))
+    ports = [m.Interface(device_id=link.a_device_id, name=f"ge-{i}", oper_status="up" if i else "down") for i in range(4)]
+    ports.append(m.Interface(device_id=link.b_device_id, name="ge-0", oper_status="down"))
+    db.add_all(ports)
+    db.flush()
+    db.add_all(m.ObserviumPort(interface_id=p.id, observium_port_id=p.id, observium_hostname="x") for p in ports)
     db.commit()
     rows = client.get("/api/capacity/hotspots").json()["devices"]["rows"]
     assert rows[0]["hostname"] == "JKT-A-ME1" and rows[0]["used_pct"] == 75.0 and rows[0]["level"] == "warning"

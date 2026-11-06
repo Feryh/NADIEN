@@ -1127,13 +1127,26 @@ class _Usage:
 
 
 def _port_rows(db: Session):
-    """Physical, non-member-agnostic ports grouped per device/speed/state in SQL."""
+    """Physical ports Observium reports, grouped per device/speed/state in SQL. Only those count: their speed is
+    Observium's ifHighSpeed/ifSpeed. Logical interfaces are not physical, and ports known only from a config file
+    carry a speed guessed from the name."""
     return db.execute(
         select(m.Interface.device_id, m.Interface.speed_gbps, m.Interface.admin_status, m.Interface.oper_status,
                func.count())
+        .join(m.ObserviumPort, m.ObserviumPort.interface_id == m.Interface.id)
         .where(m.Interface.if_type == "physical")
         .group_by(m.Interface.device_id, m.Interface.speed_gbps, m.Interface.admin_status, m.Interface.oper_status)
     ).all()
+
+
+def _config_only_ports(db: Session) -> dict[int, int]:
+    """Physical ports per device that Observium does not report (left out of port capacity)."""
+    return dict(db.execute(
+        select(m.Interface.device_id, func.count())
+        .outerjoin(m.ObserviumPort, m.ObserviumPort.interface_id == m.Interface.id)
+        .where(m.Interface.if_type == "physical", m.ObserviumPort.interface_id.is_(None))
+        .group_by(m.Interface.device_id)
+    ).all())
 
 
 def _device_matches(ctx: _Ctx, device_id: int, category, area, pop, vendor) -> bool:
@@ -1178,9 +1191,12 @@ def _port_summary(db: Session, category, area, pop, vendor) -> dict:
         per_category[cat].add(bucket, state, n)
         devices_per_category[cat].add(device_id)
     order = CATEGORY_ORDER
+    config_only = sum(n for device_id, n in _config_only_ports(db).items()
+                      if _device_matches(ctx, device_id, category, area, pop, vendor))
     return {
         "filters": {"category": category, "area": area, "pop": pop, "vendor": vendor},
         "totals": overall.summary(),
+        "config_only_ports": config_only,
         "by_speed": overall.speeds(),
         "by_category": [
             {"category": c, "label": CATEGORY_LABELS[c], "devices": len(devices_per_category[c]),
