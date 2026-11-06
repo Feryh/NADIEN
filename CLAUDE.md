@@ -11,7 +11,7 @@ Phase 1–3 (inventory, topology, capacity) sudah MVP. Lihat README.md untuk det
 ## Tech Stack
 
 - Backend: Python 3.12, FastAPI, SQLAlchemy 2.0 (Mapped style), Pydantic v2, PostgreSQL (+PostGIS image)
-- Frontend: React 18 + TypeScript + Vite, Cytoscape.js, Recharts, react-router v6
+- Frontend: React 18 + TypeScript + Vite, Cytoscape.js, Recharts, react-router v7
 - Deploy: docker compose (db, backend, frontend/nginx)
 
 ## Commands
