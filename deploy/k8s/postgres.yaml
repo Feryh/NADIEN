@@ -19,11 +19,20 @@ spec:
     metadata:
       labels: { app: nadien-db }
     spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 120  # a clean checkpoint instead of crash recovery at the next start
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: postgres
           image: postgis/postgis:16-3.4
           args: ["-c", "max_connections=200", "-c", "shared_buffers=2GB", "-c", "effective_cache_size=6GB",
-                 "-c", "work_mem=32MB", "-c", "maintenance_work_mem=512MB", "-c", "random_page_cost=1.1"]
+                 "-c", "work_mem=32MB", "-c", "maintenance_work_mem=512MB", "-c", "random_page_cost=1.1",
+                 "-c", "log_min_duration_statement=1000"]
           env:
             - { name: POSTGRES_DB, value: nadien }
             - { name: POSTGRES_USER, value: nadien }
@@ -31,14 +40,30 @@ spec:
               valueFrom: { secretKeyRef: { name: nadien-db, key: POSTGRES_PASSWORD } }
             - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
           ports: [{ containerPort: 5432 }]
+          startupProbe:  # first start initialises the data directory and the PostGIS extensions
+            exec: { command: ["pg_isready", "-U", "nadien", "-d", "nadien"] }
+            periodSeconds: 5
+            failureThreshold: 120
           readinessProbe:
             exec: { command: ["pg_isready", "-U", "nadien", "-d", "nadien"] }
             periodSeconds: 5
+          livenessProbe:
+            exec: { command: ["pg_isready", "-U", "nadien", "-d", "nadien"] }
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
           resources:
             requests: { cpu: "1", memory: 4Gi }
             limits: { memory: 8Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
           volumeMounts:
             - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: shm, mountPath: /dev/shm }
+      volumes:
+        - name: shm  # the 64 MB default fails parallel queries with "could not resize shared memory segment"
+          emptyDir: { medium: Memory, sizeLimit: 1Gi }
   volumeClaimTemplates:
     - metadata:
         name: data

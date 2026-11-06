@@ -11,3 +11,4 @@ anthropic>=1.0,<2.0  # AI assistant: Claude provider (other providers use httpx)
 cryptography>=42  # encrypts collector secrets saved from the settings page
 tzdata>=2024.1  # zoneinfo data for the scheduler's time zone on slim images / Windows
 alembic>=1.13,<2.0  # schema migrations (app/migrations), run on startup
+defusedxml>=0.7,<1.0  # KML uploads: refuses DTD and entities, in any encoding

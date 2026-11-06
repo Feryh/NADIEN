@@ -21,6 +21,9 @@ services:
       NADIEN_DB_POOL_SIZE: "8"
       NADIEN_DB_MAX_OVERFLOW: "12"
       NADIEN_CACHE_TTL_S: "60"
+      NADIEN_DOCS_ENABLED: "false"
+      # Host reverse proxy + frontend nginx. Use "1" when frontend is published directly ("80:8080" below).
+      NADIEN_TRUSTED_PROXY_HOPS: "2"
     ports: !reset []
     volumes:
       - ./backups:/backups
@@ -29,6 +32,6 @@ services:
     restart: unless-stopped
 
   frontend:
-    # Behind the host reverse proxy (HTTPS). Use "80:80" when the VM is only reachable internally.
-    ports: !reset ["127.0.0.1:8080:80"]
+    # Behind the host reverse proxy (HTTPS). Use "80:8080" when the VM is only reachable internally.
+    ports: !reset ["127.0.0.1:8080:8080"]
     restart: unless-stopped

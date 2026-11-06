@@ -5,6 +5,7 @@ before the next one lands (`run(..., check=True)`). Host keys are trusted on fir
 afterwards (known_hosts file). Telnet is a small client of our own: telnetlib left the stdlib in 3.13.
 """
 
+import logging
 import re
 import socket
 import time
@@ -14,6 +15,10 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 import paramiko
+
+from ..config import settings
+
+log = logging.getLogger(__name__)
 
 Transport = Literal["ssh", "telnet"]
 
@@ -75,13 +80,22 @@ class Stream(Protocol):
 # --------------------------------------------------------------------------- transports
 
 
+class _RecordNewHostKey(paramiko.AutoAddPolicy):
+    """Records an unknown key in known_hosts; a different key later raises BadHostKeyException. Nothing checks the
+    first key, so it goes to the log with its fingerprint to be compared with the device if ever in doubt."""
+
+    def missing_host_key(self, client, hostname, key) -> None:
+        log.warning("SSH: host key baru dicatat tanpa verifikasi: %s %s %s", hostname, key.get_name(), key.fingerprint)
+        super().missing_host_key(client, hostname, key)
+
+
 def _ssh_client(known_hosts: Path) -> paramiko.SSHClient:
     client = paramiko.SSHClient()
     known_hosts.parent.mkdir(parents=True, exist_ok=True)
     known_hosts.touch(exist_ok=True)
     client.load_host_keys(str(known_hosts))
-    # First connect records the key in known_hosts; a different key later raises BadHostKeyException.
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(_RecordNewHostKey() if settings.device_ssh_trust_new_hosts
+                                       else paramiko.RejectPolicy())
     return client
 
 

@@ -15,6 +15,9 @@ from dataclasses import dataclass
 from typing import Any
 from xml.etree import ElementTree as ET
 
+from defusedxml import DefusedXmlException
+from defusedxml.ElementTree import fromstring as safe_fromstring
+
 from .areas import CITIES, CITY_ALIASES, FUNCTION_TOKENS, in_area
 
 MAX_ARCHIVE_BYTES = 50_000_000  # uncompressed total: KMZ exports of POP lists are a few MB at most
@@ -73,11 +76,11 @@ def _tag(element: ET.Element) -> str:
 
 
 def _parse_kml(kml: bytes, source: str) -> list[Placemark]:
-    # KML never needs a DTD; refusing one rules out entity-expansion attacks before parsing.
-    if b"<!DOCTYPE" in kml[:4096].upper() or b"<!ENTITY" in kml.upper():
-        raise KmlError("File KML dengan DOCTYPE/ENTITY tidak diterima")
+    # KML never needs a DTD. Refused by the parser, not by looking at the bytes: those can be in UTF-16.
     try:
-        root = ET.fromstring(kml)
+        root = safe_fromstring(kml, forbid_dtd=True)
+    except DefusedXmlException as exc:
+        raise KmlError("File KML dengan DOCTYPE/ENTITY tidak diterima") from exc
     except ET.ParseError as exc:
         raise KmlError(f"KML tidak valid: {exc}") from exc
     out: list[Placemark] = []

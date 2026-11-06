@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from ..config import settings
-from ..models import UtilizationSample
 from ..schemas import CapacityResult, ForecastPoint
 
 DAYS_PER_MONTH = 30.4375
@@ -79,8 +78,9 @@ class TrendFit:
         return max(self.level_now + self.peak_margin, 0.0)
 
 
-def _points(samples: Sequence) -> list[tuple[float, float]]:
-    return [(s.ts.timestamp() / 86400, max(s.in_gbps or 0, s.out_gbps or 0)) for s in samples]
+def peak_series(samples: Sequence) -> list[tuple[float, float]]:
+    """(day, peak of in/out in Gbps) per sample, oldest first."""
+    return sorted((s.ts.timestamp() / 86400, max(s.in_gbps or 0, s.out_gbps or 0)) for s in samples)
 
 
 def fit_trend(points: Sequence[tuple[float, float]]) -> TrendFit | None:
@@ -101,18 +101,6 @@ def fit_trend(points: Sequence[tuple[float, float]]) -> TrendFit | None:
     r2 = 1 - sum(r * r for r in residuals) / total if total else 0.0
     margin = residuals[min(len(residuals) - 1, int(len(residuals) * PEAK_PERCENTILE))]
     return TrendFit(slope, intercept + slope * max(xs), max(margin, 0.0), max(r2, 0.0), round(span))
-
-
-def trend_gbps_per_month(samples: Sequence[UtilizationSample]) -> float | None:
-    """Least-squares slope of peak traffic over time, in Gbps/month. None if not enough history."""
-    fit = fit_trend(_points(samples))
-    return fit.growth_per_month if fit else None
-
-
-def trend_for(samples: Sequence) -> TrendFit | None:
-    """Trend usable for forecasting: at least MIN_TREND_DAYS of history."""
-    fit = fit_trend(_points(samples))
-    return fit if fit and fit.days >= MIN_TREND_DAYS else None
 
 
 def _months_to(target: float, current: float, growth_abs: float | None, growth_pct: float | None) -> float | None:

@@ -13,7 +13,7 @@ Komponen yang selalu ada:
 |---|---|---|
 | `db` | PostgreSQL 16 + PostGIS | 5432 |
 | `backend` | FastAPI (`uvicorn app.main:app`) | 8000 |
-| `frontend` | React build yang disajikan nginx. nginx juga mem-proxy `/api`, `/docs`, `/openapi.json` ke backend | 80 di container, 8080 di host |
+| `frontend` | React build yang disajikan nginx (non-root). nginx juga mem-proxy `/api`, `/docs`, `/openapi.json` ke backend | 8080 di container dan di host |
 
 Semua konfigurasi backend dibaca dari environment variable berprefix `NADIEN_`, atau dari `backend/.env`.
 Daftar lengkapnya ada di [`backend/env.example`](../backend/env.example). **`backend/.env` tidak boleh di-commit**
@@ -137,12 +137,12 @@ Database di-backup otomatis sebelum setiap sync (lihat README, bagian *Backup da
 
 ## 2. Server production
 
-> ⚠️ **Status MVP: baca sebelum go-live**
+> ⚠️ **Baca sebelum go-live**
 >
-> - **Belum ada autentikasi.** Siapa pun yang bisa membuka URL bisa mengubah dan menghapus data. Batasi aksesnya
->   ke jaringan internal/VPN, atau pasang basic auth/SSO di reverse proxy (lihat langkah 5).
-> - **Belum ada migrasi Alembic.** Tabel dibuat dengan `create_all` saat startup. Kolom baru di versi berikutnya
->   **tidak** otomatis ditambahkan ke tabel lama. Sebelum upgrade versi, backup dulu dan cek perubahan `models.py`.
+> - NADIEN punya login, role, dan SSO, tapi tetap batasi aksesnya ke jaringan internal/VPN (lihat langkah 5).
+> - Isi `NADIEN_SECRET_KEY` (lihat [`deploy/k8s/README.md`](../deploy/k8s/README.md)). Kunci itu dipakai untuk sesi login
+>   dan enkripsi secret.
+> - Migrasi database berjalan otomatis saat backend start. Buat backup sebelum upgrade.
 > - `docker-compose.yml` bawaan memakai password database `nadien` dan membuka port 5432/8000 ke semua interface.
 >   Itu hanya cocok untuk development. Langkah 3 menutupnya.
 > - `docker-compose.yml` (development) mengisi **data contoh** ke database kosong (`NADIEN_SEED_DEMO=true`).
@@ -219,7 +219,7 @@ NADIEN_GITWEB_DAILY_AT=02:30
 - menambahkan restart otomatis.
 
 Frontend dibuka di `127.0.0.1:8080` untuk dipasang di belakang reverse proxy HTTPS (langkah 5). Kalau tidak memakai
-reverse proxy dan servernya hanya bisa diakses dari jaringan internal, ganti menjadi `"80:80"`.
+reverse proxy dan servernya hanya bisa diakses dari jaringan internal, ganti menjadi `"80:8080"`.
 
 > `!reset` butuh Docker Compose v2.24 atau lebih baru. Cek dengan `docker compose version`.
 
@@ -258,12 +258,10 @@ server {
     ssl_certificate     /etc/ssl/nadien/fullchain.pem;
     ssl_certificate_key /etc/ssl/nadien/privkey.pem;
 
-    # Selama NADIEN belum punya login: batasi IP dan/atau basic auth
+    # NADIEN punya login sendiri; ini membatasi siapa yang bisa mencapainya
     allow 10.0.0.0/8;
     allow 172.16.0.0/12;
     deny  all;
-    auth_basic           "NADIEN";
-    auth_basic_user_file /etc/nginx/nadien.htpasswd;   # htpasswd -c /etc/nginx/nadien.htpasswd <user>
 
     client_max_body_size 50m;            # upload config / CSV
     proxy_read_timeout   3600s;          # sync manual dari UI bisa lama
@@ -350,14 +348,9 @@ docker compose exec -T backend python -m app.collectors.run gitweb --full   # ba
 cd /opt/nadien
 docker compose exec backend python -m app.backup create sebelum-upgrade
 git pull                                  # atau git checkout <tag-baru>
-git diff HEAD@{1} -- backend/app/models.py  # ada perubahan skema? (lihat peringatan Alembic di atas)
-docker compose up -d --build
-curl -s http://127.0.0.1:8080/api/health
+docker compose up -d --build              # migrasi database berjalan saat backend start
+curl -s http://127.0.0.1:8080/api/ready
 ```
-
-Kalau `models.py` menambah kolom atau tabel, tabel **baru** akan dibuat otomatis, tetapi kolom baru di tabel lama
-**tidak**. Tambahkan dengan `ALTER TABLE` manual sampai migrasi Alembic tersedia. Index baru di tabel lama ditambahkan
-otomatis saat startup.
 
 ---
 
@@ -382,49 +375,8 @@ high availability.
 
 ### Opsi B: Kubernetes (RKE2 guest cluster di Harvester)
 
-Manifest ada di [`deploy/k8s/`](../deploy/k8s/), dengan storage class `harvester`.
-
-| Komponen | Isi |
-|---|---|
-| `nadien-db` | StatefulSet PostGIS 16, PVC 100 Gi |
-| `nadien-api` | 2 replica × 2 worker, stateless, untuk user. Bisa ditambah. |
-| `nadien-worker` | 1 pod untuk sync collector, backup `pg_dump` (PVC sendiri) dan jadwal gitweb harian |
-| `nadien-frontend` | 2 replica nginx. `/api/collectors` dan `/api/backups` diarahkan ke worker, sisanya ke api |
-| CronJob | utilisasi tiap 10 menit, Full sync 01:00, RRD 7 hari 04:30. Memanggil API worker, sehingga terlihat di UI dan tidak bentrok |
-| Ingress | ingress-nginx bawaan RKE2, TLS, whitelist IP (NADIEN belum punya login) |
-
-Volume Harvester hanya bisa di-mount satu node (ReadWriteOnce). Karena itu backup dipegang satu pod worker, sedangkan
-replica API tidak butuh volume.
-
-```bash
-# 1. Build & push image ke registry internal
-docker build -t registry.example.co.id/neteng/nadien-backend:0.1.0 backend
-docker build -t registry.example.co.id/neteng/nadien-frontend:0.1.0 frontend
-docker push registry.example.co.id/neteng/nadien-backend:0.1.0
-docker push registry.example.co.id/neteng/nadien-frontend:0.1.0
-```
-
-```bash
-# 2. Secret (jangan di-commit)
-kubectl create namespace nadien
-kubectl -n nadien create secret generic nadien-db --from-literal=POSTGRES_PASSWORD="$(openssl rand -hex 24)"
-kubectl -n nadien create secret generic nadien-env --from-env-file=backend/.env
-kubectl -n nadien create secret tls nadien-tls --cert=fullchain.pem --key=privkey.pem
-```
-
-```bash
-# 3. Sesuaikan host Ingress dan nama image di deploy/k8s/kustomization.yaml, lalu
-kubectl apply -k deploy/k8s
-kubectl -n nadien get pods
-kubectl -n nadien exec deploy/nadien-worker -- python -m app.collectors.run observium   # sync pertama
-```
-
-`backend/.env` untuk secret `nadien-env` cukup berisi `NADIEN_OBSERVIUM_*`, `NADIEN_GITWEB_*` dan sejenisnya.
-`NADIEN_DATABASE_URL` diisi oleh manifest.
-
-**Wajib di Kubernetes:** tambahkan `NADIEN_SECRET_KEY=<kunci Fernet>` ke `nadien-env`. Semua replica harus memakai
-kunci yang sama, supaya token yang disimpan dari menu Pengaturan Collector bisa dibaca semua pod. Kalau kredensial
-mau dikelola lewat secret saja, isi `NADIEN_SETTINGS_UI_ENABLED=false`.
+Manifest dan langkah lengkapnya ada di [`deploy/k8s/README.md`](../deploy/k8s/README.md): secret yang wajib, deploy,
+isi data pertama, backup, dan operasi harian.
 
 ---
 
@@ -438,6 +390,9 @@ Yang sudah disiapkan:
   - Setiap perubahan data (edit, discovery, sync selesai) menaikkan versi cache di database. Semua worker dan replica
     membuang cache-nya dalam ±1 detik.
   - Kalau banyak request datang bersamaan untuk view yang sama, view itu dihitung sekali saja (single flight).
+  - Saat TTL habis, satu request menghitung ulang dan yang lain tetap mendapat nilai lama, jadi tidak ada yang antre.
+    Setelah ada perubahan data, nilai lama dibuang dan request menunggu nilai baru.
+  - Login, logout, kalkulator, AI chat, simulasi, dan hitung jalur tidak membuang cache karena tidak mengubah data.
 - **Proses:** beberapa worker uvicorn (`WEB_CONCURRENCY`). Status job sync dan jadwal harian disimpan di database,
   sehingga aman dijalankan multi-proses dan multi-replica.
 - **Database:**
@@ -448,17 +403,28 @@ Yang sudah disiapkan:
 - **Jaringan:** respons API di-gzip (backend dan nginx). Aset frontend di-cache permanen karena nama file-nya
   mengandung hash.
 
-Hasil uji beban lokal (WSL, SQLite, 4 worker, data nyata 4.225 perangkat / 8.000+ link), 50 user virtual dengan jeda
-0,5–2 detik antar klik:
+Hasil uji beban (2026-11-06): salinan data nyata di PostgreSQL 16 (4.547 perangkat, 349.731 interface, 8.456 link,
+485.856 sampel utilisasi), lewat nginx dengan login. Backend 4 worker dibatasi 4 CPU / 6 GB, PostgreSQL 2 CPU / 5 GB.
+k6 berjalan di mesin yang sama. Sync tidak berjalan selama pengujian.
 
-| | Hasil |
-|---|---|
-| Throughput | 37 request/detik, 0 error |
-| p95 per endpoint | < 0,4 detik (dashboard, topologi, capacity, hotspot, forecast node, port, pencarian) |
-| Puncak | 3–9 detik hanya di detik pertama, saat 50 user bersamaan mengenai 4 proses yang cache-nya masih kosong |
+| Skenario | Request/dtk | Gagal | Median | p95 | Maks |
+|---|---|---|---|---|---|
+| 50 user, jeda 3–8 dtk, 20 menit | 17,4 | 0,00% | 11 ms | 261 ms | 12,8 dtk |
+| 50 user, jeda 0,5–2 dtk, 3 menit | 66,5 | 0,00% | 12 ms | 212 ms | 9,8 dtk |
+| 100 user, jeda 3–8 dtk, 3 menit | 32,6 | 0,00% | 11 ms | 417 ms | 12,8 dtk |
+| 50 user + 1 perubahan data tiap 30 dtk, 3 menit | 14,6 | 0,00% | 15 ms | 2,1 dtk | 11,6 dtk |
 
-Di production dengan PostgreSQL hasilnya setara atau lebih baik. Kalau user bertambah, naikkan `replicas` `nadien-api`
-(Opsi B) atau `WEB_CONCURRENCY` (Opsi A), lalu cek `max_connections`.
+Yang perlu diketahui:
+
+- **Halaman berat bisa beberapa detik sesekali.** Forecast per node p95 ±3 dtk; satu user yang kebetulan menghitung ulang
+  menunggu sampai ±12 dtk saat server sibuk.
+- **Perubahan data beruntun terasa.** Dengan satu perubahan tiap 30 dtk, p95 dashboard dan hotspot naik ke 8–10 dtk,
+  karena setiap perubahan membuang semua cache di semua proses.
+- **RAM backend** mendatar di ±3 GB untuk 4 worker pada uji 20 menit. CPU rata-rata 0,8 core, puncak 3,8 core.
+
+Script uji beban ada di [`deploy/loadtest/k6-50users.js`](../deploy/loadtest/k6-50users.js). Ukur ulang di server
+production sebelum go-live. Kalau user bertambah, naikkan `maxReplicas` HPA `nadien-api` (Opsi B) atau
+`WEB_CONCURRENCY` (Opsi A), lalu cek `max_connections`.
 
 ### Troubleshooting
 

@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import Depends, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -42,6 +42,11 @@ READ_ONLY_POSTS = ("/api/ai/chat", "/api/twin/simulate")
 PORTAL_PREFIX = "/api/portal"
 # Reachable while a password change is still pending.
 PASSWORD_CHANGE_PATHS = ("/api/auth/password",)
+
+LOGIN_OK = "auth.login"
+LOGIN_FAILED = "auth.login_failed"
+LOGIN_REFUSED = "auth.login_locked"
+LOGIN_UNLOCKED = "auth.login_unlocked"
 
 _SCRYPT = {"n": 2**14, "r": 8, "p": 1}
 
@@ -70,6 +75,9 @@ def hash_password(password: str) -> str:
     salt = os.urandom(16)
     digest = hashlib.scrypt(password.encode(), salt=salt, **_SCRYPT)
     return "scrypt$" + base64.b64encode(salt).decode() + "$" + base64.b64encode(digest).decode()
+
+
+_NO_LOGIN_HASH = hash_password(secrets.token_hex(32))
 
 
 def unusable_password() -> str:
@@ -161,8 +169,9 @@ def ensure_admin(db: Session) -> None:
         log.warning("NADIEN: admin lokal '%s' dibuat dengan NADIEN_ADMIN_PASSWORD; wajib ganti saat login pertama.",
                     settings.admin_username)
     else:
-        log.warning("NADIEN: admin lokal '%s' dibuat dengan password sementara: %s  (wajib ganti saat login pertama)",
-                    settings.admin_username, password)
+        # Not the password itself: logs are kept and shipped elsewhere.
+        log.warning("NADIEN: admin lokal '%s' dibuat tanpa NADIEN_ADMIN_PASSWORD. Buat password-nya dengan: "
+                    "python -m app.reset_password", settings.admin_username)
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -180,9 +189,46 @@ def locked_for(user: m.User) -> int:
 
 def record_failure(user: m.User) -> None:
     user.failed_logins = (user.failed_logins or 0) + 1
-    if user.failed_logins >= settings.login_max_attempts:
+    if user.failed_logins >= settings.login_account_max_attempts:
         user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=settings.login_lock_minutes)
         user.failed_logins = 0
+
+
+def _lock_window_start() -> datetime:
+    return datetime.now(timezone.utc) - timedelta(minutes=settings.login_lock_minutes)
+
+
+def address_blocked(db: Session, ip: str | None) -> bool:
+    """Too many failed or refused logins from this address. Counted from the audit log, which every worker and
+    replica shares. Refused ones count too, so a blocked address stops adding audit rows."""
+    if not ip:
+        return False
+    failures = db.scalar(select(func.count()).select_from(m.AuditLog).where(
+        m.AuditLog.ip == ip, m.AuditLog.at >= _lock_window_start(),
+        m.AuditLog.action.in_((LOGIN_FAILED, LOGIN_REFUSED))))
+    return (failures or 0) >= settings.login_ip_max_failures
+
+
+def pair_locked(db: Session, username: str, ip: str | None) -> bool:
+    """Too many failures for this username from this address since the last login or unlock. Unknown usernames
+    count the same way, so the answer does not reveal which ones exist."""
+    if not ip:
+        return False
+    name = func.lower(m.AuditLog.username) == username.lower()
+    since = _lock_window_start()
+    reset = db.scalar(select(func.max(m.AuditLog.at)).where(
+        name, m.AuditLog.at >= since, m.AuditLog.action.in_((LOGIN_OK, LOGIN_UNLOCKED))))
+    failures = db.scalar(select(func.count()).select_from(m.AuditLog).where(
+        name, m.AuditLog.ip == ip, m.AuditLog.action == LOGIN_FAILED, m.AuditLog.at >= (reset or since)))
+    return (failures or 0) >= settings.login_max_attempts
+
+
+def stored_hash_for_login(user: m.User | None) -> str:
+    """What to verify the password against: a hash nothing matches for accounts that cannot log in here, so all of
+    them take as long as a real check and timing does not reveal which usernames exist."""
+    if user is not None and user.active and user.auth_source == "local":
+        return user.password_hash
+    return _NO_LOGIN_HASH
 
 
 # --------------------------------------------------------------------------- authorization & audit
@@ -199,9 +245,11 @@ def required_role(method: str, path: str) -> str:
 
 
 def client_ip(request: Request) -> str | None:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()[:64]
+    """The address the outermost trusted proxy saw (see trusted_proxy_hops): entries to its left are client-supplied."""
+    hops = settings.trusted_proxy_hops
+    forwarded = [part.strip() for part in request.headers.get("x-forwarded-for", "").split(",") if part.strip()]
+    if hops > 0 and forwarded:
+        return forwarded[-min(hops, len(forwarded))][:64]
     return request.client.host[:64] if request.client else None
 
 
@@ -233,6 +281,9 @@ def authorize(request: Request, db: Session = Depends(get_db)) -> CurrentUser:
     elif settings.ingest_token and path.startswith("/api/integrations") and hmac.compare_digest(
             request.headers.get("authorization", ""), f"Bearer {settings.ingest_token}"):
         current = CurrentUser(None, "ingest-token", "engineer")
+    elif settings.job_token and path.startswith("/api/collectors") and hmac.compare_digest(
+            request.headers.get("authorization", ""), f"Bearer {settings.job_token}"):
+        current = CurrentUser(None, "job-token", "engineer")
     else:
         user = user_from_token(db, request.cookies.get(COOKIE))
         if user is None:
