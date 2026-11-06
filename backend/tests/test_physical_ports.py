@@ -44,6 +44,29 @@ def test_should_keep_observium_iftype_and_speed_when_parsing_a_port():
     assert (rec.if_type, rec.mib_type, rec.speed_gbps) == ("virtual", "propVirtual", 1.0)
 
 
+def _xgei(name: str = "xgei-1/1/0/1", admin: str = "up", oper: str = "down", **speed) -> float | None:
+    row = {"port_id": 1, "device_id": 1, "ifName": name, "ifType": "ethernetCsmacd", "ifAdminStatus": admin,
+           "ifOperStatus": oper, **speed}
+    return parse_port(row).speed_gbps
+
+
+@pytest.mark.parametrize("speed", [{"ifHighSpeed": 1000}, {"ifHighSpeed": 100}, {}])
+def test_should_count_idle_xgei_port_as_10g_whatever_is_reported(speed):
+    assert _xgei(**speed) == 10.0
+
+
+def test_should_keep_reported_speed_when_xgei_port_is_in_use():
+    assert _xgei(oper="up", ifHighSpeed=1000) == 1.0
+
+
+def test_should_keep_reported_speed_when_xgei_port_is_disabled():
+    assert _xgei(admin="down", ifHighSpeed=1000) == 1.0
+
+
+def test_should_not_apply_the_10g_default_to_other_idle_ports():
+    assert _xgei(name="xxvgei-1/1/0/1", ifHighSpeed=1000) == 1.0
+
+
 @pytest.fixture
 def client(db):
     app.dependency_overrides[get_db] = lambda: db

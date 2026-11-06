@@ -257,6 +257,8 @@ def _status(value: Any) -> str:
 
 
 IF_SPEED_MAX = 4_294_967_295  # ifSpeed (Gauge32) ceiling; faster ports report it unless ifHighSpeed is set
+XGEI_PORT = re.compile(r"^xgei[-_]", re.IGNORECASE)  # xgei-1/1/0/1, xgei_1/1; not xxvgei (25G)
+XGEI_IDLE_GBPS = 10.0
 
 
 def _rate_gbps(row: dict[str, Any], key: str) -> float | None:
@@ -277,6 +279,11 @@ def parse_port(row: dict[str, Any]) -> PortRecord | None:
     speed_gbps = high_speed / 1000 if high_speed else (speed / 1e9 if speed else None)
     if_type = str(row.get("ifType") or "")
     mtu = _int(row.get("ifMtu"))
+    admin_status, oper_status = _status(row.get("ifAdminStatus")), _status(row.get("ifOperStatus"))
+    if XGEI_PORT.match(name) and admin_status == "up" and oper_status == "down":
+        # An idle ZTE xgei port is a 10G port: with no link up, what SNMP reports says nothing about its capacity.
+        # Once it is in use the reported speed counts, since a different SFP may be plugged in.
+        speed_gbps = XGEI_IDLE_GBPS
     return PortRecord(
         observium_id=str(row.get("port_id")),
         observium_device_id=str(row.get("device_id")),
@@ -284,8 +291,8 @@ def parse_port(row: dict[str, Any]) -> PortRecord | None:
         if_type=classify_port(name, if_type, bool(speed_gbps)),
         speed_gbps=round(speed_gbps, 3) if speed_gbps else None,
         mtu=mtu if mtu and 64 <= mtu <= 16000 else None,  # SNMP reports 0 on many logical ports
-        admin_status=_status(row.get("ifAdminStatus")),
-        oper_status=_status(row.get("ifOperStatus")),
+        admin_status=admin_status,
+        oper_status=oper_status,
         description=(row.get("ifAlias") or "").strip()[:MAX_DESCRIPTION] or None,
         in_gbps=_rate_gbps(row, "ifInOctets_rate"),
         out_gbps=_rate_gbps(row, "ifOutOctets_rate"),
