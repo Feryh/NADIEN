@@ -124,11 +124,11 @@ function storedMapOn(): boolean {
 }
 
 const ROLE_COLOR: Record<string, string> = {
-  p: '#6366f1', dci: '#f97316', pe: '#0ea5e9', bng: '#e879f9', agg: '#14b8a6', csr: '#fb7185', access: '#64748b', olt: '#a3e635',
+  p: '#6366f1', dci: '#f97316', pe: '#0ea5e9', bng: '#e879f9', agg: '#14b8a6', switch: '#22d3ee', csr: '#fb7185', access: '#64748b', olt: '#a3e635',
 }
 const TIER_LABEL = ['Core (P/DCI)', 'PE / BNG', 'Metro / Aggregation', 'CSR / OLT / Access', 'Lainnya']
 const CATEGORY_LABEL: Record<string, string> = {
-  router: 'Router', metro: 'Metro', csr: 'CSR', olt: 'OLT', access: 'Access', other: 'Lainnya',
+  router: 'Router', metro: 'Metro', switch: 'Switch', csr: 'CSR', olt: 'OLT', access: 'Access', other: 'Lainnya',
 }
 
 const STYLE = [

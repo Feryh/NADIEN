@@ -677,6 +677,7 @@ def site_for(hostname: str, pop_code: str) -> str:
 CATEGORIES: dict[str, list[str]] = {
     "router": ["p", "pe", "bng", "dci"],
     "metro": ["agg"],
+    "switch": ["switch"],
     "csr": ["csr"],
     "olt": ["olt"],
     "access": ["access"],
@@ -684,6 +685,7 @@ CATEGORIES: dict[str, list[str]] = {
 CATEGORY_LABELS = {
     "router": "Router (P/PE/BNG/DCI)",
     "metro": "Metro / Aggregation",
+    "switch": "Switch (DS)",
     "csr": "CSR (Cell Site Router)",
     "olt": "OLT",
     "access": "Access / Switch",
@@ -699,7 +701,8 @@ def category_for(role: str | None) -> str:
 
 
 # Role tiers for layered device layouts (top to bottom).
-ROLE_TIER = {"dci": 0, "p": 0, "pe": 1, "bng": 1, "agg": 2, "csr": 3, "access": 3, "olt": 3}
+# switch: distribution switches (DS1/DS2) sit at the metro layer, between the edge and OLT/access.
+ROLE_TIER = {"dci": 0, "p": 0, "pe": 1, "bng": 1, "agg": 2, "switch": 2, "csr": 3, "access": 3, "olt": 3}
 
 
 # Standard port speeds; anything else (106G, 8G, 622M, SNMP overflow 4295G…) is "Non-standar":

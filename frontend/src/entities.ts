@@ -59,7 +59,7 @@ export const ENTITIES: Entity[] = [
     fields: [
       { name: 'hostname', label: 'Hostname', required: true },
       { name: 'pop_id', label: 'POP', type: 'ref', ref: 'pops', required: true },
-      { name: 'role', label: 'Role', type: 'select', options: ['p', 'pe', 'agg', 'csr', 'access', 'dci', 'olt', 'bng'] },
+      { name: 'role', label: 'Role', type: 'select', options: ['p', 'pe', 'agg', 'switch', 'csr', 'access', 'dci', 'olt', 'bng'] },
       { name: 'vendor_id', label: 'Vendor', type: 'ref', ref: 'vendors' },
       { name: 'model_id', label: 'Model', type: 'ref', ref: 'device-models' },
       { name: 'software_id', label: 'Software', type: 'ref', ref: 'software' },
@@ -253,6 +253,7 @@ const deviceEntity = ENTITIES.find((e) => e.key === 'devices') as Entity
 const DEVICE_CATEGORIES: [string, string, string][] = [
   ['devices-router', 'Router (P/PE/BNG/DCI)', 'p,pe,bng,dci'],
   ['devices-metro', 'Metro / Aggregation', 'agg'],
+  ['devices-switch', 'Switch (DS)', 'switch'],
   ['devices-csr', 'CSR (Cell Site Router)', 'csr'],
   ['devices-olt', 'OLT', 'olt'],
   ['devices-access', 'Access / Switch', 'access'],

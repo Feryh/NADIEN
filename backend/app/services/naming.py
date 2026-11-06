@@ -31,7 +31,7 @@ DESCRIPTION_STATUS_LABELS = {"standard": "Standar", "names_peer": "Menyebut lawa
 # Function codes in hostnames: the inventory roles, plus service functions seen on the network.
 EXTRA_FUNCTIONS = {"SPE", "IGW", "CGN", "AN", "RR", "ADC", "OLP", "DCGW", "BRAS", "CPE"}
 FUNCTIONS = set(ROLE_TOKENS) | EXTRA_FUNCTIONS
-STANDARD_TOKEN = {"p": "P", "pe": "PE", "bng": "BNG", "agg": "ME", "csr": "ME", "olt": "OLT", "access": "SW", "dci": "DCI"}
+STANDARD_TOKEN = {"p": "P", "pe": "PE", "bng": "BNG", "agg": "ME", "switch": "DS", "csr": "ME", "olt": "OLT", "access": "SW", "dci": "DCI"}
 VENDOR_CODE = {"huawei": "HW", "zte": "ZTE", "fiberhome": "FH", "cisco": "CSCO", "juniper": "JNPR", "nokia": "NOK"}
 
 _FUNC = "(" + "|".join(sorted(FUNCTIONS, key=len, reverse=True)) + r")(\d*)"
