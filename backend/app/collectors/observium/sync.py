@@ -175,6 +175,9 @@ class _Writer:
         device.software_id = sw.id if sw else device.software_id
         device.mgmt_ip = rec.mgmt_ip or device.mgmt_ip
         device.status = rec.status
+        device.reachability = rec.reachability
+        device.uptime_s = rec.uptime_s
+        device.last_polled_at = rec.last_polled_at
         self.db.flush()
         self.devices[norm_host(rec.hostname)] = device
         return device

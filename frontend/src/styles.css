@@ -217,9 +217,12 @@ td.trend-down { color: #86efac; }
 .crumbs { display: flex; gap: 8px; align-items: center; font-weight: 600; }
 .crumbs a { color: var(--muted); }
 .crumbs .current { color: var(--text); }
+.crumbs .crumb-aside { font-weight: 400; font-size: 12px; }
 .graph { position: relative; }
 .graph-canvas { position: absolute; inset: 0; }
 .graph-loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); z-index: 2; }
+/* ELK layout of a city can take seconds: dim the empty canvas so the message reads as "working", not "empty". */
+.graph-loading.arranging { background: rgba(15, 23, 42, 0.35); }
 .role-legend { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 6px; font-size: 11px; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; vertical-align: middle; margin-right: 3px; }
 .utilbar-wrap { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 10px; }
@@ -523,3 +526,9 @@ a.button.primary { background: var(--accent-strong); border-color: var(--accent-
 .pw-summary b { font-size: 18px; color: var(--accent); }
 .text-bad { color: #f87171; }
 @media (max-width: 700px) { .l2vpn-hostname .mop-meta label.span-2 { grid-column: 1 / -1; } }
+
+.detail-panel.wide { width: min(720px, calc(100% - 24px)); }
+.bundle-table { font-size: 11px; }
+.bundle-table th, .bundle-table td { padding: 3px 6px; white-space: nowrap; }
+.bundle-table tr.clicked td { background: #0ea5e922; font-weight: 600; }
+.city-filters .segment-chip { --seg: var(--accent); }

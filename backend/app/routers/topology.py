@@ -75,11 +75,18 @@ def save_positions(positions: list[s.NodePosition], db: Session = Depends(get_db
     db.commit()
 
 
+def _stored_point(point: s.LayoutPoint | s.MapPoint) -> dict[str, float]:
+    # 6 decimals of a degree is ~0.1 m: finer than any drag on the map can place a device.
+    if isinstance(point, s.MapPoint):
+        return {"lat": round(point.lat, 6), "lon": round(point.lon, 6)}
+    return {"x": round(point.x, 1), "y": round(point.y, 1)}
+
+
 @router.put("/layouts", status_code=204)
 def save_layout(layout: s.TopologyLayoutIn, db: Session = Depends(get_db)):
     """Store the arrangement of one view; the view returns it as `layout` from then on."""
     row = db.get(m.TopologyLayout, layout.view_key) or m.TopologyLayout(view_key=layout.view_key)
-    row.positions = {node: {"x": round(p.x, 1), "y": round(p.y, 1)} for node, p in layout.positions.items()}
+    row.positions = {node: _stored_point(p) for node, p in layout.positions.items()}
     db.add(row)
     db.commit()
 

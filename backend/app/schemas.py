@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
 
 def partial(model: type[BaseModel], name: str) -> type[BaseModel]:
@@ -94,7 +94,9 @@ class DeviceCreate(BaseModel):
 
 
 class DeviceRead(DeviceCreate, ORMRead):
-    pass
+    reachability: Literal["up", "down", "unknown"] = "unknown"
+    uptime_s: int | None = None
+    last_polled_at: datetime | None = None
 
 
 class InterfaceCreate(BaseModel):
@@ -302,15 +304,39 @@ class NodePosition(BaseModel):
 
 
 class LayoutPoint(BaseModel):
+    # Forbidding extras keeps x/y and lat/lon points apart: a mixed point is rejected, not silently trimmed.
+    model_config = ConfigDict(extra="forbid")
+
     x: float = Field(ge=-1e7, le=1e7)
     y: float = Field(ge=-1e7, le=1e7)
 
 
+class MapPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+
+
+MAP_VIEW_PREFIX = "map:"
+
+
 class TopologyLayoutIn(BaseModel):
-    """Positions of every node on one topology view, as `layout_key` of that view names it."""
+    """Positions of every node on one topology view, as `layout_key` of that view names it. A `map:<layout_key>`
+    view holds where devices were dragged on the map as lat/lon, so it stays right whatever the map scale."""
 
     view_key: str = Field(min_length=1, max_length=255)
-    positions: dict[str, LayoutPoint] = Field(max_length=5000)
+    positions: dict[str, LayoutPoint | MapPoint] = Field(max_length=5000)
+
+    @model_validator(mode="after")
+    def check_point_kind(self) -> "TopologyLayoutIn":
+        on_map = self.view_key.startswith(MAP_VIEW_PREFIX)
+        expected = MapPoint if on_map else LayoutPoint
+        wrong = [node for node, point in self.positions.items() if not isinstance(point, expected)]
+        if wrong:
+            raise ValueError(f"positions of view {self.view_key} must be {'lat/lon' if on_map else 'x/y'}: "
+                             + ", ".join(wrong[:5]))
+        return self
 
 
 class DiscoveryResult(BaseModel):

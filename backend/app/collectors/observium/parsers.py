@@ -7,8 +7,11 @@ Observium returns most numeric columns as strings and sometimes "" for unknown;
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
+from ...config import settings
 from ...services.areas import FUNCTION_TOKENS, csr_parts, first_city_code, is_city_code
 from ...services.topology import strip_domain
 
@@ -79,6 +82,18 @@ def _int(value: Any) -> int | None:
     return int(n) if n is not None else None
 
 
+def _observium_time(value: Any) -> datetime | None:
+    """Observium stores poll times as naive server-local text; "0000-00-00 00:00:00" means never polled."""
+    text = str(value or "").strip()
+    if not text or text.startswith("0000"):
+        return None
+    try:
+        local = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    return local.replace(tzinfo=ZoneInfo(settings.schedule_timezone)).astimezone(timezone.utc)
+
+
 def _is_ip(name: str) -> bool:
     return bool(re.fullmatch(r"[\d.]+|[0-9a-fA-F:]*:[0-9a-fA-F:]*", name.strip()))
 
@@ -111,6 +126,9 @@ class DeviceRecord:
     mgmt_ip: str | None
     status: str
     observium_hostname: str = ""  # Observium's own hostname: the RRD directory name
+    reachability: str = "unknown"  # up | down | unknown (disabled devices are not polled)
+    uptime_s: int | None = None
+    last_polled_at: datetime | None = None
 
 
 def _tokens(hostname: str) -> list[str]:
@@ -214,6 +232,9 @@ def parse_device(row: dict[str, Any], pop_regex: str) -> DeviceRecord | None:
         mgmt_ip=row.get("ip") or None,
         status="decommissioned" if disabled else ("active" if up else "maintenance"),
         observium_hostname=(row.get("hostname") or "").strip(),
+        reachability="unknown" if disabled else ("up" if up else "down"),
+        uptime_s=_int(row.get("uptime")),
+        last_polled_at=_observium_time(row.get("last_polled")),
     )
 
 

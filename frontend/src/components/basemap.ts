@@ -11,6 +11,11 @@ export function project(lat: number, lon: number, pxPerDegree: number): { x: num
   return { x: (lon - LON0) * pxPerDegree, y: -lat * pxPerDegree }
 }
 
+/** Inverse of `project`: where on the map a drawing position is, so a dragged node can be saved as lat/lon. */
+export function unproject(pos: { x: number; y: number }, pxPerDegree: number): { lat: number; lon: number } {
+  return { lat: -pos.y / pxPerDegree, lon: pos.x / pxPerDegree + LON0 }
+}
+
 export interface BasemapShape {
   id: string
   name: string
@@ -61,6 +66,7 @@ export interface Box {
   y: number
   hw: number  // half width
   hh: number  // half height
+  fixed?: boolean  // placed by hand: never moved, the others are pushed around it
 }
 
 /**
@@ -88,17 +94,20 @@ export function declutter(boxes: Map<string, Box>, gap: number, maxShift = Infin
         const dy = b.y - a.y
         const overlapX = a.hw + b.hw + gap - Math.abs(dx)
         const overlapY = a.hh + b.hh + gap - Math.abs(dy)
-        if (overlapX <= 0 || overlapY <= 0) continue
+        if (overlapX <= 0 || overlapY <= 0 || (a.fixed && b.fixed)) continue
+        // Two free boxes share the push; a free box next to a fixed one takes all of it.
+        const shareA = a.fixed ? 0 : b.fixed ? 1 : 0.5
+        const shareB = 1 - shareA
         if (overlapY <= overlapX) {
-          const push = overlapY / 2 + 0.01
+          const push = overlapY + 0.02
           const dir = dy === 0 ? (i % 2 ? 1 : -1) : Math.sign(dy)
-          a.y -= dir * push
-          b.y += dir * push
+          a.y -= dir * push * shareA
+          b.y += dir * push * shareB
         } else {
-          const push = overlapX / 2 + 0.01
+          const push = overlapX + 0.02
           const dir = dx === 0 ? (j % 2 ? 1 : -1) : Math.sign(dx)
-          a.x -= dir * push
-          b.x += dir * push
+          a.x -= dir * push * shareA
+          b.x += dir * push * shareB
         }
         clamp(ids[i])
         clamp(ids[j])

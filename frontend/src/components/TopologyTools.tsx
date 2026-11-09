@@ -40,15 +40,18 @@ export function TopologySearchBox({ onPick }: { onPick: (hit: SearchHit) => void
     return () => document.removeEventListener('mousedown', close)
   }, [])
 
+  const needle = term.trim()
   const hits = useMemo<SearchHit[]>(() => {
     if (!result) return []
     return [
       ...result.pops.map((p): SearchHit => ({ kind: 'pop', code: p.code, label: p.code, meta: `${p.name} · ${p.area} · ${p.devices} perangkat` })),
       ...result.devices.map((d): SearchHit => ({
-        kind: 'device', deviceId: d.device_id, pop: d.pop, label: d.hostname, meta: `${d.role.toUpperCase()} · ${d.pop}`,
+        // The management IP is shown only when it is what matched, so a hostname hit stays as short as before.
+        kind: 'device', deviceId: d.device_id, pop: d.pop, label: d.hostname,
+        meta: `${d.role.toUpperCase()} · ${d.pop}${d.mgmt_ip && d.mgmt_ip.startsWith(needle) ? ` · ${d.mgmt_ip}` : ''}`,
       })),
     ]
-  }, [result])
+  }, [result, needle])
 
   function pick(hit: SearchHit | undefined) {
     if (!hit) return
@@ -88,7 +91,7 @@ export function TopologySearchBox({ onPick }: { onPick: (hit: SearchHit) => void
     <form onSubmit={submit} className="inline search-box" ref={box}>
       <input
         className="search"
-        placeholder="Cari hostname / kode POP…"
+        placeholder="Cari hostname / IP / kode POP…"
         value={term}
         onChange={(e) => {
           setTerm(e.target.value)

@@ -30,6 +30,15 @@ def capacity_color(committed_pct: float) -> str:
     return "green"
 
 
+def committed_pct(current_gbps: float, reserved_gbps: float, capacity_gbps: float | None) -> float:
+    """Share of capacity that is used or promised; 0.0 when the capacity is unknown so it never reads as congested."""
+    return (current_gbps + reserved_gbps) / capacity_gbps * 100 if capacity_gbps else 0.0
+
+
+def utilization_pct(current_gbps: float, capacity_gbps: float | None) -> float:
+    return current_gbps / capacity_gbps * 100 if capacity_gbps else 0.0
+
+
 def hotspot_level(pct: float) -> str:
     """Busiest links/ports: critical ≥ 90%, warning ≥ 70% (NADIEN_HOTSPOT_*_PCT), else normal.
     Far above 100% the capacity itself is wrong (e.g. a 10G uplink whose SNMP speed says 10M):
