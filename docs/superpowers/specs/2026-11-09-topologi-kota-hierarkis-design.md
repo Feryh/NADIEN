@@ -243,3 +243,18 @@ Statistik di status bar tetap menghitung semua link.
 | Kolom baru gagal di PostgreSQL (tidak terlihat di SQLite) | Panjang/tipe kolom eksplisit, migrasi dicek |
 | SPOF palsu karena link ke perangkat di luar Observium | Dihitung atas seluruh graf; panel menyebut "berdasarkan link yang diketahui" |
 | Operator kehilangan susunan manual | Hanya level `city`/`neighbors` yang tanpa drag; level `device` per POP tetap |
+
+## Addendum 2026-11-09 — link config lintas kota tanpa trafik disembunyikan
+
+Atas permintaan user, topologi bertumpu pada LLDP. Sebuah link **disembunyikan** dari semua level
+`/api/topology/view` bila ketiganya terpenuhi:
+
+- `discovery_source == "config"` (hanya dari deskripsi interface);
+- kedua ujungnya di Kab/Kota berbeda (path `(area, provinsi, kab/kota)` lengkap dibandingkan);
+- `current_gbps` 0 atau kosong;
+- Kab/Kota kedua ujung diketahui (ujung yang area atau Kab/Kota-nya "belum dipetakan" membuat link tetap tampil).
+
+Link LLDP dan manual tidak pernah disembunyikan. **Data link tidak dihapus maupun diubah**: aturan hanya ada di
+read-model (`is_stale_cross_city` di `services/topology_readmodel.py`). Struktur (ring/mesh/SPOF) dihitung atas
+link yang tampil. `include_hidden=true` menampilkan semuanya; setiap view mengembalikan `hidden_links` (jumlah
+link dalam cakupan view yang memenuhi aturan) untuk toggle "Tampilkan link config tanpa trafik (N)" di UI.

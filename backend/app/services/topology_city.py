@@ -4,7 +4,7 @@ Unlike the aggregated levels, parallel links stay separate here so the map can d
 """
 
 from collections import defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Collection, Iterable
 from typing import Any
 
 from fastapi import HTTPException
@@ -20,13 +20,14 @@ from .topology_readmodel import (
     Agg,
     Ctx,
     device_node,
+    TopologyLinks,
     edges_of,
-    load_links,
     pair,
     path_fields,
     place_devices,
     pop_labels,
     segments_of,
+    topology_links,
 )
 from .topology_structure import Structure, analyse
 
@@ -37,11 +38,12 @@ CLUSTER_TIERS = (2, 3)  # metro and access rings; core/edge redundancy is not a 
 _IN_CHUNK = 500  # keeps IN (...) lists well under every database's bind-parameter limit
 
 
-def network_structure(db: Session) -> Structure:
+def network_structure(topology: TopologyLinks) -> Structure:
     """Rings, meshes and SPOFs over the whole link graph: a view that shows only part of the network must not
-    invent single points of failure."""
-    return cache.cached(("topology-structure",),
-                        lambda: analyse((link.id, link.a_device_id, link.b_device_id) for link in load_links(db)))
+    invent single points of failure. A hidden stale config link is no real redundancy, so by default it is left
+    out of the graph too. Built from links the caller already loaded, so a cold request reads them once."""
+    return cache.cached(("topology-structure", topology.include_hidden),
+                        lambda: analyse((link.id, link.a_device_id, link.b_device_id) for link in topology.shown))
 
 
 def _chunks(values: list[int]) -> Iterable[list[int]]:
@@ -172,14 +174,14 @@ def _pop_entries(ctx: Ctx, pop_ids: set[int], local: dict[int, Any]) -> list[dic
             for pid in sorted(pop_ids, key=lambda pid: ctx.pops[pid].code)]
 
 
-def _collect_links(db: Session, ctx: Ctx, local: dict[int, Any], node_of: Callable[[int], str]) -> tuple[
+def _collect_links(links: list[Any], ctx: Ctx, local: dict[int, Any], node_of: Callable[[int], str]) -> tuple[
         set[int], dict[tuple[str, str, str], Agg], dict[str, Agg], dict[str, set[int]]]:
     """Ids of every link with an end in the city, aggregates for edges/segments and the far-end devices per POP."""
     link_ids: set[int] = set()
     edges: dict[tuple[str, str, str], Agg] = defaultdict(Agg)
     totals: dict[str, Agg] = defaultdict(Agg)
     remote: dict[str, set[int]] = defaultdict(set)
-    for link in load_links(db):
+    for link in links:
         if link.a_device_id not in ctx.devices or link.b_device_id not in ctx.devices:
             continue
         if link.a_device_id not in local and link.b_device_id not in local:
@@ -196,20 +198,26 @@ def _collect_links(db: Session, ctx: Ctx, local: dict[int, Any], node_of: Callab
     return link_ids, edges, totals, remote
 
 
-def city_view(db: Session, ctx: Ctx, area: str, province: str, regency: str) -> dict:
+def _hidden_touching(topology: TopologyLinks, devices: Collection[int]) -> int:
+    """Hidden links with an end on a device of the view: the ones that would have added a link or a neighbour."""
+    return topology.hidden_count(lambda link: link.a_device_id in devices or link.b_device_id in devices)
+
+
+def city_view(db: Session, ctx: Ctx, area: str, province: str, regency: str, include_hidden: bool = False) -> dict:
     path = (area, province, regency)
     pop_ids = _city_pops(ctx, path)
     local = {d.id: d for d in ctx.devices.values() if d.pop_id in pop_ids}
     summarized = _summarized(ctx, local)
     hidden = {i for ids in summarized.values() for i in ids}
-    structure = network_structure(db)
+    topology = topology_links(db, ctx, include_hidden)
+    structure = network_structure(topology)
 
     def node_of(device_id: int) -> str:
         if device_id not in local:
             return f"pop:{ctx.pop_code(device_id)}"
         return f"summary:{ctx.pop_code(device_id)}" if device_id in hidden else f"dev:{device_id}"
 
-    link_ids, edges, totals, remote = _collect_links(db, ctx, local, node_of)
+    link_ids, edges, totals, remote = _collect_links(topology.shown, ctx, local, node_of)
     clusters = _clusters(ctx, structure, local, hidden)
     nodes = _device_nodes(ctx, local, hidden, structure, clusters)
     summary_nodes, described = _summary_nodes(ctx, summarized)
@@ -217,7 +225,8 @@ def city_view(db: Session, ctx: Ctx, area: str, province: str, regency: str) -> 
     place_devices(ctx, nodes)
     return {"level": "city", **path_fields(path), "nodes": nodes, "pops": _pop_entries(ctx, pop_ids, local),
             "clusters": clusters, "links": link_entries(db, ctx, link_ids, node_of, structure),
-            "edges": edges_of(edges), "segments": segments_of(totals), "summarized": described}
+            "edges": edges_of(edges), "segments": segments_of(totals), "summarized": described,
+            "hidden_links": _hidden_touching(topology, local.keys())}
 
 
 MAX_NEIGHBOR_NODES = 400
@@ -245,12 +254,14 @@ def _reach(links: list[Any], ctx: Ctx, device_id: int, depth: int) -> tuple[set[
     return included, truncated
 
 
-def neighbors_view(db: Session, ctx: Ctx, device_id: int, depth: int) -> dict:
+def neighbors_view(db: Session, ctx: Ctx, device_id: int, depth: int, include_hidden: bool = False) -> dict:
     """One device and everything within `depth` hops, with the same node, link, cluster and POP shapes as the city
     view so the frontend draws both with one code path."""
     if device_id not in ctx.devices:
         raise HTTPException(404, f"Device {device_id} not found")
-    links = load_links(db)
+    # Reached over the drawn links only, so a hidden link does not pull far-away devices into the view.
+    topology = topology_links(db, ctx, include_hidden)
+    links = topology.shown
     included, truncated = _reach(links, ctx, device_id, depth)
     local = {i: ctx.devices[i] for i in included}
 
@@ -266,7 +277,7 @@ def neighbors_view(db: Session, ctx: Ctx, device_id: int, depth: int) -> dict:
             edges[(*pair(node_of(link.a_device_id), node_of(link.b_device_id)), segment)].add(link)
             totals[segment].add(link)
             link_ids.add(link.id)
-    structure = network_structure(db)
+    structure = network_structure(topology)
     clusters = _clusters(ctx, structure, local, set(), tiers=None)
     nodes = _device_nodes(ctx, local, set(), structure, clusters, center_id=device_id)
     place_devices(ctx, nodes)
@@ -275,4 +286,5 @@ def neighbors_view(db: Session, ctx: Ctx, device_id: int, depth: int) -> dict:
             "pop": ctx.pop_code(device_id), **path_fields(ctx.path_of_pop(center.pop_id)), "truncated": truncated,
             "nodes": nodes, "pops": _pop_entries(ctx, {d.pop_id for d in local.values()}, local),
             "clusters": clusters, "links": link_entries(db, ctx, link_ids, node_of, structure),
-            "edges": edges_of(edges), "segments": segments_of(totals)}
+            "edges": edges_of(edges), "segments": segments_of(totals),
+            "hidden_links": _hidden_touching(topology, included)}

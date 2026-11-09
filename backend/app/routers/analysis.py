@@ -52,16 +52,17 @@ from ..services.topology_readmodel import (
     UNASSIGNED_POP,
     Agg as _Agg,
     Ctx as _Ctx,
+    TopologyLinks as _TopologyLinks,
     context as _context,
     device_node as _device_node,
     edges_of as _edges,
-    load_links as _links,
     pair as _pair,
     path_fields as _path_fields,
     place_devices as _place_devices,
     pop_labels as _pop_labels,
     segment_of as _segment_of,
     segments_of as _segments,
+    topology_links as _topology_links,
 )
 from ..services.topology_city import city_view as _city_view, neighbors_view as _neighbors_view
 from ..services.geo import KmlError, Placemark, match_devices, match_pops, read_placemarks
@@ -483,6 +484,7 @@ def topology_view(
     pop: str | None = None,
     device_id: int | None = None,
     depth: int = Query(1, ge=1, le=2),
+    include_hidden: bool = False,
     db: Session = Depends(get_db),
 ):
     """area: areas + inter-area trunks · province (needs `area`): provinces of one area ·
@@ -492,10 +494,12 @@ def topology_view(
     city (needs `area`, `province`, `regency`): every device of one city with one entry per link ·
     neighbors (needs `device_id`): one device and everything within `depth` hops.
     A province or regency level with a single group inside answers with the next level down
-    (the response's `level` says which), so no click opens a view of one box."""
-    key = ("topology", level, area, province, regency, (pop or "").upper(), device_id, depth)
+    (the response's `level` says which), so no click opens a view of one box.
+    Config-sourced links between two Kab/Kota without traffic are left out unless `include_hidden`;
+    `hidden_links` counts them within the view either way."""
+    key = ("topology", level, area, province, regency, (pop or "").upper(), device_id, depth, include_hidden)
     return cache.cached(key, lambda: _with_layout(db, _topology_view(db, level, area, province, regency, pop,
-                                                                     device_id, depth)))
+                                                                     device_id, depth, include_hidden)))
 
 
 def layout_key(view: dict) -> str:
@@ -524,17 +528,17 @@ def _with_layout(db: Session, view: dict) -> dict:
 
 
 def _topology_view(db: Session, level: str, area: str | None, province: str | None, regency: str | None,
-                   pop: str | None, device_id: int | None, depth: int) -> dict:
+                   pop: str | None, device_id: int | None, depth: int, include_hidden: bool = False) -> dict:
     ctx = _context(db)
     if level == "city":
         if not (area and province and regency):
             raise HTTPException(422, "area, province and regency are required for level=city")
-        return _city_view(db, ctx, area, province, regency)
+        return _city_view(db, ctx, area, province, regency, include_hidden)
     if level == "neighbors":
         if device_id is None:
             raise HTTPException(422, "device_id is required for level=neighbors")
-        return _neighbors_view(db, ctx, device_id, depth)
-    links = _links(db)
+        return _neighbors_view(db, ctx, device_id, depth, include_hidden)
+    links = _topology_links(db, ctx, include_hidden)
     if level == "area":
         return _area_level(ctx, links)
     if level in ("province", "regency", "pop"):
@@ -601,11 +605,11 @@ def _estimate_positions(known: dict[str, tuple[float, float]], neighbours: dict[
     return estimated
 
 
-def _area_level(ctx: _Ctx, links) -> dict:
+def _area_level(ctx: _Ctx, links: _TopologyLinks) -> dict:
     inner: dict[str, _Agg] = defaultdict(_Agg)
     trunks: dict[tuple[str, str, str], _Agg] = defaultdict(_Agg)
     totals: dict[str, _Agg] = defaultdict(_Agg)
-    for link in links:
+    for link in links.shown:
         if link.a_device_id not in ctx.devices or link.b_device_id not in ctx.devices:
             continue
         segment = _segment_of(ctx, link)
@@ -628,7 +632,8 @@ def _area_level(ctx: _Ctx, links) -> dict:
             "devices": devices_per_area[name], "internal": inner[name].as_dict(),
             "lon": lon, "lat": lat, "pops_located": located[name],
         })
-    return {"level": "area", "nodes": nodes, "edges": _edges(trunks), "segments": _segments(totals)}
+    return {"level": "area", "nodes": nodes, "edges": _edges(trunks), "segments": _segments(totals),
+            "hidden_links": links.hidden_count(lambda link: True)}
 
 
 # Drill-down groups by depth in the (area, province, regency) path of a POP.
@@ -667,7 +672,7 @@ def _outside_path(path: tuple[str, ...], scope: tuple[str, ...]) -> tuple[str, .
     return path[:len(scope)]
 
 
-def _scoped_level(ctx: _Ctx, links, scope: tuple[str, ...], pops: bool) -> dict:
+def _scoped_level(ctx: _Ctx, links: _TopologyLinks, scope: tuple[str, ...], pops: bool) -> dict:
     """POPs inside `scope` (a path prefix), drawn as POPs (`pops`) or as the groups one level below the
     scope, with links out of the scope ending on the group they lead to. A group level holding a single
     group opens that group instead."""
@@ -690,7 +695,7 @@ def _scoped_level(ctx: _Ctx, links, scope: tuple[str, ...], pops: bool) -> dict:
     edges: dict[tuple[str, str, str], _Agg] = defaultdict(_Agg)
     totals: dict[str, _Agg] = defaultdict(_Agg)
     external: Counter = Counter()
-    for link in links:
+    for link in links.shown:
         if link.a_device_id not in ctx.devices or link.b_device_id not in ctx.devices:
             continue
         pa, pb = ctx.devices[link.a_device_id].pop_id, ctx.devices[link.b_device_id].pop_id
@@ -719,7 +724,10 @@ def _scoped_level(ctx: _Ctx, links, scope: tuple[str, ...], pops: bool) -> dict:
     if pops:
         _place_pops(nodes, edges, centers.get(scope))
     level = "pop" if pops else _GROUP_LEVELS[len(scope) - 1]
-    return {"level": level, **_path_fields(scope), "nodes": nodes, "edges": _edges(edges), "segments": _segments(totals)}
+    hidden = links.hidden_count(lambda link: ctx.devices[link.a_device_id].pop_id in inside
+                                or ctx.devices[link.b_device_id].pop_id in inside)
+    return {"level": level, **_path_fields(scope), "nodes": nodes, "edges": _edges(edges), "segments": _segments(totals),
+            "hidden_links": hidden}
 
 
 def _group_nodes(ctx: _Ctx, inside: set[int], scope: tuple[str, ...], inner: dict[str, _Agg],
@@ -784,7 +792,7 @@ def _place_pops(nodes: list[dict], edges: dict, center: tuple[float, float] | No
             node["lat"], node["lon"] = estimated[node["id"]]
 
 
-def _device_level(ctx: _Ctx, links, pop_code: str) -> dict:
+def _device_level(ctx: _Ctx, links: _TopologyLinks, pop_code: str) -> dict:
     pop = next((p for p in ctx.pops.values() if p.code.upper() == pop_code.upper()), None)
     if pop is None:
         raise HTTPException(404, f"POP '{pop_code}' not found")
@@ -792,7 +800,7 @@ def _device_level(ctx: _Ctx, links, pop_code: str) -> dict:
     edges: dict[tuple[str, str, str], _Agg] = defaultdict(_Agg)
     totals: dict[str, _Agg] = defaultdict(_Agg)
     external: dict[str, set[int]] = defaultdict(set)
-    for link in links:
+    for link in links.shown:
         a_in, b_in = link.a_device_id in local, link.b_device_id in local
         if not (a_in or b_in) or link.a_device_id not in ctx.devices or link.b_device_id not in ctx.devices:
             continue
@@ -821,7 +829,8 @@ def _device_level(ctx: _Ctx, links, pop_code: str) -> dict:
     _place_devices(ctx, nodes)
     return {"level": "device", "pop": pop.code, "pop_name": pop.name, "pop_id": pop.id, "region": pop.region,
             "city": ctx.place_of_pop[pop.id].city, **_path_fields(ctx.path_of_pop(pop.id)), "nodes": nodes,
-            "edges": _edges(edges), "segments": _segments(totals)}
+            "edges": _edges(edges), "segments": _segments(totals),
+            "hidden_links": links.hidden_count(lambda link: link.a_device_id in local or link.b_device_id in local)}
 
 
 # --------------------------------------------------------------------------- search & POP area

@@ -34,7 +34,7 @@ const view: CityView = {
     link(1, 'dev:1', 'dev:2'), link(2, 'dev:1', 'dev:3'), link(3, 'dev:2', 'dev:4'), link(4, 'dev:3', 'dev:4'),
     link(5, 'dev:4', 'dev:5'), link(6, 'pop:X', 'dev:1'), link(7, 'dev:1', 'dev:3'),
   ],
-  edges: [], segments: {}, layout_key: 'k',
+  edges: [], segments: {}, layout_key: 'k', hidden_links: 0,
 }
 
 describe('real elkjs layout converted to Cytoscape', () => {

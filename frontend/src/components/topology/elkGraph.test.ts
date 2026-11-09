@@ -29,7 +29,7 @@ function view(
 ): CityView {
   const popCodes = [...new Set(nodes.flatMap((n) => ((n.kind === 'device' || n.kind === 'summary') && n.pop ? [n.pop] : [])))]
   return {
-    level, nodes, links, clusters, edges: [], segments: {}, layout_key: 'k',
+    level, nodes, links, clusters, edges: [], segments: {}, layout_key: 'k', hidden_links: 0,
     pops: popCodes.map((code) => ({ code, name: code, city: code, device_count: 1 })),
   }
 }
