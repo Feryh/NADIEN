@@ -11,6 +11,11 @@ export function project(lat: number, lon: number, pxPerDegree: number): { x: num
   return { x: (lon - LON0) * pxPerDegree, y: -lat * pxPerDegree }
 }
 
+/** Inverse of `project`: where on the map a drawing position is, so a dragged node can be saved as lat/lon. */
+export function unproject(pos: { x: number; y: number }, pxPerDegree: number): { lat: number; lon: number } {
+  return { lat: -pos.y / pxPerDegree, lon: pos.x / pxPerDegree + LON0 }
+}
+
 export interface BasemapShape {
   id: string
   name: string

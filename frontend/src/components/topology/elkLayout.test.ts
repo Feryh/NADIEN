@@ -109,3 +109,9 @@ describe('layout client request bookkeeping', () => {
     expect(workers[0].terminated).toBe(true)
   })
 })
+
+describe('LAYOUT_TIMEOUT_MS', () => {
+  it('should allow a minute when a large city such as Jakarta takes ~17 s to lay out', () => {
+    expect(LAYOUT_TIMEOUT_MS).toBe(60_000)
+  })
+})

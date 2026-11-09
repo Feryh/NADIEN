@@ -517,6 +517,9 @@ def _with_layout(db: Session, view: dict) -> dict:
     view["layout_key"] = layout_key(view)
     row = db.get(m.TopologyLayout, view["layout_key"])
     view["layout"] = row.positions if row else {}
+    # Devices dragged on the map are kept apart from the schematic: lat/lon overrides, never the site coordinates.
+    map_row = db.get(m.TopologyLayout, f"map:{view['layout_key']}")
+    view["map_layout"] = map_row.positions if map_row else {}
     return view
 
 

@@ -12,6 +12,7 @@ import { buildCityElements, canUpdateInPlace, citySizeOf, linkColor, liveData, t
 import { isCompound, isProblemLink, isProblemNode, linkVisible, NO_FILTER, nodeVisible, vendorsIn, type CityFilter } from '../components/topology/cityFilters'
 import { CITY_STYLE } from '../components/topology/cityStyle'
 import { layoutCity, LayoutCancelled } from '../components/topology/elkLayout'
+import { type GeoPoint, MAP_DRAGGABLE, mapKeyFor, mapOverridePositions, mapViewKey, movedFrom, storedMapOn } from '../components/topology/mapArrange'
 import { edgeWidth, ROLE_COLOR, SEGMENT_COLOR, shortName } from '../components/topology/shared'
 import type { CityLink, CityView } from '../components/topology/types'
 
@@ -31,7 +32,7 @@ type NodeKind = GroupKind | 'pop' | 'device' | 'external_area' | 'external_provi
 const GROUP_KINDS: string[] = ['area', 'province', 'regency']
 const isGroup = (kind: string) => GROUP_KINDS.includes(kind)
 const isGroupLevel = (level: Level) => level === 'area' || level === 'province' || level === 'regency'
-/** Levels drawn from per-link entries with an ELK layout (positions are computed, never dragged or saved). */
+/** Levels drawn from per-link entries with an ELK layout (positions are computed, never dragged or saved there). */
 const isElkLevel = (level: Level) => level === 'city' || level === 'neighbors'
 const usesElk = (level: Level, onMap: boolean) => isElkLevel(level) && !onMap
 
@@ -120,6 +121,7 @@ interface View {
   truncated?: boolean
   layout_key?: string  // which saved arrangement this view uses
   layout?: Record<string, Pos>  // node id -> position arranged by hand and saved
+  map_layout?: Record<string, GeoPoint>  // device node id -> where it was dragged on the map
   nodes: NodeData[]
   edges: EdgeData[]
   segments: Record<Segment, Totals>
@@ -130,16 +132,6 @@ interface View {
 const asCityView = (view: View): CityView => view as unknown as CityView
 
 type Pos = { x: number; y: number }
-
-const MAP_KEY = 'nadien.topology.map'
-
-function storedMapOn(): boolean {
-  try {
-    return localStorage.getItem(MAP_KEY) !== '0'  // map on by default
-  } catch {
-    return true
-  }
-}
 
 const TIER_LABEL = ['Core (P/DCI)', 'PE / BNG', 'Metro / Aggregation', 'CSR / OLT / Access', 'Lainnya']
 const CATEGORY_LABEL: Record<string, string> = {
@@ -590,14 +582,23 @@ function ringExternal(view: View, home: Map<string, Pos>) {
   }
 }
 
-function mapLayout(cy: Core, view: View) {
-  const { pxPerDegree, markerScale, minScreenGap } = MAP_SCALE[view.level]!
+/** Where each node starts on the map: a device dragged and saved here first, else its real coordinates. */
+function mapHome(view: View, pxPerDegree: number): Map<string, Pos> {
   const home = new Map<string, Pos>()
+  const arranged = view.map_layout ?? {}
   let parked = 0
   for (const n of view.nodes) {
+    const spot = arranged[n.id] ?? (n.lat != null && n.lon != null ? { lat: n.lat, lon: n.lon } : null)
     // Nodes without any position (the unmapped area) wait in a row south-west of the map.
-    home.set(n.id, n.lat != null && n.lon != null ? project(n.lat, n.lon, pxPerDegree) : project(-12.5, 96 + 7 * parked++, pxPerDegree))
+    home.set(n.id, spot ? project(spot.lat, spot.lon, pxPerDegree) : project(-12.5, 96 + 7 * parked++, pxPerDegree))
   }
+  return home
+}
+
+/** `keep`: positions from before a live refresh, so devices dragged but not saved yet stay where they were put. */
+function mapLayout(cy: Core, view: View, keep?: Map<string, Pos>) {
+  const { pxPerDegree, markerScale, minScreenGap } = MAP_SCALE[view.level]!
+  const home = mapHome(view, pxPerDegree)
   if (view.level === 'device' || view.level === 'neighbors' || view.level === 'city') ringExternal(view, home)
   const elements = buildElements(view, { bands: false, colorMode: 'utilization', labelMode: 'full' })
   const widthOf = new Map(elements.filter((e) => !e.data.source).map((e) => [e.data.id as string, e.data.w as number]))
@@ -624,7 +625,7 @@ function mapLayout(cy: Core, view: View) {
   cy.layout({
     name: 'preset',
     padding: 40,
-    positions: (n: cytoscape.NodeSingular) => boxes.get(n.id()) ?? { x: 0, y: 0 },
+    positions: (n: cytoscape.NodeSingular) => keep?.get(n.id()) ?? boxes.get(n.id()) ?? { x: 0, y: 0 },
   } as cytoscape.LayoutOptions).run()
 }
 
@@ -638,7 +639,7 @@ function usesBands(level: Level, onMap: boolean): boolean {
  * get their place from the layout. Band nodes are never positioned: they wrap their rows.
  */
 function runLayout(cy: Core, view: View, onMap: boolean, keep?: Map<string, Pos>) {
-  if (onMap) return mapLayout(cy, view)
+  if (onMap) return mapLayout(cy, view, keep)
   // Saved arrangement of this view first (every node kind), then the device positions saved the old way.
   const arranged: Record<string, Pos> = { ...(view.layout ?? {}) }
   if (view.level === 'device') {
@@ -654,17 +655,14 @@ function runLayout(cy: Core, view: View, onMap: boolean, keep?: Map<string, Pos>
   } as cytoscape.LayoutOptions).run()
 }
 
-/** Every node the user can arrange: all but the role bands, which wrap their rows. */
-function nodePositions(cy: Core): { id: string; pos: Pos }[] {
-  return cy.nodes().not('[kind="band"]').nodes().map((n) => ({ id: n.id(), pos: { ...n.position() } }))
+/** Every node the user can arrange: on the map only devices, on a schematic all but the role bands (they wrap rows). */
+function nodePositions(cy: Core, onMap: boolean): { id: string; pos: Pos }[] {
+  const nodes = onMap ? cy.nodes(MAP_DRAGGABLE) : cy.nodes().not('[kind="band"]').nodes()
+  return nodes.map((n) => ({ id: n.id(), pos: { ...n.position() } }))
 }
 
-/** Nodes more than a pixel away from their saved place (a click without a drag must not count). */
-function countMoved(cy: Core, saved: Map<string, Pos>): number {
-  return nodePositions(cy).filter((d) => {
-    const s = saved.get(d.id)
-    return !s || Math.abs(s.x - d.pos.x) > 1 || Math.abs(s.y - d.pos.y) > 1
-  }).length
+function countMoved(cy: Core, saved: Map<string, Pos>, onMap: boolean): number {
+  return nodePositions(cy, onMap).filter((d) => movedFrom(saved.get(d.id), d.pos)).length
 }
 
 function confirmDiscard(dirty: boolean): boolean {
@@ -745,7 +743,9 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   const container = useRef<HTMLDivElement>(null)
   const mapLayer = useRef<SVGGElement>(null)
   const cyRef = useRef<Core | null>(null)
-  const [mapOn, setMapOn] = useState(storedMapOn)
+  // One "Peta" choice for the city / neighbours levels (ELK schematic by default), one for all the others.
+  const [mapChoice, setMapChoice] = useState(() => ({ elk: storedMapOn(true), other: storedMapOn(false) }))
+  const mapOn = isElkLevel(level) ? mapChoice.elk : mapChoice.other
   const [basemap, setBasemap] = useState<BasemapShape[]>([])
   const [view, setView] = useState<View | null>(null)
   // The canvas is rebuilt from the latest data (drawnRef) but only when drawRevision changes. A live refresh of the
@@ -989,12 +989,9 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   function toggleMap(on: boolean) {
     if (!confirmDiscard(dirty)) return
     setMoved(0)
-    setMapOn(on)
-    try {
-      localStorage.setItem(MAP_KEY, on ? '1' : '0')
-    } catch {
-      /* storage blocked: the choice just isn't remembered */
-    }
+    const elkLevel = isElkLevel(level)
+    setMapChoice((choice) => (elkLevel ? { ...choice, elk: on } : { ...choice, other: on }))
+    remember(mapKeyFor(elkLevel), on ? '1' : '0')
   }
 
   // Label mode sets the ELK node widths, so on the city / neighbours levels a change of it means a new layout.
@@ -1050,12 +1047,14 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
       const target = drillTarget(e.target.data() as NodeData)
       if (target) go(target)
     })
-    // Every schematic view can be arranged and saved. On the map positions follow coordinates, so nodes stay put
-    // there instead of moving and silently snapping back on the next visit. City / neighbours positions come from
-    // ELK every time (spec: no drag there), so they are fixed too.
-    const positionsEditable = !onMap && !elk
-    if (positionsEditable) cy.on('dragfree', 'node', () => setMoved(countMoved(cy, savedPosRef.current)))
-    else cy.autoungrabify(true)
+    // Every schematic view can be arranged and saved. On the map only devices move (saved as lat/lon overrides):
+    // POPs, groups and the ring of other POPs follow coordinates. City / neighbours positions come from ELK every
+    // time (spec: no drag there), so they are fixed.
+    const positionsEditable = !elk
+    if (positionsEditable) {
+      cy.on('dragfree', 'node', () => setMoved(countMoved(cy, savedPosRef.current, onMap)))
+      if (onMap) cy.nodes().not(MAP_DRAGGABLE).ungrabify()
+    } else cy.autoungrabify(true)
     cyRef.current = cy
     // The basemap is drawn in degrees; keep it under the graph through every pan and zoom.
     let lastZoom = 0
@@ -1123,8 +1122,8 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
       if (positionsEditable) {
         // After a live refresh the unsaved moves survive in `keep`: compare against the saved positions, not the kept ones.
         const before = keep ? savedPosRef.current : new Map<string, Pos>()
-        savedPosRef.current = new Map(nodePositions(cy).map((d) => [d.id, before.get(d.id) ?? d.pos] as [string, Pos]))
-        setMoved(countMoved(cy, savedPosRef.current))
+        savedPosRef.current = new Map(nodePositions(cy, onMap).map((d) => [d.id, before.get(d.id) ?? d.pos] as [string, Pos]))
+        setMoved(countMoved(cy, savedPosRef.current, onMap))
       } else {
         savedPosRef.current = new Map()
         setMoved(0)
@@ -1215,16 +1214,27 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
 
   async function savePositions() {
     const cy = cyRef.current
-    const viewKey = viewRef.current?.layout_key
-    if (!cy || !viewKey || saving) return
-    // Every node is stored, not only the moved ones, so the whole drawing reopens exactly as it is now.
-    const current = nodePositions(cy)
-    const positions = Object.fromEntries(current.map((d) => [d.id, { x: Math.round(d.pos.x), y: Math.round(d.pos.y) }]))
+    const shown = viewRef.current
+    const layoutKey = shown?.layout_key
+    if (!cy || !shown || !layoutKey || saving) return
+    const mapped = onMapRef.current
+    const current = nodePositions(cy, mapped)
+    // Schematic: every node is stored, so the whole drawing reopens exactly as it is now. Map: only the devices that
+    // were dragged, as lat/lon, so the others keep following their real site coordinates.
+    const positions = mapped
+      ? mapOverridePositions(current, savedPosRef.current, shown.map_layout ?? {}, MAP_SCALE[shown.level]!.pxPerDegree)
+      : Object.fromEntries(current.map((d) => [d.id, { x: Math.round(d.pos.x), y: Math.round(d.pos.y) }]))
     setSaving(true)
     try {
-      await api.put('/topology/layouts', { view_key: viewKey, positions })
+      await api.put('/topology/layouts', { view_key: mapped ? mapViewKey(layoutKey) : layoutKey, positions })
       savedPosRef.current = new Map(current.map((d) => [d.id, d.pos] as [string, Pos]))
-      setMessage({ text: `Tata letak disimpan: ${moved} node dipindah. Tampilan ini akan dibuka dengan susunan yang sama.` })
+      if (mapped) {
+        // No redraw: the devices already stand where they were saved; a later rebuild must start from the new overrides.
+        const next = { ...shown, map_layout: positions as Record<string, GeoPoint> }
+        drawnRef.current = next
+        setView(next)
+      }
+      setMessage({ text: `Tata letak disimpan: ${moved} ${mapped ? 'perangkat' : 'node'} dipindah. Tampilan ini akan dibuka dengan susunan yang sama.` })
       setMoved(0)
     } catch (e) {
       setMessage({ text: (e as Error).message, error: true })
@@ -1234,11 +1244,15 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   }
 
   async function resetLayout() {
-    const viewKey = view?.layout_key
-    if (!viewKey || !window.confirm('Kembalikan tampilan ini ke tata letak otomatis? Susunan yang tersimpan dihapus.')) return
+    const layoutKey = view?.layout_key
+    const question = onMap
+      ? 'Kembalikan perangkat ke koordinat aslinya di peta? Posisi yang tersimpan di peta untuk tampilan ini dihapus.'
+      : 'Kembalikan tampilan ini ke tata letak otomatis? Susunan yang tersimpan dihapus.'
+    if (!layoutKey || !window.confirm(question)) return
+    const viewKey = onMap ? mapViewKey(layoutKey) : layoutKey
     try {
       await api.del(`/topology/layouts?view_key=${encodeURIComponent(viewKey)}`)
-      setMessage({ text: 'Tata letak dikembalikan ke susunan otomatis.' })
+      setMessage({ text: onMap ? 'Perangkat dikembalikan ke koordinat aslinya.' : 'Tata letak dikembalikan ke susunan otomatis.' })
       await load()
     } catch (e) {
       setMessage({ text: (e as Error).message, error: true })
@@ -1405,6 +1419,11 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
           onClick={() => { setLive(!live); remember('nadien.topology.live', live ? '0' : '1') }}>
           <span className="live-dot" />{live ? 'Live' : 'Live mati'}
         </button>
+        {onMap && view && Object.keys(view.map_layout ?? {}).length > 0 && (
+          <button onClick={resetLayout} title="Hapus posisi perangkat yang tersimpan di peta untuk tampilan ini; perangkat kembali ke koordinat aslinya">
+            Atur ulang tata letak
+          </button>
+        )}
         {!onMap && view && !isElkLevel(view.level) && (Object.keys(view.layout ?? {}).length > 0 || view.nodes.some((n) => n.kind === 'device' && n.x != null)) && (
           <button onClick={resetLayout} title="Hapus susunan yang tersimpan untuk tampilan ini dan kembali ke tata letak otomatis">
             Atur ulang tata letak

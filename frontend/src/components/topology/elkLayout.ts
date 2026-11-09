@@ -3,7 +3,7 @@ import { buildElkGraph } from './elkGraph'
 import { toCytoscape, type EdgeRoute, type Pos } from './elkToCytoscape'
 import type { CityNode, CityView } from './types'
 
-export const LAYOUT_TIMEOUT_MS = 20_000
+export const LAYOUT_TIMEOUT_MS = 60_000
 
 export type WorkerResponse = { requestId: number; result: ElkNode } | { requestId: number; error: string }
 
