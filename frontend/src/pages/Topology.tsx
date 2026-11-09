@@ -7,7 +7,7 @@ import { NamingStandard, TopologyChanges } from '../components/TopologyInsights'
 import TopologyLegend from '../components/TopologyLegend'
 import { PopAreaEditor, SearchHit, TopologySearchBox } from '../components/TopologyTools'
 import { fmtG } from '../components/ui'
-import { buildCityElements, citySizeOf, linkColor, liveData, sameShape } from '../components/topology/cityElements'
+import { buildCityElements, canUpdateInPlace, citySizeOf, linkColor, liveData } from '../components/topology/cityElements'
 import { CITY_STYLE } from '../components/topology/cityStyle'
 import { layoutCity, LayoutCancelled } from '../components/topology/elkLayout'
 import { edgeWidth, ROLE_COLOR, SEGMENT_COLOR, shortName } from '../components/topology/shared'
@@ -741,12 +741,15 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   const [mapOn, setMapOn] = useState(storedMapOn)
   const [basemap, setBasemap] = useState<BasemapShape[]>([])
   const [view, setView] = useState<View | null>(null)
-  // The view the canvas is built from. A live refresh of the city / neighbours levels with the same nodes and links
-  // updates `view` only and restyles the canvas in place, so it keeps its ELK layout.
-  const [drawn, setDrawn] = useState<View | null>(null)
+  // The canvas is rebuilt from the latest data (drawnRef) but only when drawRevision changes. A live refresh of the
+  // city / neighbours levels with an unchanged structure updates drawnRef without a new revision, so the ELK layout
+  // is kept, and any later rebuild (label mode, map toggle, focus) still draws the current statuses.
+  const drawnRef = useRef<View | null>(null)
+  const [drawRevision, setDrawRevision] = useState(0)
   const show = useCallback((next: View | null) => {
+    drawnRef.current = next
     setView(next)
-    setDrawn(next)
+    setDrawRevision((revision) => revision + 1)
   }, [])
   const [arranging, setArranging] = useState(false)
   const [layoutMs, setLayoutMs] = useState<number | null>(null)
@@ -869,8 +872,8 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
     const cy = cyRef.current
     // City / neighbours with the very same nodes and links: only status, colours and labels can have changed,
     // so the ELK layout (seconds on a large city) is kept and the element data is updated in place.
-    const inPlace = !!cy && !!before && elkReadyRef.current && usesElk(before.level, onMapRef.current)
-      && before.level === next.level && sameShape(asCityView(before), asCityView(next))
+    const inPlace = !!cy && canUpdateInPlace(before && asCityView(before), asCityView(next),
+      { elkReady: elkReadyRef.current, onMap: onMapRef.current })
     if (cy && before && !inPlace) {
       keepRef.current = {
         positions: new Map(cy.nodes().not('[kind="band"]').nodes().map((n) => [n.id(), { ...n.position() }] as [string, Pos])),
@@ -912,6 +915,8 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
         }
       })
       markLive(cy)
+      // No new revision: the drawing stays, but a later rebuild must start from these statuses, not the old ones.
+      drawnRef.current = next
       setView(next)
     } else {
       show(next)
@@ -980,11 +985,11 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   }
 
   // Label mode sets the ELK node widths, so on the city / neighbours levels a change of it means a new layout.
-  const elkLabelMode = drawn && usesElk(drawn.level, onMap) ? labelMode : null
+  const elkLabelMode = view && usesElk(view.level, onMap) ? labelMode : null
 
   useEffect(() => {
-    if (!drawn || !container.current) return
-    const view = drawn
+    const view = drawnRef.current
+    if (!view || !container.current) return
     const elk = usesElk(view.level, onMap)
     const keep = keepRef.current
     keepRef.current = null
@@ -1119,7 +1124,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
       setArranging(false)
       cy.destroy()
     }
-  }, [drawn, go, focus, onMap, elkLabelMode, markLive])
+  }, [drawRevision, go, focus, onMap, elkLabelMode, markLive])
 
   useEffect(() => {
     const cy = cyRef.current

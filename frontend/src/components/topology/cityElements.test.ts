@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ElementDefinition } from 'cytoscape'
-import { buildCityElements, liveData, nodeStatus, sameShape } from './cityElements'
+import { buildCityElements, canUpdateInPlace, liveData, nodeStatus, sameShape } from './cityElements'
 import type { CytoscapeLayout } from './elkToCytoscape'
 import type { CityCluster, CityDeviceNode, CityLink, CityNode, CityView } from './types'
 
@@ -116,6 +116,28 @@ describe('buildCityElements', () => {
   })
 })
 
+describe('canUpdateInPlace', () => {
+  const ready = { elkReady: true, onMap: false }
+  const base = () => view([device(1, 'P'), device(2, 'P')], [link(1, 'dev:1', 'dev:2')])
+
+  it('should update in place when only link status changed on a laid-out city', () => {
+    const next = view([device(1, 'P'), device(2, 'P')], [link(1, 'dev:1', 'dev:2', { status: 'down' })])
+    expect(canUpdateInPlace(base(), next, ready)).toBe(true)
+  })
+
+  it('should not update in place when the layout has not finished', () => {
+    expect(canUpdateInPlace(base(), base(), { elkReady: false, onMap: false })).toBe(false)
+  })
+
+  it('should not update in place when the canvas is the map', () => {
+    expect(canUpdateInPlace(base(), base(), { elkReady: true, onMap: true })).toBe(false)
+  })
+
+  it('should not update in place when the level changed', () => {
+    expect(canUpdateInPlace(base(), { ...base(), level: 'neighbors' }, ready)).toBe(false)
+  })
+})
+
 describe('liveData', () => {
   it('should drop identity and structure fields when updating an element in place', () => {
     expect(liveData({ data: { id: 'link:1', source: 'a', target: 'b', parent: 'p', colorHex: '#fff' } })).toEqual({ colorHex: '#fff' })
@@ -127,6 +149,20 @@ describe('sameShape', () => {
     const before = view([device(1, 'P'), device(2, 'P')], [link(1, 'dev:1', 'dev:2'), link(2, 'dev:1', 'dev:2')])
     const after = view([device(2, 'P', { reachability: 'down' }), device(1, 'P')], [link(2, 'dev:1', 'dev:2'), link(1, 'dev:1', 'dev:2', { status: 'down' })])
     expect(sameShape(before, after)).toBe(true)
+  })
+
+  it('should report different shape when a device moves to another cluster', () => {
+    const clusters: CityCluster[] = [
+      { id: 'c:1', kind: 'pair', pop: 'P', device_ids: [1, 2] }, { id: 'c:3', kind: 'pair', pop: 'P', device_ids: [3, 4] },
+    ]
+    const nodes = (moved: string) => [device(1, 'P', { cluster_id: 'c:1' }), device(2, 'P', { cluster_id: moved }),
+      device(3, 'P', { cluster_id: 'c:3' }), device(4, 'P', { cluster_id: 'c:3' })]
+    expect(sameShape(view(nodes('c:1'), [], clusters), view(nodes('c:3'), [], clusters))).toBe(false)
+  })
+
+  it('should report different shape when a link endpoint changes', () => {
+    const nodes = [device(1, 'P'), device(2, 'P'), device(3, 'P')]
+    expect(sameShape(view(nodes, [link(1, 'dev:1', 'dev:2')]), view(nodes, [link(1, 'dev:1', 'dev:3')]))).toBe(false)
   })
 
   it('should be false when a link record was added', () => {

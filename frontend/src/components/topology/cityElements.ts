@@ -174,10 +174,30 @@ export function liveData(definition: ElementDefinition): Record<string, unknown>
   return Object.fromEntries(Object.entries(definition.data).filter(([key]) => !STRUCTURAL.has(key)))
 }
 
-const sortedIds = (ids: (string | number)[]): string => ids.map(String).sort().join('\n')
+const sorted = (keys: string[]): string => [...keys].sort().join('\n')
 
-/** Same drawn nodes and same link records: a live refresh can update data in place instead of a new layout. */
+// Everything an in-place update cannot change (liveData strips parent/source/target): which compounds exist, where
+// every node and compound sits, and which drawn nodes every link joins. Sizes do not matter for the hierarchy.
+function shapeKey(view: CityView): string {
+  const { parentOf, compounds } = hierarchy(buildElkGraph(view, () => ({ width: 1, height: 1 })))
+  return [
+    sorted(compounds.map((c) => `${c.id}>${c.parent ?? ''}`)),
+    sorted(view.nodes.map((n) => `${n.id}>${parentOf.get(n.id) ?? ''}`)),
+    sorted(view.links.map((l) => `${l.id}:${l.source}>${l.target}`)),
+  ].join('\n--\n')
+}
+
+/** Same drawing structure: a live refresh can update data in place instead of running a new layout. */
 export function sameShape(before: CityView, after: CityView): boolean {
-  return sortedIds(before.nodes.map((n) => n.id)) === sortedIds(after.nodes.map((n) => n.id))
-    && sortedIds(before.links.map((l) => l.id)) === sortedIds(after.links.map((l) => l.id))
+  return shapeKey(before) === shapeKey(after)
+}
+
+/**
+ * Whether a live refresh may restyle the drawn city / neighbours canvas in place: the canvas must hold a finished
+ * ELK layout (not the map) of the same level, and the structure must be unchanged.
+ */
+export function canUpdateInPlace(before: CityView | null, next: CityView, state: { elkReady: boolean; onMap: boolean }): boolean {
+  if (!before || !state.elkReady || state.onMap) return false
+  if (before.level !== next.level || (next.level !== 'city' && next.level !== 'neighbors')) return false
+  return sameShape(before, next)
 }
