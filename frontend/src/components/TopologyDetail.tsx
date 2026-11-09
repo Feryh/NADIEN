@@ -37,7 +37,7 @@ function DeviceDetail({ device, view }: { device: CityDeviceNode; view: CityView
       <dt>Reachability</dt><dd>{device.reachability}</dd>
       <dt>Uptime</dt><dd>{formatUptime(device.uptime_s)}</dd>
       <dt>Last poll</dt><dd>{formatLastPoll(device.last_polled_at)}</dd>
-      <dt>SPOF</dt><dd>{device.spof ? 'Ya' : 'Tidak'}</dd>
+      <dt>SPOF</dt><dd>{device.spof ? 'Ya' : 'Tidak'} <span className="muted">(berdasarkan link yang diketahui)</span></dd>
       <dt>Cluster</dt><dd>{clusterSummary(view.clusters, device.cluster_id)}</dd>
     </dl>
   )
@@ -48,7 +48,7 @@ function BundleTable({ links, clickedId }: { links: CityLink[]; clickedId: numbe
     <div className="table-wrap">
       <table className="bundle-table">
         <thead>
-          <tr><th>A</th><th>B</th><th>Kapasitas</th><th>Trafik</th><th>Util %</th><th>Committed %</th><th>Status</th><th>SPOF</th></tr>
+          <tr><th>A</th><th>B</th><th>Kapasitas</th><th>Trafik</th><th>Util %</th><th>Committed %</th><th>Status</th><th title="Berdasarkan link yang diketahui">SPOF</th></tr>
         </thead>
         <tbody>
           {links.map((l) => (

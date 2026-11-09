@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from .. import models as m
 from . import cache
 from .areas import ROLE_TIER
-from .capacity import capacity_color
+from .capacity import capacity_color, committed_pct, utilization_pct
 from .segments import link_segment
 from .topology_readmodel import (
     Agg,
@@ -77,13 +77,13 @@ def link_entries(db: Session, ctx: Ctx, link_ids: set[int], node_of: Callable[[i
         a, b = ctx.devices[row.a_device_id], ctx.devices[row.b_device_id]
         capacity = row.capacity_gbps or 0
         current = row.current_gbps or 0
-        committed = (current + (row.reserved_gbps or 0)) / capacity * 100 if capacity else 0.0
+        committed = committed_pct(current, row.reserved_gbps or 0, capacity)
         entries.append({
             "id": row.id, "source": node_of(a.id), "target": node_of(b.id),
             "a_device": a.hostname, "a_interface": names.get(row.a_interface_id),
             "b_device": b.hostname, "b_interface": names.get(row.b_interface_id),
-            "capacity_gbps": round(capacity, 1), "current_gbps": round(current, 1),
-            "utilization_pct": round(current / capacity * 100, 1) if capacity else 0.0,
+            "capacity_gbps": round(capacity, 3), "current_gbps": round(current, 3),  # Mbps resolution: a 10M link must not read 0
+            "utilization_pct": round(utilization_pct(current, capacity), 1),
             "committed_pct": round(committed, 1), "color": capacity_color(committed),
             "status": row.status, "segment": link_segment(a.role, b.role), "spof": row.id in structure.spof_links,
         })
@@ -172,7 +172,8 @@ def _pop_entries(ctx: Ctx, pop_ids: set[int], local: dict[int, Any]) -> list[dic
             for pid in sorted(pop_ids, key=lambda pid: ctx.pops[pid].code)]
 
 
-def _collect_links(db: Session, ctx: Ctx, local: dict[int, Any], node_of: Callable[[int], str]):
+def _collect_links(db: Session, ctx: Ctx, local: dict[int, Any], node_of: Callable[[int], str]) -> tuple[
+        set[int], dict[tuple[str, str, str], Agg], dict[str, Agg], dict[str, set[int]]]:
     """Ids of every link with an end in the city, aggregates for edges/segments and the far-end devices per POP."""
     link_ids: set[int] = set()
     edges: dict[tuple[str, str, str], Agg] = defaultdict(Agg)

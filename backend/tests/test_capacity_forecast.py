@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from app import models as m
 from app.database import get_db
 from app.main import app
-from app.services.capacity import calculate, fit_trend, hotspot_level
+from app.services.capacity import calculate, committed_pct, fit_trend, hotspot_level, utilization_pct
 
 
 @pytest.fixture
@@ -117,3 +117,19 @@ def test_should_count_devices_per_category_including_csr_when_summarising(db, cl
     by_cat = {c["category"]: c for c in body["categories"]}
     assert body["total"] == 3 and by_cat["olt"]["devices"] == 2 and by_cat["csr"]["devices"] == 1
     assert by_cat["csr"]["areas"] == {"Bali & Nusa Tenggara": 1}
+
+
+def test_should_add_reserved_to_current_when_computing_committed_pct():
+    assert committed_pct(2, 3, 10) == 50.0
+
+
+def test_should_return_zero_when_capacity_is_zero_for_committed_pct():
+    assert committed_pct(2, 3, 0) == 0.0
+
+
+def test_should_ignore_reserved_when_computing_utilization_pct():
+    assert utilization_pct(2, 10) == 20.0
+
+
+def test_should_return_zero_when_capacity_is_none_for_utilization_pct():
+    assert utilization_pct(2, None) == 0.0

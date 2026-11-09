@@ -85,13 +85,21 @@ def _pop_component(edge_stack: list[Pair], stop_edge: Pair) -> list[Pair]:
             return component
 
 
-def _classify(component_pairs: list[Pair], pair_links: dict[Pair, list[int]]):
+def _classify(component_pairs: list[Pair],
+              pair_links: dict[Pair, list[int]]) -> tuple[ClusterKind | None, frozenset[int]]:
     """Return (kind, devices) untuk cluster, atau (None, devices) untuk bridge."""
     devices = frozenset(device for edge in component_pairs for device in edge)
     if len(devices) == 2:
         key = (min(devices), max(devices))
         return ("pair" if len(pair_links[key]) >= 2 else None), devices
     return ("ring" if len(component_pairs) == len(devices) else "mesh"), devices
+
+
+def _cluster_id(devices: frozenset[int]) -> str:
+    """Two biconnected components share at most one device, so the two smallest members are unique per cluster
+    (the smallest alone repeats when an articulation point is the lowest id of both)."""
+    first, second = sorted(devices)[:2]
+    return f"c:{first}-{second}"
 
 
 def analyse(links: Iterable[tuple[int, int, int]]) -> Structure:
@@ -111,7 +119,7 @@ def analyse(links: Iterable[tuple[int, int, int]]) -> Structure:
         if kind is None:
             spof_links.update(pair_links[(min(devices), max(devices))])
         else:
-            clusters.append(Cluster(f"c:{min(devices)}", kind, devices))
+            clusters.append(Cluster(_cluster_id(devices), kind, devices))
 
     # Perangkat di >= 2 komponen biconnected adalah articulation point.
     spof_devices = frozenset(d for d, count in membership_count.items() if count >= 2)

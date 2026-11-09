@@ -20,7 +20,7 @@ export interface CityLink {
 }
 
 export interface CityCluster {
-  id: string  // "c:<smallest device id>"
+  id: string  // "c:<smallest>-<second smallest member device id>": unique, two rings share at most one device
   kind: 'ring' | 'mesh' | 'pair'
   pop: string | null  // null: members span several POPs
   device_ids: number[]
@@ -105,7 +105,7 @@ export interface CityAggregateEdge {
   utilization_pct: number
   committed_pct: number
   color: string
-  capacity_unknown: boolean
+  capacity_unknown: number  // count of links with unknown capacity
 }
 
 export interface CityView {

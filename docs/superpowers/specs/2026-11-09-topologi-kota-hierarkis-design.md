@@ -80,7 +80,7 @@ Fungsi murni tanpa DB:
 ```python
 @dataclass(frozen=True)
 class Cluster:
-    id: str                     # "c:<id perangkat terkecil>"
+    id: str                     # "c:<id terkecil>-<id terkecil kedua>"
     kind: Literal["ring", "mesh", "pair"]
     device_ids: frozenset[int]
 

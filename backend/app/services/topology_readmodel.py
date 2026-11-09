@@ -22,7 +22,7 @@ from .areas import (
     city_center_for_code,
     site_for,
 )
-from .capacity import capacity_color
+from .capacity import capacity_color, committed_pct, utilization_pct
 from .regions import Place, place_for_pop
 from .segments import SEGMENTS, link_segment
 
@@ -140,20 +140,20 @@ class Agg:
         self.reserved += link.reserved_gbps or 0
 
     def as_dict(self) -> dict[str, Any]:
-        committed = (self.current + self.reserved) / self.capacity * 100 if self.capacity else 0.0
+        committed = committed_pct(self.current, self.reserved, self.capacity)
         return {
             "links": self.links,
             "down": self.down,
             "capacity_gbps": round(self.capacity, 1),
             "current_gbps": round(self.current, 1),
-            "utilization_pct": round(self.current / self.capacity * 100, 1) if self.capacity else 0.0,
+            "utilization_pct": round(utilization_pct(self.current, self.capacity), 1),
             "committed_pct": round(committed, 1),
             "color": capacity_color(committed),
             "capacity_unknown": self.unknown,
         }
 
 
-def load_links(db: Session):
+def load_links(db: Session) -> list[Any]:
     return db.execute(select(m.Link.id, m.Link.a_device_id, m.Link.b_device_id, m.Link.capacity_gbps,
                              m.Link.current_gbps, m.Link.reserved_gbps, m.Link.status)).all()
 

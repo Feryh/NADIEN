@@ -239,3 +239,34 @@ def test_should_list_pops_of_included_devices_when_level_neighbors(client, netwo
     assert pwt["device_count"] == 2  # PE1 and PE2 only
     node = next(n for n in view["nodes"] if n["device_id"] == d["kbm"].id)
     assert node["city"] == "Kab. Kebumen"
+
+
+def test_should_return_unique_cluster_ids_when_city_has_rings_sharing_a_device(client, db):
+    pop = m.Pop(code="PWT", name="PWT")
+    db.add(pop)
+    db.flush()
+    hub = _device(db, pop, "PWT-AGG0", "agg")
+    first = [_device(db, pop, f"PWT-AGG{i}", "agg") for i in (1, 2)]
+    second = [_device(db, pop, f"PWT-AGG{i}", "agg") for i in (3, 4)]
+    for ring in (first, second):
+        _link(db, hub, ring[0])
+        _link(db, ring[0], ring[1])
+        _link(db, ring[1], hub)
+    db.commit()
+    ids = [c["id"] for c in _view(client)["clusters"]]
+    assert len(ids) == 2
+    assert len(set(ids)) == 2
+
+
+def test_should_keep_small_capacity_when_link_is_10_mbps(client, db):
+    pop = m.Pop(code="PWT", name="PWT")
+    db.add(pop)
+    db.flush()
+    a, b = _device(db, pop, "PWT-AGG1", "agg"), _device(db, pop, "PWT-AGG2", "agg")
+    _link(db, a, b, capacity=0.01, current=0.009)
+    db.commit()
+    entry = _view(client)["links"][0]
+    assert entry["capacity_gbps"] == 0.01
+    assert entry["current_gbps"] == 0.009
+    assert entry["committed_pct"] == 90.0
+    assert entry["color"] == "red"

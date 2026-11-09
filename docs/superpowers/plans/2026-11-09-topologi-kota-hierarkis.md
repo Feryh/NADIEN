@@ -85,7 +85,7 @@
 - Test: `backend/tests/test_topology_structure.py`
 
 **Interfaces:**
-- Produces: `Cluster(id: str, kind: Literal["ring", "mesh", "pair"], device_ids: frozenset[int])`, `Structure(clusters: list[Cluster], cluster_of: dict[int, str], spof_links: frozenset[int], spof_devices: frozenset[int])`, `analyse(links: Iterable[tuple[int, int, int]]) -> Structure` — persis seperti spec §3.2 (dataclass frozen; `Cluster.id = f"c:{min(device_ids)}"`).
+- Produces: `Cluster(id: str, kind: Literal["ring", "mesh", "pair"], device_ids: frozenset[int])`, `Structure(clusters: list[Cluster], cluster_of: dict[int, str], spof_links: frozenset[int], spof_devices: frozenset[int])`, `analyse(links: Iterable[tuple[int, int, int]]) -> Structure` — persis seperti spec §3.2 (dataclass frozen; `Cluster.id = "c:<terkecil>-<terkecil kedua>"`).
 
 - [ ] **Step 1: Failing tests** (link = `(link_id, a, b)`):
   - `test_should_label_ring_when_four_devices_form_one_cycle`: `[(1,1,2),(2,2,3),(3,3,4),(4,4,1)]` → satu cluster `kind="ring"`, `device_ids={1,2,3,4}`, `spof_links == frozenset()`, `spof_devices == frozenset()`.
@@ -93,7 +93,7 @@
   - `test_should_mark_link_as_spof_when_it_is_the_only_path`: ring + `(6,4,5)` → `spof_links == {6}`, `spof_devices == {4}`, device 5 tidak di `cluster_of`.
   - `test_should_label_pair_when_two_parallel_links_join_same_devices`: `[(1,1,2),(2,1,2)]` → cluster `pair` `{1,2}`, `spof_links == frozenset()`.
   - `test_should_ignore_self_loop_when_both_ends_same_device`: `[(1,1,1)]` → tanpa cluster, tanpa SPOF.
-  - `test_should_assign_articulation_device_to_largest_cluster_when_in_two`: ring 1-2-3-4 + ring 4-5-6 (`(5,4,5),(6,5,6),(7,6,4)`) → `cluster_of[4] == "c:1"`.
+  - `test_should_assign_articulation_device_to_largest_cluster_when_in_two`: ring 1-2-3-4 + ring 4-5-6 (`(5,4,5),(6,5,6),(7,6,4)`) → `cluster_of[4] == "c:1-2"`.
   - `test_should_handle_long_chain_without_recursion_error`: rantai 6000 node → `len(spof_links) == 5999`.
 - [ ] **Step 2:** Run `pytest tests/test_topology_structure.py -q`. Expected: FAIL (modul tidak ada).
 - [ ] **Step 3:** Implement `analyse`: graf sederhana atas pasangan unik (hitung multiplisitas per pasangan), Tarjan biconnected **iteratif** dengan stack edge; bridge = komponen 2 node dengan multiplisitas 1; klasifikasi sesuai spec.
