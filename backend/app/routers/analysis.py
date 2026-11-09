@@ -63,6 +63,7 @@ from ..services.topology_readmodel import (
     segment_of as _segment_of,
     segments_of as _segments,
 )
+from ..services.topology_city import city_view as _city_view
 from ..services.geo import KmlError, Placemark, match_devices, match_pops, read_placemarks
 
 router = APIRouter(tags=["Analysis"])
@@ -478,7 +479,7 @@ MAX_NEIGHBOR_NODES = 400
 
 @router.get("/topology/view")
 def topology_view(
-    level: str = Query("area", pattern="^(area|province|regency|pop|device|neighbors)$"),
+    level: str = Query("area", pattern="^(area|province|regency|city|pop|device|neighbors)$"),
     area: str | None = None,
     province: str | None = None,
     regency: str | None = None,
@@ -491,6 +492,7 @@ def topology_view(
     regency (needs `area`, `province`): kabupaten/kota of one province · pop (needs `area`, optionally
     `province` and `regency` to narrow it): POPs + the neighbouring groups they link to ·
     device (needs `pop`): devices of one POP + links out to other POPs ·
+    city (needs `area`, `province`, `regency`): every device of one city with one entry per link ·
     neighbors (needs `device_id`): one device and everything within `depth` hops.
     A province or regency level with a single group inside answers with the next level down
     (the response's `level` says which), so no click opens a view of one box."""
@@ -509,6 +511,8 @@ def layout_key(view: dict) -> str:
         return f"device:{view['pop']}"
     if level == "neighbors":
         return f"neighbors:{view['device_id']}:{view['depth']}"
+    if level == "city":
+        return f"city:{view['area']}|{view['province']}|{view['regency']}"
     return f"{level}:" + "|".join(view.get(k) or "" for k in ("area", "province", "regency"))
 
 
@@ -522,6 +526,10 @@ def _with_layout(db: Session, view: dict) -> dict:
 def _topology_view(db: Session, level: str, area: str | None, province: str | None, regency: str | None,
                    pop: str | None, device_id: int | None, depth: int) -> dict:
     ctx = _context(db)
+    if level == "city":
+        if not (area and province and regency):
+            raise HTTPException(422, "area, province and regency are required for level=city")
+        return _city_view(db, ctx, area, province, regency)
     links = _links(db)
     if level == "area":
         return _area_level(ctx, links)
@@ -868,8 +876,11 @@ def topology_search(q: str = Query(..., min_length=2), limit: int = Query(15, ge
 
     pops = [p for p in ctx.pops.values() if needle in p.code.upper() or needle in (p.name or "").upper()]
     pops.sort(key=lambda p: (rank(p.code.upper()), p.code))
-    devices = [d for d in ctx.devices.values() if needle in d.hostname.upper()]
-    devices.sort(key=lambda d: (rank(d.hostname.upper()), len(d.hostname), d.hostname))
+    # A management IP matches from its start (10.0.0.5 must not drag in 110.0.0.55); exact IP ranks first.
+    devices = [d for d in ctx.devices.values()
+               if needle in d.hostname.upper() or (d.mgmt_ip or "").upper().startswith(needle)]
+    devices.sort(key=lambda d: (min(rank(d.hostname.upper()), rank((d.mgmt_ip or "").upper()) if d.mgmt_ip else 2),
+                                len(d.hostname), d.hostname))
     return {
         "pops": [{"pop_id": p.id, "code": p.code, "name": p.name, "area": ctx.area_of_pop[p.id],
                   "devices": sum(1 for d in ctx.devices.values() if d.pop_id == p.id)} for p in pops[:limit]],

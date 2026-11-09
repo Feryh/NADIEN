@@ -6,6 +6,7 @@ Kept out of the router so services can build topology data without importing a r
 import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -35,7 +36,7 @@ UNASSIGNED_POP = "UNASSIGNED"
 class Ctx:
     pops: dict[int, m.Pop]
     area_of_pop: dict[int, str]
-    devices: dict[int, Any]  # rows: id, hostname, pop_id, role, vendor_id, status
+    devices: dict[int, Any]  # rows: id, hostname, pop_id, role, vendor_id, status, map_x/y, mgmt_ip, reachability, uptime_s, last_polled_at
     vendors: dict[int, str]
     locations: dict[int, tuple[float, float]] = field(default_factory=dict)  # device's own site (lat, lon)
     place_of_pop: dict[int, Place] = field(default_factory=dict)
@@ -67,7 +68,9 @@ def context(db: Session) -> Ctx:
     devices = {
         r.id: r
         for r in db.execute(select(m.Device.id, m.Device.hostname, m.Device.pop_id, m.Device.role,
-                                   m.Device.vendor_id, m.Device.status, m.Device.map_x, m.Device.map_y))
+                                   m.Device.vendor_id, m.Device.status, m.Device.map_x, m.Device.map_y,
+                                   m.Device.mgmt_ip, m.Device.reachability, m.Device.uptime_s,
+                                   m.Device.last_polled_at))
     }
     area_of_pop = {pid: area_for_pop(p.code, p.region, p.name) for pid, p in pops.items()}
     hostnames_by_pop: dict[int, list[str]] = defaultdict(list)
@@ -174,9 +177,20 @@ def pair(a: str, b: str) -> tuple[str, str]:
     return (a, b) if a <= b else (b, a)
 
 
+def iso_utc(moment: datetime | None) -> str | None:
+    """ISO 8601 in UTC; SQLite hands back naive datetimes, which were stored as UTC."""
+    if moment is None:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).isoformat()
+
+
 def device_node(ctx: Ctx, d: Any, center: bool = False) -> dict:
     code = ctx.pop_code(d.id)
     return {
+        "mgmt_ip": d.mgmt_ip, "reachability": d.reachability, "uptime_s": d.uptime_s,
+        "last_polled_at": iso_utc(d.last_polled_at),
         "id": f"dev:{d.id}", "kind": "device", "device_id": d.id, "label": d.hostname, "pop": code,
         "site": f"site:{site_for(d.hostname, code)}", "role": d.role, "category": category_for(d.role),
         "tier": ROLE_TIER.get(d.role, 4), "vendor": ctx.vendors.get(d.vendor_id or -1), "status": d.status,
