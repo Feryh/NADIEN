@@ -6,13 +6,6 @@
       "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
       "runtimeArgs": ["frontend/node_modules/vite/bin/vite.js", "frontend", "--port", "5173", "--strictPort"],
       "port": 5173
-    },
-    {
-      "name": "frontend-topology-preview",
-      "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
-      "runtimeArgs": ["frontend/node_modules/vite/bin/vite.js", "frontend", "--port", "5180", "--strictPort"],
-      "env": { "NADIEN_API_URL": "http://localhost:8010" },
-      "port": 5180
     }
   ]
 }
