@@ -24,7 +24,7 @@ from .areas import (
     site_for,
 )
 from .capacity import capacity_color, committed_pct, utilization_pct
-from .regions import Place, place_for_pop
+from .regions import UNMAPPED_REGENCY, Place, place_for_pop
 from .segments import SEGMENTS, link_segment
 
 UNASSIGNED_POP = "UNASSIGNED"
@@ -169,7 +169,16 @@ def is_stale_cross_city(link: Any, ctx: Ctx) -> bool:
     a, b = ctx.devices.get(link.a_device_id), ctx.devices.get(link.b_device_id)
     if a is None or b is None:
         return False
-    return ctx.path_of_pop(a.pop_id) != ctx.path_of_pop(b.pop_id)
+    a_path, b_path = ctx.path_of_pop(a.pop_id), ctx.path_of_pop(b.pop_id)
+    # Where an end's city is unknown, "far away" cannot be told, so the link stays.
+    if not (_city_known(a_path) and _city_known(b_path)):
+        return False
+    return a_path != b_path
+
+
+def _city_known(path: tuple[str, str, str]) -> bool:
+    area, _province, regency = path
+    return area != UNMAPPED_AREA and regency != UNMAPPED_REGENCY
 
 
 @dataclass
@@ -177,6 +186,7 @@ class TopologyLinks:
     """The links a view draws and the ones the stale-config rule left out (counted per view scope)."""
     shown: list[Any]
     hidden: list[Any]
+    include_hidden: bool
 
     def hidden_count(self, in_scope: Callable[[Any], bool]) -> int:
         return sum(1 for link in self.hidden if in_scope(link))
@@ -188,9 +198,10 @@ def topology_links(db: Session, ctx: Ctx, include_hidden: bool) -> TopologyLinks
     links = load_links(db)
     hidden = [link for link in links if is_stale_cross_city(link, ctx)]
     if include_hidden:
-        return TopologyLinks(shown=links, hidden=hidden)
+        return TopologyLinks(shown=links, hidden=hidden, include_hidden=True)
     hidden_ids = {link.id for link in hidden}
-    return TopologyLinks(shown=[link for link in links if link.id not in hidden_ids], hidden=hidden)
+    return TopologyLinks(shown=[link for link in links if link.id not in hidden_ids], hidden=hidden,
+                         include_hidden=False)
 
 
 def edges_of(aggs: dict[tuple[str, str, str], Agg]) -> list[dict[str, Any]]:

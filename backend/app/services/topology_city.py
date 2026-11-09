@@ -38,13 +38,12 @@ CLUSTER_TIERS = (2, 3)  # metro and access rings; core/edge redundancy is not a 
 _IN_CHUNK = 500  # keeps IN (...) lists well under every database's bind-parameter limit
 
 
-def network_structure(db: Session, ctx: Ctx, include_hidden: bool = False) -> Structure:
+def network_structure(topology: TopologyLinks) -> Structure:
     """Rings, meshes and SPOFs over the whole link graph: a view that shows only part of the network must not
     invent single points of failure. A hidden stale config link is no real redundancy, so by default it is left
-    out of the graph too."""
-    return cache.cached(("topology-structure", include_hidden),
-                        lambda: analyse((link.id, link.a_device_id, link.b_device_id)
-                                        for link in topology_links(db, ctx, include_hidden).shown))
+    out of the graph too. Built from links the caller already loaded, so a cold request reads them once."""
+    return cache.cached(("topology-structure", topology.include_hidden),
+                        lambda: analyse((link.id, link.a_device_id, link.b_device_id) for link in topology.shown))
 
 
 def _chunks(values: list[int]) -> Iterable[list[int]]:
@@ -211,7 +210,7 @@ def city_view(db: Session, ctx: Ctx, area: str, province: str, regency: str, inc
     summarized = _summarized(ctx, local)
     hidden = {i for ids in summarized.values() for i in ids}
     topology = topology_links(db, ctx, include_hidden)
-    structure = network_structure(db, ctx, include_hidden)
+    structure = network_structure(topology)
 
     def node_of(device_id: int) -> str:
         if device_id not in local:
@@ -278,7 +277,7 @@ def neighbors_view(db: Session, ctx: Ctx, device_id: int, depth: int, include_hi
             edges[(*pair(node_of(link.a_device_id), node_of(link.b_device_id)), segment)].add(link)
             totals[segment].add(link)
             link_ids.add(link.id)
-    structure = network_structure(db, ctx, include_hidden)
+    structure = network_structure(topology)
     clusters = _clusters(ctx, structure, local, set(), tiers=None)
     nodes = _device_nodes(ctx, local, set(), structure, clusters, center_id=device_id)
     place_devices(ctx, nodes)

@@ -1,11 +1,15 @@
 """Config-sourced links between two cities that carry no traffic are left out of the topology views."""
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
 
 from app import models as m
 from app.database import get_db
 from app.main import app
+from app.services.regions import Place
+from app.services.topology_readmodel import Ctx, is_stale_cross_city
 
 AREA, PROVINCE = "Jawa Tengah & DIY", "Jawa Tengah"
 BANYUMAS = {"level": "city", "area": AREA, "province": PROVINCE, "regency": "Kab. Banyumas"}
@@ -88,6 +92,25 @@ def test_should_show_hidden_links_when_include_hidden_is_true(client, network):
 @pytest.mark.parametrize("params", [BANYUMAS, {"level": "area"}], ids=["city", "area"])
 def test_should_report_hidden_link_count_when_links_are_hidden(client, network, params):
     assert _view(client, **params)["hidden_links"] == 1
+
+
+def test_should_keep_config_link_when_one_end_city_is_unmapped(client, db, network):
+    # XQZ names no known city: how far away it is cannot be told, so its idle config link stays.
+    xqz = m.Pop(code="XQZ", name="XQZ")
+    db.add(xqz)
+    db.flush()
+    pwt_pe1 = db.query(m.Device).filter_by(hostname="PWT-NDC-PE1").one()
+    unknown_city = _link(db, pwt_pe1, _device(db, xqz, "XQZ-NDC-PE1"), "config", 0)
+    db.commit()
+    assert unknown_city in _link_ids(_view(client, **BANYUMAS))
+
+
+def test_should_hide_config_link_when_same_named_regencies_are_in_different_provinces():
+    places = {1: Place("Jawa Barat", "Kab. Bogor", "Bogor"), 2: Place("Jawa Tengah", "Kab. Bogor", "Bogor")}
+    ctx = Ctx(pops={}, area_of_pop={1: "Jawa", 2: "Jawa"}, vendors={},
+              devices={10: SimpleNamespace(pop_id=1), 20: SimpleNamespace(pop_id=2)}, place_of_pop=places)
+    link = SimpleNamespace(a_device_id=10, b_device_id=20, discovery_source="config", current_gbps=0)
+    assert is_stale_cross_city(link, ctx) is True
 
 
 @pytest.mark.parametrize(("include_hidden", "spof"), [("false", True), ("true", False)])
