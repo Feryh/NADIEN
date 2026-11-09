@@ -6,7 +6,12 @@ import { BasemapShape, Box, declutter, loadBasemap, project } from '../component
 import { NamingStandard, TopologyChanges } from '../components/TopologyInsights'
 import TopologyLegend from '../components/TopologyLegend'
 import { PopAreaEditor, SearchHit, TopologySearchBox } from '../components/TopologyTools'
-import { CAPACITY_HEX, fmtG } from '../components/ui'
+import { fmtG } from '../components/ui'
+import { buildCityElements, citySizeOf, linkColor, liveData, sameShape } from '../components/topology/cityElements'
+import { CITY_STYLE } from '../components/topology/cityStyle'
+import { layoutCity, LayoutCancelled } from '../components/topology/elkLayout'
+import { edgeWidth, ROLE_COLOR, SEGMENT_COLOR, shortName } from '../components/topology/shared'
+import type { CityLink, CityView } from '../components/topology/types'
 
 // Drill-down topology:
 //   area      — areas west→east as a schematic, trunks between them
@@ -14,19 +19,23 @@ import { CAPACITY_HEX, fmtG } from '../components/ui'
 //   regency   — kabupaten/kota of one province (other provinces / areas drawn dashed)
 //   pop       — POPs of one area, province or regency in rows by their highest role, other groups on top
 //   device    — devices of one POP in role rows (Core → PE/BNG → Metro → OLT/Access), other POPs on top
-//   neighbors — one device and everything within 1–2 hops, same role rows
-type Level = 'area' | 'province' | 'regency' | 'pop' | 'device' | 'neighbors'
+//   city      — one kabupaten/kota: POP swimlanes, ring/mesh clusters and every link, laid out by ELK
+//   neighbors — one device and everything within 1–2 hops, laid out by ELK like the city
+type Level = 'area' | 'province' | 'regency' | 'city' | 'pop' | 'device' | 'neighbors'
 type GroupKind = 'area' | 'province' | 'regency'
 type NodeKind = GroupKind | 'pop' | 'device' | 'external_area' | 'external_province' | 'external_regency' | 'external_pop'
+  | 'summary' | 'pop_lane' | 'cluster' | 'city_box'
 
 const GROUP_KINDS: string[] = ['area', 'province', 'regency']
 const isGroup = (kind: string) => GROUP_KINDS.includes(kind)
 const isGroupLevel = (level: Level) => level === 'area' || level === 'province' || level === 'regency'
+/** Levels drawn from per-link entries with an ELK layout (positions are computed, never dragged or saved). */
+const isElkLevel = (level: Level) => level === 'city' || level === 'neighbors'
+const usesElk = (level: Level, onMap: boolean) => isElkLevel(level) && !onMap
 
 export type Segment = 'backbone' | 'distribution' | 'last_mile'
 export const SEGMENTS: Segment[] = ['backbone', 'distribution', 'last_mile']
 export const SEGMENT_LABEL: Record<Segment, string> = { backbone: 'Backbone', distribution: 'Distribusi', last_mile: 'Last Mile' }
-export const SEGMENT_COLOR: Record<Segment, string> = { backbone: '#818cf8', distribution: '#2dd4bf', last_mile: '#f59e0b' }
 const SEGMENT_HINT: Record<Segment, string> = {
   backbone: 'P/DCI/PE/BNG ↔ P/DCI/PE/BNG',
   distribution: 'Metro/Agg ↔ Agg/PE/BNG/P',
@@ -34,7 +43,6 @@ const SEGMENT_HINT: Record<Segment, string> = {
 }
 // Line weight per function: the backbone reads first, last mile recedes.
 const SEGMENT_WEIGHT: Record<Segment, number> = { backbone: 1.25, distribution: 1, last_mile: 0.7 }
-const UNKNOWN_HEX = '#94a3b8'
 
 interface Totals {
   links: number
@@ -88,6 +96,10 @@ interface NodeData {
   estimated?: boolean  // POP without coordinates: position estimated for the map, never stored
   pops_located?: number
   located?: boolean  // device with its own site coordinates
+  // city / neighbours levels
+  mgmt_ip?: string | null
+  reachability?: string
+  spof?: boolean
 }
 
 interface View {
@@ -109,7 +121,11 @@ interface View {
   nodes: NodeData[]
   edges: EdgeData[]
   segments: Record<Segment, Totals>
+  links?: CityLink[]  // city / neighbours: one entry per link record (the full shape is CityView)
 }
+
+// The city / neighbours responses are CityView; View describes every level loosely, so the two node unions differ.
+const asCityView = (view: View): CityView => view as unknown as CityView
 
 type Pos = { x: number; y: number }
 
@@ -123,9 +139,6 @@ function storedMapOn(): boolean {
   }
 }
 
-const ROLE_COLOR: Record<string, string> = {
-  p: '#6366f1', dci: '#f97316', pe: '#0ea5e9', bng: '#e879f9', agg: '#14b8a6', switch: '#22d3ee', csr: '#fb7185', access: '#64748b', olt: '#a3e635',
-}
 const TIER_LABEL = ['Core (P/DCI)', 'PE / BNG', 'Metro / Aggregation', 'CSR / OLT / Access', 'Lainnya']
 const CATEGORY_LABEL: Record<string, string> = {
   router: 'Router', metro: 'Metro', switch: 'Switch', csr: 'CSR', olt: 'OLT', access: 'Access', other: 'Lainnya',
@@ -266,10 +279,6 @@ const STYLE = [
 
 const TIER_COLOR = ['#818cf8', '#38bdf8', '#2dd4bf', '#a3e635', '#94a3b8']
 
-function edgeWidth(capacity: number): number {
-  return Math.min(1.5 + Math.log10(Math.max(capacity, 1)) * 2.2, 12)
-}
-
 function nodeDisplay(n: NodeData): string {
   switch (n.kind) {
     case 'area':
@@ -308,20 +317,29 @@ function drillTarget(n: NodeData): Target | null {
       return { level: 'regency', area: n.area, province: n.province }
     case 'regency':
     case 'external_regency':
-      return { level: 'pop', area: n.area, province: n.province, regency: n.regency }
+      // The city schematic is the default view of a kabupaten/kota; its POP list stays one breadcrumb away.
+      return { level: 'city', area: n.area, province: n.province, regency: n.regency }
     case 'pop':
+    case 'pop_lane':
     case 'external_pop':
       return { level: 'device', pop: n.code ?? n.label }
+    case 'summary':
+      // Collapsed access devices of one POP: that POP's own device level shows them all.
+      return n.pop ? { level: 'device', pop: n.pop } : null
     case 'device':
       return n.device_id != null ? { level: 'neighbors', device_id: n.device_id, depth: 1 } : null
+    case 'cluster':
+    case 'city_box':
+      return null
   }
 }
 
 const DRILL_LABEL: Record<NodeKind, string> = {
   area: 'Buka provinsi di area ini', external_area: 'Buka provinsi di area ini',
   province: 'Buka kabupaten/kota', external_province: 'Buka kabupaten/kota',
-  regency: 'Buka POP', external_regency: 'Buka POP',
+  regency: 'Buka topologi kota', external_regency: 'Buka topologi kota',
   pop: 'Buka perangkat', external_pop: 'Buka perangkat', device: 'Lihat tetangga perangkat',
+  pop_lane: 'Buka perangkat POP ini', summary: 'Buka semua perangkat akses POP ini', cluster: '', city_box: '',
 }
 
 const GROUP_LABEL: Record<string, string> = {
@@ -452,18 +470,8 @@ function rowOf(n: NodeData): number {
   return n.kind === 'device' || n.kind === 'pop' ? (n.tier ?? 4) : -1
 }
 
-/** Hostname without the POP it is drawn in (JKT-NDC-P1-8201 in POP JKT -> NDC-P1-8201). */
-function shortName(label: string, pop?: string): string {
-  if (!pop) return label
-  const prefix = `${pop.toUpperCase()}-`
-  if (label.toUpperCase().startsWith(prefix) && label.length > prefix.length) return label.slice(prefix.length)
-  return label.replace(new RegExp(`-${pop}(?=-|$)`, 'i'), '')
-}
-
-function edgeColor(e: EdgeData, mode: ColorMode): string {
-  if (mode === 'segment') return SEGMENT_COLOR[e.segment]
-  return e.capacity_gbps > 0 ? CAPACITY_HEX[e.color] : UNKNOWN_HEX
-}
+// Same rule for aggregate edges and per-link edges (city / neighbours), which carry the same three fields.
+const edgeColor = (e: Pick<EdgeData, 'capacity_gbps' | 'color' | 'segment'>, mode: ColorMode): string => linkColor(e, mode)
 
 function edgeDisplay(e: EdgeData): string {
   const count = e.links > 1 ? `${e.links}× · ` : ''
@@ -519,6 +527,7 @@ const MAP_SCALE: Partial<Record<Level, { pxPerDegree: number; markerScale: numbe
   province: { pxPerDegree: 100, markerScale: 0.9, minScreenGap: 10 },
   regency: { pxPerDegree: 160, markerScale: 0.9, minScreenGap: 8 },
   pop: { pxPerDegree: 200, markerScale: 0.9, minScreenGap: 6 },
+  city: { pxPerDegree: 1500, markerScale: 1, minScreenGap: 4 },  // a whole kabupaten/kota: wider than one POP
   device: { pxPerDegree: 3000, markerScale: 1, minScreenGap: 4 },  // one city: ~30 px per km
   neighbors: { pxPerDegree: 1500, markerScale: 1, minScreenGap: 4 },
 }
@@ -582,7 +591,7 @@ function mapLayout(cy: Core, view: View) {
     // Nodes without any position (the unmapped area) wait in a row south-west of the map.
     home.set(n.id, n.lat != null && n.lon != null ? project(n.lat, n.lon, pxPerDegree) : project(-12.5, 96 + 7 * parked++, pxPerDegree))
   }
-  if (view.level === 'device' || view.level === 'neighbors') ringExternal(view, home)
+  if (view.level === 'device' || view.level === 'neighbors' || view.level === 'city') ringExternal(view, home)
   const elements = buildElements(view, { bands: false, colorMode: 'utilization', labelMode: 'full' })
   const widthOf = new Map(elements.filter((e) => !e.data.source).map((e) => [e.data.id as string, e.data.w as number]))
   // Nodes keep a fixed size on screen, so how much they overlap depends on the zoom the view fits at,
@@ -732,12 +741,26 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   const [mapOn, setMapOn] = useState(storedMapOn)
   const [basemap, setBasemap] = useState<BasemapShape[]>([])
   const [view, setView] = useState<View | null>(null)
+  // The view the canvas is built from. A live refresh of the city / neighbours levels with the same nodes and links
+  // updates `view` only and restyles the canvas in place, so it keeps its ELK layout.
+  const [drawn, setDrawn] = useState<View | null>(null)
+  const show = useCallback((next: View | null) => {
+    setView(next)
+    setDrawn(next)
+  }, [])
+  const [arranging, setArranging] = useState(false)
+  const [layoutMs, setLayoutMs] = useState<number | null>(null)
+  // Bumped once ELK elements are on the canvas, so filters and colours (applied per element) run again for them.
+  const [layoutTick, setLayoutTick] = useState(0)
+  const elkReadyRef = useRef(false)
   // Devices go on the map only where at least one has its own site coordinates.
   const devicesLocated = view?.nodes.filter((n) => n.kind === 'device' && n.located).length ?? 0
   const mapAvailable = isGroupLevel(level) || level === 'pop' || devicesLocated > 0
   const onMap = mapOn && mapAvailable && view?.level === level
+  const onMapRef = useRef(onMap)
+  onMapRef.current = onMap
   const [loading, setLoading] = useState(false)
-  const [selected, setSelected] = useState<{ node?: NodeData; edge?: EdgeData } | null>(null)
+  const [selected, setSelected] = useState<{ node?: NodeData; edge?: EdgeData; link?: CityLink } | null>(null)
   const [message, setMessage] = useState<{ text: string; error?: boolean } | null>(null)
   const [colorFilter, setColorFilter] = useState<'all' | 'warn' | 'red'>('all')
   const [edgeLabels, setEdgeLabels] = useState(false)
@@ -804,7 +827,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
       const ready = deeperRef.current
       deeperRef.current = null
       if (ready && ready.level === level && ready.area === area && ready.province === province && ready.regency === regency) {
-        setView(ready)
+        show(ready)
         return
       }
       const next = await api.get<View>(viewPath)
@@ -813,14 +836,14 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
         go({ level: next.level, area: next.area, province: next.province, regency: next.regency }, true)
         return
       }
-      setView(next)
+      show(next)
     } catch (e) {
       setMessage({ text: (e as Error).message, error: true })
-      setView(null)
+      show(null)
     } finally {
       setLoading(false)
     }
-  }, [viewPath, level, area, province, regency, go])
+  }, [viewPath, level, area, province, regency, go, show])
 
   useEffect(() => {
     load()
@@ -830,12 +853,25 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
     setSegmentsShown(defaultSegments(level))
   }, [level])
 
+  /** Live highlight classes: new since the page loaded, and links that just went down, until they expire. */
+  const markLive = useCallback((cy: Core) => {
+    const now = Date.now()
+    cy.elements().forEach((el) => {
+      el.toggleClass('fresh', (freshRef.current.get(el.id()) ?? 0) > now)
+      el.toggleClass('went-down', (wentDownRef.current.get(el.id()) ?? 0) > now)
+    })
+  }, [])
+
   /** Live refresh: same view again, drawn in place, with what changed marked on the map. */
   const refreshLive = useCallback(async () => {
     const before = viewRef.current
     const next = await api.get<View>(viewPath)
     const cy = cyRef.current
-    if (cy && before) {
+    // City / neighbours with the very same nodes and links: only status, colours and labels can have changed,
+    // so the ELK layout (seconds on a large city) is kept and the element data is updated in place.
+    const inPlace = !!cy && !!before && elkReadyRef.current && usesElk(before.level, onMapRef.current)
+      && before.level === next.level && sameShape(asCityView(before), asCityView(next))
+    if (cy && before && !inPlace) {
       keepRef.current = {
         positions: new Map(cy.nodes().not('[kind="band"]').nodes().map((n) => [n.id(), { ...n.position() }] as [string, Pos])),
         zoom: cy.zoom(),
@@ -853,6 +889,12 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
       addedNodes.forEach((n) => freshRef.current.set(n.id, until))
       addedEdges.forEach((e) => freshRef.current.set(e.id, until))
       wentDown.forEach((e) => wentDownRef.current.set(e.id, until))
+      // City / neighbours draw one edge per link record (link:<id>), not the aggregate edges above.
+      const oldLinkStatus = new Map((before.links ?? []).map((l) => [l.id, l.status]))
+      for (const l of next.links ?? []) {
+        if (!oldLinkStatus.has(l.id)) freshRef.current.set(`link:${l.id}`, until)
+        else if (l.status === 'down' && oldLinkStatus.get(l.id) !== 'down') wentDownRef.current.set(`link:${l.id}`, until)
+      }
       const parts = [
         addedNodes.length && `${addedNodes.length} node baru`,
         addedEdges.length && `${addedEdges.length} jalur baru`,
@@ -862,8 +904,19 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
       const time = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
       setLiveNote(`Diperbarui otomatis ${time}: ${parts.length ? parts.join(' · ') : 'status/trafik berubah'}`)
     }
-    setView(next)
-  }, [viewPath])
+    if (inPlace && cy) {
+      cy.batch(() => {
+        for (const definition of buildCityElements(asCityView(next), null, drawRef.current)) {
+          const el = cy.getElementById(definition.data.id as string)
+          if (el.nonempty()) el.data(liveData(definition))
+        }
+      })
+      markLive(cy)
+      setView(next)
+    } else {
+      show(next)
+    }
+  }, [viewPath, show, markLive])
 
   // Live: poll a cheap signature of the network; reload the view in place only when it changed.
   useEffect(() => {
@@ -926,14 +979,21 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
     }
   }
 
+  // Label mode sets the ELK node widths, so on the city / neighbours levels a change of it means a new layout.
+  const elkLabelMode = drawn && usesElk(drawn.level, onMap) ? labelMode : null
+
   useEffect(() => {
-    if (!view || !container.current) return
+    if (!drawn || !container.current) return
+    const view = drawn
+    const elk = usesElk(view.level, onMap)
     const keep = keepRef.current
     keepRef.current = null
+    elkReadyRef.current = false
     const cy = cytoscape({
       container: container.current,
-      elements: buildElements(view, { bands: usesBands(view.level, onMap), ...drawRef.current }),
-      style: STYLE,
+      // ELK elements are added once the worker has laid them out; added earlier they would flash at (0,0).
+      elements: elk ? [] : buildElements(view, { bands: usesBands(view.level, onMap), ...drawRef.current }),
+      style: elk ? CITY_STYLE : STYLE,
       wheelSensitivity: 0.25,
       minZoom: 0.05,
       maxZoom: 3,
@@ -943,7 +1003,14 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
       if (!id) return
       const el = cy.getElementById(id)
       // node: itself + neighbours and their links · edge: itself + its two ends
-      const keep = el.union(el.neighborhood()).union(el.connectedNodes())
+      let keep = el.union(el.neighborhood()).union(el.connectedNodes())
+      if (elk) {
+        // A compound box passes its opacity on to its children: a tapped box keeps its contents (and their links)
+        // lit, and the boxes around whatever stays lit are kept too.
+        const inside = el.nodes().descendants()
+        keep = keep.union(inside).union(inside.neighborhood())
+        keep = keep.union(keep.nodes().parents())
+      }
       cy.elements().not(keep).addClass('faded')
     }
     cy.on('tap', 'node', (e) => {
@@ -951,7 +1018,8 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
       highlight(e.target.id())
     })
     cy.on('tap', 'edge', (e) => {
-      setSelected({ edge: e.target.data() as EdgeData })
+      // City / neighbours edges are single link records, the other levels draw aggregates of node pairs.
+      setSelected(elk ? { link: e.target.data() as CityLink } : { edge: e.target.data() as EdgeData })
       highlight(e.target.id())
     })
     cy.on('tap', (e) => {
@@ -965,8 +1033,9 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
       if (target) go(target)
     })
     // Every schematic view can be arranged and saved. On the map positions follow coordinates, so nodes stay put
-    // there instead of moving and silently snapping back on the next visit.
-    const positionsEditable = !onMap
+    // there instead of moving and silently snapping back on the next visit. City / neighbours positions come from
+    // ELK every time (spec: no drag there), so they are fixed too.
+    const positionsEditable = !onMap && !elk
     if (positionsEditable) cy.on('dragfree', 'node', () => setMoved(countMoved(cy, savedPosRef.current)))
     else cy.autoungrabify(true)
     cyRef.current = cy
@@ -982,46 +1051,75 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
       }
     }
     cy.on('viewport', syncMap)
-    runLayout(cy, view, onMap, keep?.positions)
-    if (positionsEditable) {
-      // After a live refresh the unsaved moves survive in `keep`: compare against the saved positions, not the kept ones.
-      const before = keep ? savedPosRef.current : new Map<string, Pos>()
-      savedPosRef.current = new Map(nodePositions(cy).map((d) => [d.id, before.get(d.id) ?? d.pos] as [string, Pos]))
-      setMoved(countMoved(cy, savedPosRef.current))
-    } else {
+    const finish = () => {
+      if (keep) {
+        // Live refresh: stay where the user was looking.
+        cy.viewport({ zoom: keep.zoom, pan: keep.pan })
+        if (onMap) applyMarkerScale(cy, view.level)
+      } else {
+        cy.fit(undefined, 40)
+        if (onMap) {
+          // Marker sizes follow the zoom and the fit follows the sizes: settle both, then draw the map.
+          applyMarkerScale(cy, view.level)
+          cy.fit(undefined, 50)
+          lastZoom = 0
+        }
+      }
+      syncMap()
+      markLive(cy)
+      if (focus) {
+        const hit = cy.nodes().filter((n) => (n.data('label') as string)?.toUpperCase() === focus.toUpperCase())
+        if (hit.nonempty()) {
+          hit.addClass('hit')
+          cy.animate({ center: { eles: hit }, zoom: 1.2 }, { duration: 300 })
+          setSelected({ node: hit.first().data() as NodeData })
+          highlight(hit.first().id())
+        }
+      }
+    }
+    let disposed = false
+    if (elk) {
       savedPosRef.current = new Map()
       setMoved(0)
-    }
-    if (keep) {
-      // Live refresh: stay where the user was looking.
-      cy.viewport({ zoom: keep.zoom, pan: keep.pan })
-      if (onMap) applyMarkerScale(cy, view.level)
+      setArranging(true)
+      const city = asCityView(view)
+      layoutCity(city, citySizeOf(drawRef.current.labelMode))
+        .then((layout) => {
+          if (disposed) return
+          cy.add(buildCityElements(city, layout, drawRef.current))
+          elkReadyRef.current = true
+          setLayoutMs(Math.round(layout.ms))
+          finish()
+          setLayoutTick((tick) => tick + 1)
+        })
+        .catch((error: unknown) => {
+          // A newer layout superseded this one: its own result will be drawn.
+          if (disposed || error instanceof LayoutCancelled) return
+          setMessage({ text: `Tata letak gagal: ${error instanceof Error ? error.message : String(error)}`, error: true })
+        })
+        .finally(() => {
+          if (!disposed) setArranging(false)
+        })
     } else {
-      cy.fit(undefined, 40)
-      if (onMap) {
-        // Marker sizes follow the zoom and the fit follows the sizes: settle both, then draw the map.
-        applyMarkerScale(cy, view.level)
-        cy.fit(undefined, 50)
-        lastZoom = 0
+      runLayout(cy, view, onMap, keep?.positions)
+      if (positionsEditable) {
+        // After a live refresh the unsaved moves survive in `keep`: compare against the saved positions, not the kept ones.
+        const before = keep ? savedPosRef.current : new Map<string, Pos>()
+        savedPosRef.current = new Map(nodePositions(cy).map((d) => [d.id, before.get(d.id) ?? d.pos] as [string, Pos]))
+        setMoved(countMoved(cy, savedPosRef.current))
+      } else {
+        savedPosRef.current = new Map()
+        setMoved(0)
       }
+      finish()
     }
-    syncMap()
-    const now = Date.now()
-    cy.elements().forEach((el) => {
-      if ((freshRef.current.get(el.id()) ?? 0) > now) el.addClass('fresh')
-      if ((wentDownRef.current.get(el.id()) ?? 0) > now) el.addClass('went-down')
-    })
-    if (focus) {
-      const hit = cy.nodes().filter((n) => (n.data('label') as string)?.toUpperCase() === focus.toUpperCase())
-      if (hit.nonempty()) {
-        hit.addClass('hit')
-        cy.animate({ center: { eles: hit }, zoom: 1.2 }, { duration: 300 })
-        setSelected({ node: hit.first().data() as NodeData })
-        highlight(hit.first().id())
-      }
+    return () => {
+      disposed = true
+      elkReadyRef.current = false
+      setArranging(false)
+      cy.destroy()
     }
-    return () => cy.destroy()
-  }, [view, go, focus, onMap])
+  }, [drawn, go, focus, onMap, elkLabelMode, markLive])
 
   useEffect(() => {
     const cy = cyRef.current
@@ -1034,7 +1132,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
       if (edgeLabels) edge.addClass('labeled')
       else edge.removeClass('labeled')
     })
-  }, [colorFilter, edgeLabels, segmentsShown, view, onMap])
+  }, [colorFilter, edgeLabels, segmentsShown, view, onMap, layoutTick])
 
   // Colour and label modes restyle the drawing in place (no new layout, the view stays put).
   useEffect(() => {
@@ -1049,7 +1147,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
         node.data('display', labelMode === 'short' ? shortName(n.label, n.pop) : n.label)
       })
     })
-  }, [colorMode, labelMode, view, onMap])
+  }, [colorMode, labelMode, view, onMap, layoutTick])
 
   function toggleSegment(segment: Segment) {
     const next = new Set(segmentsShown)
@@ -1178,6 +1276,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
 
   const node = selected?.node
   const edge = selected?.edge
+  const link = selected?.link
   const nameOf = (id: string) => view?.nodes.find((n) => n.id === id)?.label ?? id
   const viewArea = view?.area ?? area
   const viewProvince = view?.province ?? province
@@ -1209,12 +1308,21 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
               </a>
             </>
           )}
-          {(level === 'pop' || level === 'device' || level === 'neighbors') && viewArea && viewProvince && viewRegency && (
+          {(level === 'city' || level === 'pop' || level === 'device' || level === 'neighbors') && viewArea && viewProvince && viewRegency && (
+            <>
+              <span>›</span>
+              <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'city', area: viewArea, province: viewProvince, regency: viewRegency }) }}
+                className={level === 'city' ? 'current' : ''} title="Topologi kota: POP, cluster dan semua link">
+                {viewRegency}
+              </a>
+            </>
+          )}
+          {(level === 'city' || level === 'pop' || level === 'device') && viewArea && viewProvince && viewRegency && (
             <>
               <span>›</span>
               <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'pop', area: viewArea, province: viewProvince, regency: viewRegency }) }}
-                className={level === 'pop' ? 'current' : ''}>
-                {viewRegency}
+                className={level === 'pop' ? 'current' : 'crumb-aside'} title="Daftar POP kabupaten/kota ini">
+                Daftar POP
               </a>
             </>
           )}
@@ -1251,7 +1359,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
           onClick={() => { setLive(!live); remember('nadien.topology.live', live ? '0' : '1') }}>
           <span className="live-dot" />{live ? 'Live' : 'Live mati'}
         </button>
-        {!onMap && view && (Object.keys(view.layout ?? {}).length > 0 || view.nodes.some((n) => n.kind === 'device' && n.x != null)) && (
+        {!onMap && view && !isElkLevel(view.level) && (Object.keys(view.layout ?? {}).length > 0 || view.nodes.some((n) => n.kind === 'device' && n.x != null)) && (
           <button onClick={resetLayout} title="Hapus susunan yang tersimpan untuk tampilan ini dan kembali ke tata letak otomatis">
             Atur ulang tata letak
           </button>
@@ -1347,23 +1455,24 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
               </button>
             </div>
           )}
-          {loading && <div className="graph-loading">Memuat…</div>}
+          {loading ? <div className="graph-loading">Memuat…</div> : arranging && <div className="graph-loading arranging">Menyusun tata letak…</div>}
           <TopologyLegend open={legendOpen} colorMode={colorMode} level={level}
             onToggle={() => { setLegendOpen(!legendOpen); remember('nadien.topology.legend', legendOpen ? '0' : '1') }} />
           <div className="graph-status small muted">
             {stats.groups} jalur · {stats.links} link
             {stats.red ? ` · ${stats.red} merah` : ''}
+            {view && usesElk(view.level, onMap) && layoutMs != null && !arranging ? ` · tata letak ${layoutMs} ms` : ''}
             {onMap && level === 'pop' && view ? ` · ${view.nodes.filter((n) => n.estimated).length} POP tanpa koordinat (posisi perkiraan, garis putus-putus)` : ''}
             {onMap && (level === 'device' || level === 'neighbors') && view
               ? ` · ${devicesLocated} perangkat dengan koordinat site, ${view.nodes.filter((n) => n.kind === 'device' && !n.located).length} di sekitar POP (garis putus-putus)`
               : ''}
           </div>
-          {(node || edge || (level === 'device' && view?.pop_id != null)) && (
+          {(node || edge || link || (level === 'device' && view?.pop_id != null)) && (
             <aside className="detail-panel card">
-              {(node || edge) && (
+              {(node || edge || link) && (
                 <button className="panel-close" onClick={() => setSelected(null)} aria-label="Tutup">×</button>
               )}
-          {level === 'device' && view?.pop_id != null && !node && !edge && (
+          {level === 'device' && view?.pop_id != null && !node && !edge && !link && (
             <div className="detail">
               <h3>{view.city ?? `POP ${view.pop}`}</h3>
               <div className="small muted">POP {view.pop} · {[view.regency, view.province, view.area].filter(Boolean).join(' · ')}</div>
@@ -1398,6 +1507,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
                     <dt>Role</dt><dd>{node.role?.toUpperCase()} ({TIER_LABEL[node.tier ?? 4]})</dd>
                     <dt>Vendor</dt><dd>{node.vendor ?? '–'}</dd>
                     <dt>Status</dt><dd>{node.status}</dd>
+                    {node.reachability && (<><dt>Observium</dt><dd>{node.reachability}{node.mgmt_ip ? ` · ${node.mgmt_ip}` : ''}</dd></>)}
                   </>
                 )}
                 {node.kind.startsWith('external') && (
@@ -1440,6 +1550,20 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
                 <dt>Committed</dt><dd>{edge.committed_pct}%</dd>
               </dl>
               {(level === 'device' || level === 'neighbors') && <RouterLink to="/capacity">Detail kapasitas & forecast →</RouterLink>}
+            </div>
+          )}
+          {link && (
+            <div className="detail">
+              <h3>{link.a_device} ↔ {link.b_device}</h3>
+              <dl>
+                <dt>Interface</dt><dd>{link.a_interface ?? '–'} ↔ {link.b_interface ?? '–'}</dd>
+                <dt>Fungsi</dt><dd>{SEGMENT_LABEL[link.segment as Segment] ?? link.segment}</dd>
+                <dt>Status</dt><dd>{link.status}{link.spof ? ' · SPOF' : ''}</dd>
+                <dt>Kapasitas</dt><dd>{link.capacity_gbps > 0 ? fmtG(link.capacity_gbps) : 'belum diketahui'}</dd>
+                <dt>Trafik</dt><dd>{fmtG(link.current_gbps)} ({link.utilization_pct}%)</dd>
+                <dt>Committed</dt><dd>{link.committed_pct}%</dd>
+              </dl>
+              <RouterLink to="/capacity">Detail kapasitas & forecast →</RouterLink>
             </div>
           )}
             </aside>
