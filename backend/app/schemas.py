@@ -94,7 +94,9 @@ class DeviceCreate(BaseModel):
 
 
 class DeviceRead(DeviceCreate, ORMRead):
-    pass
+    reachability: Literal["up", "down", "unknown"] = "unknown"
+    uptime_s: int | None = None
+    last_polled_at: datetime | None = None
 
 
 class InterfaceCreate(BaseModel):

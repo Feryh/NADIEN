@@ -11,7 +11,7 @@
             "ip": "172.16.0.3", "status": "1", "disabled": "0"},
     "104": {"device_id": "104", "hostname": "smg-pe-01.metro.net", "sysName": "", "os": "timos", "type": "network",
             "hardware": "7750 SR-7s", "version": "TiMOS-C-23.10.R1", "location": "Semarang", "location_lat": "", "location_lon": "",
-            "ip": "172.16.0.4", "status": "0", "disabled": "0"},
+            "ip": "172.16.0.4", "status": "0", "disabled": "0", "uptime": "7200", "last_polled": "2026-11-09 10:00:00"},
     "105": {"device_id": "105", "hostname": "nms-01", "sysName": "nms-01", "os": "linux", "type": "server",
             "hardware": "VMware", "version": "6.1", "location": "Jakarta DC Cyber", "status": "1", "disabled": "0"}
   },

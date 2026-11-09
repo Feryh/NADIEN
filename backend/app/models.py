@@ -111,6 +111,10 @@ class Device(TimestampMixin, Base):
     isis_net: Mapped[str | None] = mapped_column(String(64))
     srv6_locator: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(32), default="active")
+    # Live state from the Observium poller, kept apart from the lifecycle `status` above.
+    reachability: Mapped[str] = mapped_column(String(16), default="unknown", server_default="unknown")  # up | down | unknown
+    uptime_s: Mapped[int | None] = mapped_column(BigInteger)
+    last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Saved manual position on the topology map (drag & drop).
     map_x: Mapped[float | None] = mapped_column(Float)
     map_y: Mapped[float | None] = mapped_column(Float)

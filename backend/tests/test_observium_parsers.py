@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from app.collectors.observium.parsers import (
     classify_port,
     guess_role,
@@ -82,3 +84,29 @@ def test_address():
     assert parse_address({"port_id": "1", "ipv4_address": "10.0.0.1", "ipv4_prefixlen": "30"}).cidr == "10.0.0.1/30"
     assert parse_address({"port_id": "1", "ipv4_address": "10.0.0.1", "ipv4_network": "10.0.0.0/31"}).cidr == "10.0.0.1/31"
     assert parse_address({"port_id": None, "ipv4_address": "10.0.0.1"}) is None
+
+
+def test_should_map_status_0_to_reachability_down_when_device_enabled():
+    rec = parse_device({"device_id": 1, "hostname": "JKT-P1", "status": "0", "disabled": "0", "uptime": "3600",
+                        "last_polled": "2026-11-09 10:00:00"}, POP_RE)
+    assert rec.reachability == "down"
+    assert rec.uptime_s == 3600
+    assert rec.last_polled_at == datetime(2026, 11, 9, 3, 0, tzinfo=timezone.utc)
+
+
+def test_should_map_disabled_to_reachability_unknown_when_disabled():
+    rec = parse_device({"device_id": 1, "hostname": "JKT-P1", "status": "1", "disabled": "1"}, POP_RE)
+    assert rec.reachability == "unknown"
+
+
+def test_should_leave_last_polled_empty_when_value_invalid():
+    for polled in ("", "0000-00-00 00:00:00"):
+        rec = parse_device({"device_id": 1, "hostname": "JKT-P1", "uptime": "abc", "last_polled": polled}, POP_RE)
+        assert rec.uptime_s is None
+        assert rec.last_polled_at is None
+
+
+def test_should_keep_status_maintenance_when_observium_down():
+    rec = parse_device({"device_id": 1, "hostname": "JKT-P1", "status": "0", "disabled": "0"}, POP_RE)
+    assert rec.status == "maintenance"
+    assert rec.reachability == "down"

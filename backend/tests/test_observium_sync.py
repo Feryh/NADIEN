@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 from sqlalchemy import select
 
@@ -136,3 +138,14 @@ def test_missing_credentials_and_auth_failure(monkeypatch):
 def test_pagination_collects_every_page(db):
     rows = client().fetch("ports", page_size=3)
     assert len(rows) == 16
+
+
+def test_should_store_reachability_when_device_synced(db):
+    sync_observium(db, client())
+    hosts = {d.hostname: d for d in db.scalars(select(m.Device))}
+    down = hosts["SMG-PE-01"]
+    assert down.reachability == "down"
+    assert down.uptime_s == 7200
+    assert down.last_polled_at.replace(tzinfo=None) == datetime(2026, 11, 9, 3, 0)
+    assert hosts["JKT-P-01"].reachability == "up"
+    assert hosts["JKT-P-01"].uptime_s is None
