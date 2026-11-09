@@ -6,15 +6,15 @@ export interface CityLink {
   source: string  // drawn node id: dev:<id>, pop:<code> or summary:<pop>
   target: string
   a_device: string
-  a_interface: string | null
+  a_interface: string | null  // null when the link has no interface record
   b_device: string
   b_interface: string | null
-  capacity_gbps: number | null
-  current_gbps: number | null
-  utilization_pct: number | null
-  committed_pct: number | null
+  capacity_gbps: number
+  current_gbps: number
+  utilization_pct: number
+  committed_pct: number
   color: string  // computed by backend capacity.py; the frontend never recomputes it
-  status: string
+  status: 'up' | 'down' | 'planned'
   segment: string
   spof: boolean
 }
@@ -38,10 +38,10 @@ export interface CityDeviceNode {
   kind: 'device'
   device_id: number
   label: string
-  pop: string | null
-  site?: string | null
-  role: string | null
-  category?: string | null
+  pop: string  // POP code; the backend sends "?" for a device without a POP
+  site: string
+  role: string
+  category: string
   tier: number
   vendor: string | null
   status: string
@@ -100,10 +100,10 @@ export interface CityAggregateEdge {
   segment: string
   links: number
   down: number
-  capacity_gbps: number | null
-  current_gbps: number | null
-  utilization_pct: number | null
-  committed_pct: number | null
+  capacity_gbps: number
+  current_gbps: number
+  utilization_pct: number
+  committed_pct: number
   color: string
   capacity_unknown: boolean
 }

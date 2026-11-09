@@ -5,9 +5,9 @@ import type { CityCluster, CityDeviceNode, CityLink, CityNode, CityView } from '
 
 const sizeOf = () => ({ width: 100, height: 30 })
 
-function device(id: number, pop: string | null, tier: number, clusterId: string | null = null): CityDeviceNode {
+function device(id: number, pop: string, tier: number, clusterId: string | null = null): CityDeviceNode {
   return {
-    id: `dev:${id}`, kind: 'device', device_id: id, label: `D${id}`, pop, role: null, tier, vendor: null,
+    id: `dev:${id}`, kind: 'device', device_id: id, label: `D${id}`, pop, site: 'site:S', role: 'pe', category: 'core', tier, vendor: null,
     status: 'active', x: null, y: null, center: false, mgmt_ip: null, city: null, reachability: 'up',
     uptime_s: null, last_polled_at: null, cluster_id: clusterId, spof: false,
   }

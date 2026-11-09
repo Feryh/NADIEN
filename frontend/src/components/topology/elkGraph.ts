@@ -13,6 +13,8 @@ export const ELK_OPTIONS: LayoutOptions = {
   'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
   // Without this ELK ignores the per-node partition, i.e. the layer rows (Core on top, Access at the bottom).
   'elk.partitioning.activate': 'true',
+  // Edges are declared on the root but ELK reports section points relative to the edges' common ancestor by default.
+  'elk.json.edgeCoords': 'ROOT',
 }
 
 // Room above the children for the compound's label, which Cytoscape draws there.

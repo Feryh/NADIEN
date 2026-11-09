@@ -22,7 +22,7 @@ describe('toSegments', () => {
 
 // group sits at (10,20); a and b are 100x20 nodes inside it, b below a.
 function graph(bends: { x: number; y: number }[], container: 'root' | 'group' = 'root'): ElkNode {
-  const offset = container === 'root' ? { x: 10, y: 20 } : { x: 0, y: 0 }
+  const offset = { x: 10, y: 20 }  // edge points are root-relative whichever node lists the edge
   const edge: ElkExtendedEdge = {
     id: 'link:1', sources: ['a'], targets: ['b'],
     sections: [{
@@ -69,7 +69,7 @@ describe('toCytoscape', () => {
     expect(route.targetEndpoint).toBe('0px -10px')
   })
 
-  it('should resolve edge coordinates against the edge container when edge is nested', () => {
+  it('should treat edge points as root-relative when edge is listed on a nested node', () => {
     const route = toCytoscape(graph([], 'group')).edges['link:1']
     expect(route.sourceEndpoint).toBe('0px 10px')
     expect(route.targetEndpoint).toBe('0px -10px')

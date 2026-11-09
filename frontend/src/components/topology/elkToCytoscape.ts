@@ -45,15 +45,18 @@ export function toSegments(source: Pos, target: Pos, bends: Pos[]): { weights: n
 // `+ 0` turns -0 into 0 so the endpoint strings stay stable.
 const pixels = (value: number): string => `${Math.round(value * 100) / 100 + 0}px`
 
+const ROOT_ORIGIN: Pos = { x: 0, y: 0 }
+
 function collect(
   node: ElkNode,
   origin: Pos,
   centers: Record<string, Pos>,
   edges: { edge: ElkExtendedEdge; origin: Pos }[],
 ): void {
-  // ELK reports child coordinates relative to the parent and edge points relative to the edge's container.
+  // Child coordinates are relative to the parent. Edge points are root-relative because buildElkGraph sets
+  // elk.json.edgeCoords=ROOT, wherever the edge is listed, so edges never add the container offset.
   const absolute = { x: origin.x + (node.x ?? 0), y: origin.y + (node.y ?? 0) }
-  for (const edge of node.edges ?? []) edges.push({ edge, origin: absolute })
+  for (const edge of node.edges ?? []) edges.push({ edge, origin: ROOT_ORIGIN })
   if (node.children?.length) {
     for (const child of node.children) collect(child, absolute, centers, edges)
   } else {
@@ -84,9 +87,8 @@ export function toCytoscape(result: ElkNode): CytoscapeLayout {
   const centers: Record<string, Pos> = {}
   const pending: { edge: ElkExtendedEdge; origin: Pos }[] = []
   // The root is the graph itself, not a drawn node, so it contributes no position of its own.
-  const rootOrigin = { x: result.x ?? 0, y: result.y ?? 0 }
-  for (const edge of result.edges ?? []) pending.push({ edge, origin: rootOrigin })
-  for (const child of result.children ?? []) collect(child, rootOrigin, centers, pending)
+  for (const edge of result.edges ?? []) pending.push({ edge, origin: ROOT_ORIGIN })
+  for (const child of result.children ?? []) collect(child, ROOT_ORIGIN, centers, pending)
 
   const edges: Record<string, EdgeRoute> = {}
   for (const { edge, origin } of pending) {
