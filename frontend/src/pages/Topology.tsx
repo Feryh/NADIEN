@@ -12,7 +12,7 @@ import { buildCityElements, canUpdateInPlace, citySizeOf, linkColor, liveData, t
 import { isCompound, isProblemLink, isProblemNode, linkVisible, NO_FILTER, nodeVisible, vendorsIn, type CityFilter } from '../components/topology/cityFilters'
 import { CITY_STYLE } from '../components/topology/cityStyle'
 import { layoutCity, LayoutCancelled } from '../components/topology/elkLayout'
-import { type GeoPoint, MAP_DRAGGABLE, mapKeyFor, mapOverridePositions, mapViewKey, movedFrom, storedMapOn } from '../components/topology/mapArrange'
+import { type GeoPoint, MAP_DRAGGABLE, mapKeyFor, mapOverridePositions, mapViewKey, movedFrom, ringExternal, storedMapOn } from '../components/topology/mapArrange'
 import { edgeWidth, ROLE_COLOR, SEGMENT_COLOR, shortName } from '../components/topology/shared'
 import type { CityLink, CityView } from '../components/topology/types'
 
@@ -564,26 +564,7 @@ function applyMarkerScale(cy: Core, level: Level) {
   })
 }
 
-/**
- * At device level the other POPs are tens or hundreds of km away: drawn at their real spot they would
- * shrink the local site map to a dot. They keep only their direction, on a ring just outside the devices.
- */
-function ringExternal(view: View, home: Map<string, Pos>) {
-  const local = view.nodes.filter((n) => n.kind === 'device').map((n) => home.get(n.id)!)
-  if (!local.length) return
-  const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]
-  const center = { x: median(local.map((p) => p.x)), y: median(local.map((p) => p.y)) }
-  const distances = local.map((p) => Math.hypot(p.x - center.x, p.y - center.y)).sort((a, b) => a - b)
-  const radius = Math.max(300, distances[Math.floor(distances.length * 0.9)] ?? 0) * 1.35
-  for (const n of view.nodes) {
-    if (n.kind !== 'external_pop') continue
-    const spot = home.get(n.id)!
-    const angle = Math.atan2(spot.y - center.y, spot.x - center.x) || 0
-    home.set(n.id, { x: center.x + radius * Math.cos(angle), y: center.y + radius * Math.sin(angle) })
-  }
-}
-
-/** Where each node starts on the map: a device dragged and saved here first, else its real coordinates. */
+/** Where each node starts on the map: a node dragged and saved here first, else its real coordinates. */
 function mapHome(view: View, pxPerDegree: number): Map<string, Pos> {
   const home = new Map<string, Pos>()
   const arranged = view.map_layout ?? {}
@@ -600,7 +581,9 @@ function mapHome(view: View, pxPerDegree: number): Map<string, Pos> {
 function mapLayout(cy: Core, view: View, keep?: Map<string, Pos>) {
   const { pxPerDegree, markerScale, minScreenGap } = MAP_SCALE[view.level]!
   const home = mapHome(view, pxPerDegree)
-  if (view.level === 'device' || view.level === 'neighbors' || view.level === 'city') ringExternal(view, home)
+  if (view.level === 'device' || view.level === 'neighbors' || view.level === 'city') {
+    ringExternal(view.nodes, home, new Set(Object.keys(view.map_layout ?? {})))
+  }
   const elements = buildElements(view, { bands: false, colorMode: 'utilization', labelMode: 'full' })
   const widthOf = new Map(elements.filter((e) => !e.data.source).map((e) => [e.data.id as string, e.data.w as number]))
   // Nodes keep a fixed size on screen, so how much they overlap depends on the zoom the view fits at,
@@ -658,7 +641,7 @@ function runLayout(cy: Core, view: View, onMap: boolean, keep?: Map<string, Pos>
   } as cytoscape.LayoutOptions).run()
 }
 
-/** Every node the user can arrange: on the map only devices, on a schematic all but the role bands (they wrap rows). */
+/** Every node the user can arrange: on the map devices and other POPs, on a schematic all but the role bands (they wrap rows). */
 function nodePositions(cy: Core, onMap: boolean): { id: string; pos: Pos }[] {
   const nodes = onMap ? cy.nodes(MAP_DRAGGABLE) : cy.nodes().not('[kind="band"]').nodes()
   return nodes.map((n) => ({ id: n.id(), pos: { ...n.position() } }))
@@ -1060,8 +1043,8 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
       const target = drillTarget(e.target.data() as NodeData)
       if (target) go(target)
     })
-    // Every schematic view can be arranged and saved. On the map only devices move (saved as lat/lon overrides):
-    // POPs, groups and the ring of other POPs follow coordinates. City / neighbours positions come from ELK every
+    // Every schematic view can be arranged and saved. On the map devices and the other POPs they link to move
+    // (saved as lat/lon overrides); POPs and group boxes follow coordinates. City / neighbours positions come from ELK every
     // time (spec: no drag there), so they are fixed.
     const positionsEditable = !elk
     if (positionsEditable) {
@@ -1249,7 +1232,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
         if (sameView(drawnRef.current)) drawnRef.current = { ...drawnRef.current!, map_layout }
         setView((current) => (sameView(current) ? { ...current!, map_layout } : current))
       }
-      setMessage({ text: `Tata letak disimpan: ${moved} ${mapped ? 'perangkat' : 'node'} dipindah. Tampilan ini akan dibuka dengan susunan yang sama.` })
+      setMessage({ text: `Tata letak disimpan: ${moved} node dipindah. Tampilan ini akan dibuka dengan susunan yang sama.` })
       setMoved(0)
     } catch (e) {
       setMessage({ text: (e as Error).message, error: true })
@@ -1267,7 +1250,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
     const viewKey = onMap ? mapViewKey(layoutKey) : layoutKey
     try {
       await api.del(`/topology/layouts?view_key=${encodeURIComponent(viewKey)}`)
-      setMessage({ text: onMap ? 'Perangkat dikembalikan ke koordinat aslinya.' : 'Tata letak dikembalikan ke susunan otomatis.' })
+      setMessage({ text: onMap ? 'Perangkat dan POP dikembalikan ke posisi aslinya.' : 'Tata letak dikembalikan ke susunan otomatis.' })
       await load()
     } catch (e) {
       setMessage({ text: (e as Error).message, error: true })
