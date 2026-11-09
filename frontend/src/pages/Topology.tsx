@@ -125,6 +125,7 @@ interface View {
   nodes: NodeData[]
   edges: EdgeData[]
   segments: Record<Segment, Totals>
+  hidden_links: number  // cross-city config links without traffic left out of this view (counted even when shown)
   links?: CityLink[]  // city / neighbours: one entry per link record (the full shape is CityView)
 }
 
@@ -792,6 +793,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   const [labelMode, setLabelMode] = useState<LabelMode>(() => stored('nadien.topology.labels', 'short'))
   const [legendOpen, setLegendOpen] = useState(() => stored('nadien.topology.legend', '1') === '1')
   const [live, setLive] = useState(() => stored('nadien.topology.live', '1') === '1')
+  const [includeHidden, setIncludeHidden] = useState(() => stored<string>('nadien.topology.hidden', '0') === '1')
   const [cityFilter, setCityFilter] = useState<CityFilter>(NO_FILTER)
   const [highlightProblems, setHighlightProblems] = useState(() => stored<string>('nadien.topology.highlight-problems', '0') === '1')
   const [highlightSpof, setHighlightSpof] = useState(() => stored<string>('nadien.topology.highlight-spof', '0') === '1')
@@ -831,8 +833,9 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
     if (pop) q.set('pop', pop)
     if (deviceId) q.set('device_id', deviceId)
     if (level === 'neighbors') q.set('depth', depth)
+    if (includeHidden) q.set('include_hidden', '1')
     return `/topology/view?${q}`
-  }, [level, area, province, regency, pop, deviceId, depth])
+  }, [level, area, province, regency, pop, deviceId, depth, includeHidden])
 
   // A province/regency holding a single group comes back one level deeper: the URL follows it, and the
   // view already fetched is used for that new URL instead of being fetched again.
@@ -995,6 +998,14 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
     setMapChoice((choice) => (elkLevel ? { ...choice, elk: on } : { ...choice, other: on }))
     remember(mapKeyFor(elkLevel), on ? '1' : '0')
   }
+
+  // A different link set is a different view: viewPath changes, so the view reloads and is laid out again.
+  function toggleHidden(on: boolean) {
+    if (!confirmDiscard(dirty)) return
+    setIncludeHidden(on)
+    remember('nadien.topology.hidden', on ? '1' : '0')
+  }
+  const hiddenLinks = view?.hidden_links ?? 0
 
   // Label mode sets the ELK node widths, so on the city / neighbours levels a change of it means a new layout.
   const elkLabelMode = view && usesElk(view.level, onMap) ? labelMode : null
@@ -1486,6 +1497,12 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
             <input type="checkbox" checked={mapOn} onChange={(e) => toggleMap(e.target.checked)} /> Peta
           </label>
         )}
+        {view && (hiddenLinks > 0 || includeHidden) && (
+          <label className="check" title="Link dari deskripsi config yang menghubungkan dua Kab/Kota tanpa trafik; biasanya deskripsi lama atau salah ketik">
+            <input type="checkbox" checked={includeHidden} onChange={(e) => toggleHidden(e.target.checked)} />
+            {' '}Tampilkan link config tanpa trafik ({hiddenLinks})
+          </label>
+        )}
       </div>
 
       {cityMode && view && (
@@ -1542,6 +1559,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
             {onMap && (level === 'device' || level === 'neighbors') && view
               ? ` · ${devicesLocated} perangkat dengan koordinat site, ${view.nodes.filter((n) => n.kind === 'device' && !n.located).length} di sekitar POP (garis putus-putus)`
               : ''}
+            {hiddenLinks > 0 && !includeHidden ? ` · ${hiddenLinks} link config lintas kota tanpa trafik disembunyikan` : ''}
           </div>
           {cityMode && view && (node || linkId != null) && (
             <TopologyDetail view={asCityView(view)} node={node} linkId={linkId} onClose={() => setSelected(null)}

@@ -24,7 +24,7 @@ function link(id: number, source: string, target: string, overrides: Partial<Cit
 
 function view(nodes: CityNode[], links: CityLink[] = [], clusters: CityCluster[] = [], level: CityView['level'] = 'city'): CityView {
   return {
-    level, nodes, links, clusters, edges: [], segments: {}, layout_key: 'k', regency: 'Kota X',
+    level, nodes, links, clusters, edges: [], segments: {}, layout_key: 'k', hidden_links: 0, regency: 'Kota X',
     pops: [{ code: 'P', name: 'Pusat', city: 'X', device_count: 2 }, { code: 'EMPTY', name: 'Kosong', city: 'X', device_count: 0 }],
   }
 }

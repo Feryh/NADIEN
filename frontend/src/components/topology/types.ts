@@ -119,6 +119,7 @@ export interface CityView {
   links: CityLink[]
   edges: CityAggregateEdge[]
   segments: Record<string, unknown>
+  hidden_links: number  // cross-city config links without traffic left out of this view (counted even when shown)
   layout_key: string
   layout?: Record<string, { x: number; y: number }>
   summarized?: CitySummarized[]

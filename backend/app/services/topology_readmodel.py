@@ -5,6 +5,7 @@ Kept out of the router so services can build topology data without importing a r
 
 import math
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -155,7 +156,41 @@ class Agg:
 
 def load_links(db: Session) -> list[Any]:
     return db.execute(select(m.Link.id, m.Link.a_device_id, m.Link.b_device_id, m.Link.capacity_gbps,
-                             m.Link.current_gbps, m.Link.reserved_gbps, m.Link.status)).all()
+                             m.Link.current_gbps, m.Link.reserved_gbps, m.Link.status,
+                             m.Link.discovery_source)).all()
+
+
+def is_stale_cross_city(link: Any, ctx: Ctx) -> bool:
+    """A link read only from interface descriptions, joining two Kab/Kota, with no traffic: usually an old or
+    mistyped description, so the topology leaves it out (the record itself is kept). LLDP and manual links are
+    real by definition. The full (area, province, regency) path is compared so namesake regencies differ."""
+    if link.discovery_source != "config" or (link.current_gbps or 0) != 0:
+        return False
+    a, b = ctx.devices.get(link.a_device_id), ctx.devices.get(link.b_device_id)
+    if a is None or b is None:
+        return False
+    return ctx.path_of_pop(a.pop_id) != ctx.path_of_pop(b.pop_id)
+
+
+@dataclass
+class TopologyLinks:
+    """The links a view draws and the ones the stale-config rule left out (counted per view scope)."""
+    shown: list[Any]
+    hidden: list[Any]
+
+    def hidden_count(self, in_scope: Callable[[Any], bool]) -> int:
+        return sum(1 for link in self.hidden if in_scope(link))
+
+
+def topology_links(db: Session, ctx: Ctx, include_hidden: bool) -> TopologyLinks:
+    """With `include_hidden` every link is shown; `hidden` still lists what the rule would hide, so the toggle
+    can say how many links it brings back."""
+    links = load_links(db)
+    hidden = [link for link in links if is_stale_cross_city(link, ctx)]
+    if include_hidden:
+        return TopologyLinks(shown=links, hidden=hidden)
+    hidden_ids = {link.id for link in hidden}
+    return TopologyLinks(shown=[link for link in links if link.id not in hidden_ids], hidden=hidden)
 
 
 def edges_of(aggs: dict[tuple[str, str, str], Agg]) -> list[dict[str, Any]]:
