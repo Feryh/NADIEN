@@ -82,6 +82,9 @@ export function createLayoutClient(factory: () => WorkerLike): LayoutClient {
         const previous = pending
         settle(previous)
         previous.reject(new LayoutCancelled())
+        // ELK berjalan sinkron di worker; layout lama yang dibatalkan akan menahan permintaan baru
+        // (dan memakan timeout-nya) bila worker yang sama dipakai ulang.
+        discardWorker()
       }
       const requestId = ++lastRequestId
       return new Promise((resolve, reject) => {

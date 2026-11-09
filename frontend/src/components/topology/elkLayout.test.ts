@@ -40,9 +40,30 @@ describe('layout client request bookkeeping', () => {
     const first = client.layout(graph)
     const second = client.layout(graph)
     await expect(first).rejects.toBeInstanceOf(LayoutCancelled)
-    workers[0].reply({ requestId: workers[0].sent[1].requestId, result: laidOut })
+    workers[1].reply({ requestId: workers[1].sent[0].requestId, result: laidOut })
     await expect(second).resolves.toMatchObject({ result: laidOut })
+  })
+
+  it('should terminate worker and use a new one when cancelling a pending layout', () => {
+    const client = makeClient()
+    client.layout(graph).catch(() => undefined)
+    client.layout(graph).catch(() => undefined)
+    expect(workers).toHaveLength(2)
+    expect(workers[0].terminated).toBe(true)
+    expect(workers[1].terminated).toBe(false)
+    expect(workers[1].sent).toHaveLength(1)
+  })
+
+  it('should reuse worker when previous layout already finished', async () => {
+    const client = makeClient()
+    const first = client.layout(graph)
+    workers[0].reply({ requestId: workers[0].sent[0].requestId, result: laidOut })
+    await first
+    const second = client.layout(graph)
+    workers[0].reply({ requestId: workers[0].sent[1].requestId, result: laidOut })
+    await second
     expect(workers).toHaveLength(1)
+    expect(workers[0].terminated).toBe(false)
   })
 
   it('should ignore stale result when requestId is old', async () => {
@@ -50,10 +71,11 @@ describe('layout client request bookkeeping', () => {
     const first = client.layout(graph)
     const second = client.layout(graph)
     first.catch(() => undefined)
-    const [oldRequest, newRequest] = workers[0].sent
+    const oldRequest = workers[0].sent[0]
+    const newRequest = workers[1].sent[0]
     const stale: ElkNode = { id: 'stale' }
     workers[0].reply({ requestId: oldRequest.requestId, result: stale })
-    workers[0].reply({ requestId: newRequest.requestId, result: laidOut })
+    workers[1].reply({ requestId: newRequest.requestId, result: laidOut })
     await expect(second).resolves.toMatchObject({ result: laidOut })
   })
 
