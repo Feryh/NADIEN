@@ -72,6 +72,8 @@ def _sources(events: list[str], fail: str | None = None, rrd: FakeRrd | None = N
 def configured(monkeypatch):
     monkeypatch.setattr(settings, "gitweb_url", "http://gitweb.test/gitweb/")
     monkeypatch.setattr(settings, "observium_csr_url", "http://csr.test")
+    monkeypatch.setattr(settings, "observium_token", "t")  # the injected fakes never use it
+    monkeypatch.setattr(settings, "observium_rrd_source", "api")
 
 
 @pytest.fixture
@@ -131,6 +133,22 @@ def test_should_skip_csr_steps_when_csr_observium_is_not_configured(db, configur
     steps = _steps(report)
     assert steps["observium_csr"]["status"] == "skipped" and steps["rrd_csr"]["status"] == "skipped"
     assert "observium_csr" not in events and "rrd_csr" not in events and report["status"] == "ok"
+
+
+def test_should_skip_observium_steps_when_observium_is_not_configured(db, configured, monkeypatch):
+    monkeypatch.setattr(settings, "observium_token", "")
+    events: list[str] = []
+    report = jobs.run_all(db, sources=_sources(events))
+    steps = _steps(report)
+    assert {name: steps[name]["status"] for name in ("observium", "observium_csr", "rrd", "rrd_csr")} == dict.fromkeys(
+        ("observium", "observium_csr", "rrd", "rrd_csr"), "skipped")
+    assert events == ["gitweb"] and steps["discovery"]["status"] == "ok" and report["status"] == "ok"
+
+
+def test_should_not_report_a_backup_phase_for_configs_when_sync_all_runs(db, configured):
+    phases: list[str] = []
+    jobs.run_all(db, sources=_sources([]), progress=phases.append)
+    assert "configs: list" in phases and "configs: backup" not in phases
 
 
 def test_should_skip_configs_when_gitweb_is_not_configured(db, configured, monkeypatch):
@@ -303,3 +321,72 @@ def test_should_exit_non_zero_when_a_sync_all_step_failed(monkeypatch, capsys):
     code = run.main(["all", "--rrd-days", "3", "--rrd-backfill-days", "30", "--gitweb-full"])
     assert code == 1 and '"failed_steps"' in capsys.readouterr().out
     assert seen == {"rrd_days": 3, "rrd_backfill_days": 30, "gitweb_full": True}
+
+
+# --------------------------------------------------------------------------- RRD delete window
+
+
+class _GraphShaped:
+    """Daily peaks the way graph_api.py builds them: 5-minute points from now - days to now, partial first day
+    dropped by daily_peaks."""
+
+    name = "api"
+    chunk_size = 100
+
+    def __init__(self, now: datetime):
+        self.now = now
+
+    def usable(self, ref: m.ObserviumPort) -> bool:
+        return True
+
+    def fetch(self, chunk, days: int) -> dict:
+        from app.collectors.observium.graph_api import daily_peaks
+
+        start = int((self.now - timedelta(days=days)).timestamp()) // 300 * 300
+        points = [(ts, 1e9, 1e9) for ts in range(start, int(self.now.timestamp()), 300)]
+        peaks, empty = daily_peaks(points)
+        days_got = [peaks[d] for d in sorted(peaks)]
+        return {key: value for t in chunk for key, value in ((str(t.link.id), days_got), (f"{t.link.id}#nan", empty))}
+
+    def close(self) -> None:
+        pass
+
+
+def _freeze(monkeypatch, now: datetime) -> None:
+    from app.collectors.observium import rrd
+
+    class Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is None else now.astimezone(tz)
+
+    monkeypatch.setattr(rrd, "datetime", Frozen)
+
+
+def _sample_days(db, link_id: int) -> set[str]:
+    rows = db.scalars(select(m.UtilizationSample.ts).where(m.UtilizationSample.link_id == link_id))
+    return {ts.date().isoformat() for ts in rows}
+
+
+def test_should_keep_earlier_day_when_routine_rrd_runs_on_consecutive_days(db, monkeypatch):
+    sync_observium(db, _observium())
+    link = db.scalars(select(m.Link).order_by(m.Link.id)).first()
+    for now in (datetime(2026, 11, 9, 19, 30, tzinfo=timezone.utc), datetime(2026, 11, 10, 19, 30, tzinfo=timezone.utc)):
+        _freeze(monkeypatch, now)
+        sync_rrd(db, _GraphShaped(now), days=2)
+    assert "2026-11-08" in _sample_days(db, link.id)  # complete in the first run, partial (dropped) in the second
+
+
+def test_should_not_delete_samples_when_rrd_returns_no_days(db):
+    sync_observium(db, _observium())
+    link = db.scalars(select(m.Link).order_by(m.Link.id)).first()
+    db.add(m.UtilizationSample(link_id=link.id, ts=datetime.now(timezone.utc) - timedelta(days=1), in_gbps=3, out_gbps=3))
+    db.commit()
+    before = _sample_count(db, link.id)
+    sync_rrd(db, SimpleNamespace(name="api", chunk_size=100, usable=lambda ref: True, close=lambda: None,
+                                 fetch=lambda chunk, days: {str(t.link.id): [] for t in chunk}), days=2)
+    assert before >= 1 and _sample_count(db, link.id) == before
+
+
+def _sample_count(db, link_id: int) -> int:
+    return len(db.scalars(select(m.UtilizationSample.id).where(m.UtilizationSample.link_id == link_id)).all())

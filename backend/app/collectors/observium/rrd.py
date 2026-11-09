@@ -12,7 +12,7 @@ directions swapped, when A is not usable) and read `days` daily peaks from one o
 
     rrdtool xport --start end-90d --end now --step 86400 DEF:i=<f>:INOCTETS:MAX DEF:o=<f>:OUTOCTETS:MAX
 
-Samples of each link inside the window are replaced by the daily peaks, and `current_gbps`
+Samples of each link from the first day the source returned are replaced by the daily peaks, and `current_gbps`
 becomes the last full day's peak.
 """
 
@@ -258,8 +258,8 @@ def _by_window(db: Session, targets: list[Target], days: int, backfill_days: int
     return windows
 
 
-def _store(db: Session, t: Target, got: Any, nan_days: int, since: datetime, report: dict[str, Any]) -> None:
-    """Replace one link's samples inside the window with the fetched daily peaks."""
+def _store(db: Session, t: Target, got: Any, nan_days: int, report: dict[str, Any]) -> None:
+    """Replace one link's samples from the first day the fetch returned onwards with the fetched daily peaks."""
     if got == "MISSING":
         report["missing_files"] += 1
         return
@@ -276,8 +276,11 @@ def _store(db: Session, t: Target, got: Any, nan_days: int, since: datetime, rep
                 f"{t.link.name}: {t.link.capacity_gbps:g}G link, peak {peak:.1f}G, {nan_days} hari tanpa data")
     if not got:
         return
+    # Never from the window start: the oldest day of a window that does not start at midnight is partial and
+    # dropped by the source, so deleting it would erase the complete peak an earlier run stored for that day.
+    first_day = min(ts for ts, _, _ in got)
     db.execute(delete(m.UtilizationSample).where(m.UtilizationSample.link_id == t.link.id,
-                                                 m.UtilizationSample.ts >= since))
+                                                 m.UtilizationSample.ts >= first_day))
     for ts, rx, tx in got:
         in_g, out_g = (tx, rx) if t.swapped else (rx, tx)
         db.add(m.UtilizationSample(link_id=t.link.id, ts=ts, in_gbps=round(in_g, 4), out_gbps=round(out_g, 4)))
@@ -307,13 +310,12 @@ def sync_rrd(db: Session, source: RrdSource, days: int = 90,
         report["links_backfilled"] = sum(len(ts) for window, ts in windows.items() if window != days)
     done = 0
     for window, group in sorted(windows.items(), reverse=True):
-        since = datetime.now(timezone.utc) - timedelta(days=window + 1)
         for start in range(0, len(group), source.chunk_size):
             chunk = group[start:start + source.chunk_size]
             done += len(chunk)
             step(f"rrd {done}/{len(targets)}")
             parsed = source.fetch(chunk, window)
             for t in chunk:
-                _store(db, t, parsed.get(str(t.link.id)), int(parsed.get(f"{t.link.id}#nan", 0) or 0), since, report)
+                _store(db, t, parsed.get(str(t.link.id)), int(parsed.get(f"{t.link.id}#nan", 0) or 0), report)
             db.commit()
     return report

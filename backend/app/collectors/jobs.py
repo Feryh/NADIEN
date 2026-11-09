@@ -147,8 +147,12 @@ def run_gitweb(db: Session, full: bool = False, discover: bool = True, client: G
                progress: Progress = _noop) -> dict:
     """RANCID configs from gitweb. Lists changed files first and takes the backup only when there is
     something to write, so the daily run does not rotate useful backups out on quiet days."""
+    def backup() -> dict:
+        progress("backup")
+        return backup_before(db, "gitweb")
+
     with _opened(client, GitwebClient) as opened:  # fails on missing configuration before a backup slot is used
-        return _gitweb_sync(db, opened, full, discover, progress, lambda: backup_before(db, "gitweb"))
+        return _gitweb_sync(db, opened, full, discover, progress, backup)
 
 
 def _gitweb_sync(db: Session, client: GitwebClient, full: bool, discover: bool, progress: Progress,
@@ -158,8 +162,7 @@ def _gitweb_sync(db: Session, client: GitwebClient, full: bool, discover: bool, 
     if not work:
         return {"backup": {"status": "skipped", "detail": "no changes in gitweb"},
                 "source": client.base_url, "full": full, **sync.report.as_dict()}
-    progress("backup")
-    taken = backup()
+    taken = backup()  # reports its own phase: inside sync-all no backup is taken here
     return {"backup": taken, **apply_changes(sync, work, discover)}
 
 
@@ -198,6 +201,19 @@ class SyncAllSources:
 
 
 SYNC_ALL_BACKUP_TAKEN = {"status": "skipped", "detail": "taken once at the start of sync-all"}
+
+
+def _observium_configured(url: str | None) -> bool:
+    """An address plus a login: without them (demo, dev) the Observium steps are skipped, not failed every day."""
+    return bool(url) and bool(settings.observium_token or (settings.observium_user and settings.observium_password))
+
+
+def _rrd_configured() -> bool:
+    if settings.observium_rrd_source == "api":
+        return _observium_configured(settings.observium_url)
+    if settings.observium_rrd_source == "ssh":
+        return bool(settings.observium_ssh_user)
+    return True  # local rrdtool needs no access settings
 
 
 class _SyncAll:
@@ -270,8 +286,12 @@ def run_all(db: Session, rrd_days: int = 2, rrd_backfill_days: int = 90, gitweb_
     run = _SyncAll(db, progress)
     if run.run("backup", lambda _p: backup_before(db, "sync-all")) is None:
         return run.report()  # no restore point: write nothing
-    main = run.run("observium", _observium_step(db, sources.observium, ALL_PARTS, "main"))
-    csr = bool(settings.observium_csr_url)
+    main = None
+    if _observium_configured(settings.observium_url):
+        main = run.run("observium", _observium_step(db, sources.observium, ALL_PARTS, "main"))
+    else:
+        run.skip("observium", "Observium not configured")
+    csr = _observium_configured(settings.observium_csr_url)
     if csr:
         run.run("observium_csr", _observium_step(db, sources.observium_csr, CSR_PARTS, "csr"))
     else:
@@ -283,7 +303,10 @@ def run_all(db: Session, rrd_days: int = 2, rrd_backfill_days: int = 90, gitweb_
     # Phantom-port cleanup only with a complete list of the main Observium's ports.
     valid = main.valid_iface_ids if main is not None else None
     run.run("discovery", lambda _p: discover_links(db, valid_iface_ids=valid).model_dump())
-    run.run("rrd", _rrd_step(db, sources.rrd, rrd_days, rrd_backfill_days, "main"))
+    if _rrd_configured():
+        run.run("rrd", _rrd_step(db, sources.rrd, rrd_days, rrd_backfill_days, "main"))
+    else:
+        run.skip("rrd", "RRD access not configured")
     if csr:
         run.run("rrd_csr", _rrd_step(db, sources.rrd_csr, rrd_days, rrd_backfill_days, "csr"))
     else:

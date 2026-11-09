@@ -155,6 +155,16 @@ export default function Collectors() {
   const [rrdDays, setRrdDays] = useState('90')
   const rrdReady = !!status?.rrd.configured && (status?.rrd.mapped_ports ?? 0) > 0
   const resultSteps = syncAllSteps(result)
+  // The combined job reports under its own card; every other job keeps reporting under Observium.
+  const syncAllJob = !!job?.kind?.startsWith('sync-all') // an idle answer carries no kind
+  const jobBanner = job && job.status !== 'idle' && (
+    <div className={job.status === 'failed' ? 'error' : 'notice'}>
+      {jobRunning ? '⏳ ' : job.status === 'ok' ? '✓ ' : '✗ '}
+      Sync <b>{job.kind}</b> — {jobRunning ? `tahap: ${phaseLabel(job.phase, PHASES)}` : job.status === 'ok' ? 'selesai' : 'gagal'} ·{' '}
+      {Math.floor(elapsed / 60)}m {elapsed % 60}s
+      {!jobRunning && job.finished_at && ` · ${new Date(job.finished_at).toLocaleString()}`}
+    </div>
+  )
 
   return (
     <div className="capacity">
@@ -175,6 +185,7 @@ export default function Collectors() {
             Sync semua
           </button>
         </div>
+        {syncAllJob && jobBanner}
         <p className="hint">
           Satu job untuk semuanya: backup database sekali, Observium utama (inventory, LLDP, utilisasi), Observium CSR, config
           RANCID gitweb (hanya yang berubah), satu kali discovery topologi, lalu histori RRD utama dan CSR (2 hari terakhir;
@@ -203,14 +214,7 @@ export default function Collectors() {
             Full sync
           </button>
         </div>
-        {job && job.status !== 'idle' && (
-          <div className={job.status === 'failed' ? 'error' : 'notice'}>
-            {jobRunning ? '⏳ ' : job.status === 'ok' ? '✓ ' : '✗ '}
-            Sync <b>{job.kind}</b> — {jobRunning ? `tahap: ${phaseLabel(job.phase, PHASES)}` : job.status === 'ok' ? 'selesai' : 'gagal'} ·{' '}
-            {Math.floor(elapsed / 60)}m {elapsed % 60}s
-            {!jobRunning && job.finished_at && ` · ${new Date(job.finished_at).toLocaleString()}`}
-          </div>
-        )}
+        {!syncAllJob && jobBanner}
         <p className="hint">
           {status?.observium.url} · device, port, IPv4, LLDP neighbour, dan rate port → inventory, topologi, sampel utilisasi.
           {status?.observium.last_sync_at && ` Terakhir: ${new Date(status.observium.last_sync_at).toLocaleString()} — ${status.observium.last_status}`}
