@@ -244,3 +244,20 @@
 - [ ] **Step 3:** Neighbors 1 dan 2 hop; link paralel → panel menampilkan tiap link dengan interface benar (bandingkan dengan `/api/links`).
 - [ ] **Step 4:** Sorot masalah, SPOF, filter vendor/status/layer, pencarian mgmt IP, live refresh (ubah status satu link di salinan DB → warna berubah tanpa layout ulang).
 - [ ] **Step 5:** `pytest -q`, `npm run typecheck`, `npm run build`, `npm test` semua PASS; laporkan hasil + waktu layout + screenshot ke pengguna.
+
+---
+
+### Task 11: Geser dan simpan posisi perangkat di mode Peta (permintaan pengguna 2026-11-09)
+
+**Files:**
+- Modify: `frontend/src/pages/Topology.tsx` (`mapLayout`, `runLayout` map branch, drag/save wiring), `backend/app/routers/analysis.py` (`_with_layout` untuk key peta) dan/atau `backend/app/routers/topology.py` (PUT/DELETE `/api/topology/layouts` sudah ada)
+- Test: `backend/tests/test_topology_layouts.py`, unit test vitest untuk konversi model↔lat/lon
+
+**Interfaces:**
+- Produces: view_key peta = `map:<layout_key>` (mis. `map:device:JKT`, `map:city:<area>|<province>|<regency>`); `positions` berisi `{ "<node id>": { "lat": number, "lon": number } }`; respons view menambah `map_layout` (dict yang sama, `{}` bila tidak ada).
+- Fungsi murni `unproject(pos: Pos, pxPerDegree: number): { lat: number; lon: number }` sebagai kebalikan `project` di `components/basemap.ts`.
+
+- [ ] **Step 1: Failing tests**: backend `test_should_return_map_layout_when_saved_for_view` (PUT `map:device:JKT` lalu GET `level=device&pop=JKT` → `map_layout` berisi posisi; `layout` skematik tidak berubah); `test_should_keep_device_coordinates_when_map_layout_saved` (`DeviceLocation`/`Pop` lat/lon tidak berubah). Frontend: `unproject(project(lat, lon, k), k)` ≈ `(lat, lon)`.
+- [ ] **Step 2:** Implement: di mode Peta, drag diizinkan untuk node perangkat (bukan basemap/kotak grup); posisi awal = override bila ada, lalu declutter seperti sekarang; `countMoved`/bar "Simpan perubahan"/Ctrl+S dipakai ulang; simpan → PUT `/api/topology/layouts` dengan `view_key = map:<layout_key>` dan lat/lon hasil `unproject`; "Atur ulang tata letak" di peta → DELETE key peta. Marker scale (`applyMarkerScale`) tetap berjalan saat drag.
+- [ ] **Step 3:** `pytest -q`, `npm test`, `npm run typecheck`, `npm run build` PASS.
+- [ ] **Step 4:** Commit `feat: arrange and save device positions on the topology map`.
