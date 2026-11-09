@@ -123,14 +123,20 @@ def _clusters(ctx: Ctx, structure: Structure, local: dict[int, Any], hidden: set
 
 
 def _device_nodes(ctx: Ctx, local: dict[int, Any], hidden: set[int], city: str, structure: Structure,
-                  cluster_ids: set[str]) -> list[dict]:
+                  clusters: list[dict]) -> list[dict]:
+    # Only the clusters this view lists: the global pick may be one that was filtered out. Largest first, then id,
+    # the same order the structure uses.
+    kept_cluster_of: dict[int, str] = {}
+    for cluster in sorted(clusters, key=lambda c: (-len(c["device_ids"]), c["id"])):
+        for device_id in cluster["device_ids"]:
+            kept_cluster_of.setdefault(device_id, cluster["id"])
     nodes = []
     for device in sorted(local.values(), key=lambda d: (ROLE_TIER.get(d.role, 4), d.hostname)):
         if device.id in hidden:
             continue
-        cluster_id = structure.cluster_of.get(device.id)
+        cluster_id = kept_cluster_of.get(device.id)
         nodes.append({**device_node(ctx, device), "city": city,
-                      "cluster_id": cluster_id if cluster_id in cluster_ids else None,
+                      "cluster_id": cluster_id,
                       "spof": device.id in structure.spof_devices})
     return nodes
 
@@ -201,7 +207,7 @@ def city_view(db: Session, ctx: Ctx, area: str, province: str, regency: str) -> 
 
     link_ids, edges, totals, remote = _collect_links(db, ctx, local, node_of)
     clusters = _clusters(ctx, structure, local, hidden)
-    nodes = _device_nodes(ctx, local, hidden, regency, structure, {c["id"] for c in clusters})
+    nodes = _device_nodes(ctx, local, hidden, regency, structure, clusters)
     summary_nodes, described = _summary_nodes(ctx, summarized)
     nodes += summary_nodes + _external_nodes(ctx, remote)
     place_devices(ctx, nodes)

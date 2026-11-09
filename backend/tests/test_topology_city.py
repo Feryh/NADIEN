@@ -164,3 +164,19 @@ def test_should_summarize_access_devices_when_city_exceeds_threshold(client, net
 def test_should_find_device_by_mgmt_ip_when_searching(client, network):
     response = client.get("/api/topology/search", params={"q": "10.0.0.5"})
     assert response.json()["devices"][0]["hostname"] == "PWT-NDC-PE1"
+
+
+def test_should_assign_kept_ring_cluster_when_device_also_in_larger_dropped_component(client, db):
+    pop = m.Pop(code="PWT", name="PWT")
+    db.add(pop)
+    db.flush()
+    agg = [_device(db, pop, f"PWT-AGG{i}", "agg") for i in (1, 2, 3)]
+    pe = [_device(db, pop, f"PWT-NDC-PE{i}", "pe") for i in (1, 2, 3)]
+    for a, b in ((agg[0], agg[1]), (agg[1], agg[2]), (agg[2], agg[0]), (agg[0], pe[0]), (pe[0], pe[1]),
+                 (pe[1], agg[0]), (pe[1], pe[2]), (pe[2], agg[0])):
+        _link(db, a, b)
+    db.commit()
+    view = _view(client)
+    ring = next(c for c in view["clusters"] if set(c["device_ids"]) == {d.id for d in agg})
+    hub = next(n for n in view["nodes"] if n["device_id"] == agg[0].id)
+    assert hub["cluster_id"] == ring["id"]
