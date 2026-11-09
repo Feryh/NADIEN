@@ -304,11 +304,16 @@ class NodePosition(BaseModel):
 
 
 class LayoutPoint(BaseModel):
+    # Forbidding extras keeps x/y and lat/lon points apart: a mixed point is rejected, not silently trimmed.
+    model_config = ConfigDict(extra="forbid")
+
     x: float = Field(ge=-1e7, le=1e7)
     y: float = Field(ge=-1e7, le=1e7)
 
 
 class MapPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     lat: float = Field(ge=-90, le=90)
     lon: float = Field(ge=-180, le=180)
 

@@ -618,7 +618,9 @@ function mapLayout(cy: Core, view: View, keep?: Map<string, Pos>) {
       const start = home.get(n.id)!
       // A device is a small dot with its hostname written underneath: space it by the label.
       const boxWidth = n.kind === 'device' ? 110 : width
-      boxes.set(n.id, { x: start.x, y: start.y, hw: (boxWidth * toModel) / 2, hh: (height * toModel + 16 * toModel) / 2 })
+      // A device dragged and saved on the map is pinned: it reopens exactly where it was put, the rest make room.
+      const fixed = !!view.map_layout?.[n.id]
+      boxes.set(n.id, { x: start.x, y: start.y, hw: (boxWidth * toModel) / 2, hh: (height * toModel + 16 * toModel) / 2, fixed })
     }
     declutter(boxes, minScreenGap * toModel, MAX_SHIFT_HEIGHTS * 34 * toModel)
   }
@@ -1230,9 +1232,11 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
       savedPosRef.current = new Map(current.map((d) => [d.id, d.pos] as [string, Pos]))
       if (mapped) {
         // No redraw: the devices already stand where they were saved; a later rebuild must start from the new overrides.
-        const next = { ...shown, map_layout: positions as Record<string, GeoPoint> }
-        drawnRef.current = next
-        setView(next)
+        // Merged into the views current at completion: a live refresh during the PUT must keep its newer statuses.
+        const map_layout = positions as Record<string, GeoPoint>
+        const sameView = (v: View | null) => !!v && v.layout_key === layoutKey
+        if (sameView(drawnRef.current)) drawnRef.current = { ...drawnRef.current!, map_layout }
+        setView((current) => (sameView(current) ? { ...current!, map_layout } : current))
       }
       setMessage({ text: `Tata letak disimpan: ${moved} ${mapped ? 'perangkat' : 'node'} dipindah. Tampilan ini akan dibuka dengan susunan yang sama.` })
       setMoved(0)

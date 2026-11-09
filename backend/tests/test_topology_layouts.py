@@ -83,3 +83,10 @@ def test_should_keep_device_coordinates_when_map_layout_saved(client, network, d
 def test_should_return_422_when_map_position_out_of_range(client, network, point):
     response = client.put("/api/topology/layouts", json={"view_key": "map:device:JKT", "positions": {"dev:1": point}})
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize("view_key", ["map:device:JKT", "device:JKT"])
+def test_should_return_422_when_layout_point_has_extra_fields(client, network, view_key):
+    point = {"x": 1, "y": 2, "lat": -6, "lon": 106}
+    response = client.put("/api/topology/layouts", json={"view_key": view_key, "positions": {"dev:1": point}})
+    assert response.status_code == 422
