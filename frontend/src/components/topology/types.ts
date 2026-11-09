@@ -1,0 +1,131 @@
+// Mirrors the /api/topology/view responses for level=city and level=neighbors
+// (field names stay snake_case exactly as the API sends them).
+
+export interface CityLink {
+  id: number
+  source: string  // drawn node id: dev:<id>, pop:<code> or summary:<pop>
+  target: string
+  a_device: string
+  a_interface: string | null
+  b_device: string
+  b_interface: string | null
+  capacity_gbps: number | null
+  current_gbps: number | null
+  utilization_pct: number | null
+  committed_pct: number | null
+  color: string  // computed by backend capacity.py; the frontend never recomputes it
+  status: string
+  segment: string
+  spof: boolean
+}
+
+export interface CityCluster {
+  id: string  // "c:<smallest device id>"
+  kind: 'ring' | 'mesh' | 'pair'
+  pop: string | null  // null: members span several POPs
+  device_ids: number[]
+}
+
+export interface CityPop {
+  code: string
+  name: string
+  city: string
+  device_count: number
+}
+
+export interface CityDeviceNode {
+  id: string
+  kind: 'device'
+  device_id: number
+  label: string
+  pop: string | null
+  site?: string | null
+  role: string | null
+  category?: string | null
+  tier: number
+  vendor: string | null
+  status: string
+  x: number | null
+  y: number | null
+  center: boolean
+  mgmt_ip: string | null
+  city: string | null
+  reachability: 'up' | 'down' | 'unknown'
+  uptime_s: number | null
+  last_polled_at: string | null
+  cluster_id: string | null
+  spof: boolean
+  located?: boolean
+  estimated?: boolean
+  lat?: number | null
+  lon?: number | null
+}
+
+export interface CityExternalPopNode {
+  id: string
+  kind: 'external_pop'
+  code: string
+  devices: number
+  label: string
+  area?: string
+  province?: string
+  regency?: string
+  lat?: number | null
+  lon?: number | null
+}
+
+// Present in the city view only, when the scale guard collapses access devices.
+export interface CitySummaryNode {
+  id: string
+  kind: 'summary'
+  pop: string
+  label: string
+  devices: number
+  tier: number
+}
+
+export type CityNode = CityDeviceNode | CityExternalPopNode | CitySummaryNode
+
+export interface CitySummarized {
+  node_id: string
+  pop: string
+  count: number
+  device_ids: number[]
+}
+
+export interface CityAggregateEdge {
+  id: string
+  source: string
+  target: string
+  segment: string
+  links: number
+  down: number
+  capacity_gbps: number | null
+  current_gbps: number | null
+  utilization_pct: number | null
+  committed_pct: number | null
+  color: string
+  capacity_unknown: boolean
+}
+
+export interface CityView {
+  level: 'city' | 'neighbors'
+  area?: string
+  province?: string
+  regency?: string
+  nodes: CityNode[]
+  pops: CityPop[]
+  clusters: CityCluster[]
+  links: CityLink[]
+  edges: CityAggregateEdge[]
+  segments: Record<string, unknown>
+  layout_key: string
+  layout?: Record<string, { x: number; y: number }>
+  summarized?: CitySummarized[]
+  // neighbors view only
+  device?: string
+  device_id?: number
+  depth?: number
+  truncated?: boolean
+  pop?: string | null
+}
