@@ -63,7 +63,7 @@ from ..services.topology_readmodel import (
     segment_of as _segment_of,
     segments_of as _segments,
 )
-from ..services.topology_city import city_view as _city_view
+from ..services.topology_city import city_view as _city_view, neighbors_view as _neighbors_view
 from ..services.geo import KmlError, Placemark, match_devices, match_pops, read_placemarks
 
 router = APIRouter(tags=["Analysis"])
@@ -474,9 +474,6 @@ def apply_pop_location_mapping(db: Session = Depends(get_db)):
 # --------------------------------------------------------------------------- drill-down topology
 
 
-MAX_NEIGHBOR_NODES = 400
-
-
 @router.get("/topology/view")
 def topology_view(
     level: str = Query("area", pattern="^(area|province|regency|city|pop|device|neighbors)$"),
@@ -530,6 +527,10 @@ def _topology_view(db: Session, level: str, area: str | None, province: str | No
         if not (area and province and regency):
             raise HTTPException(422, "area, province and regency are required for level=city")
         return _city_view(db, ctx, area, province, regency)
+    if level == "neighbors":
+        if device_id is None:
+            raise HTTPException(422, "device_id is required for level=neighbors")
+        return _neighbors_view(db, ctx, device_id, depth)
     links = _links(db)
     if level == "area":
         return _area_level(ctx, links)
@@ -541,49 +542,9 @@ def _topology_view(db: Session, level: str, area: str | None, province: str | No
         scope = (area,) if level == "province" else (area, province) if level == "regency" else \
             tuple(v for v in (area, province, regency) if v)
         return _scoped_level(ctx, links, scope, level == "pop")
-    if level == "neighbors":
-        if device_id is None:
-            raise HTTPException(422, "device_id is required for level=neighbors")
-        return _neighbor_level(ctx, links, device_id, depth)
     if not pop:
         raise HTTPException(422, "pop is required for level=device")
     return _device_level(ctx, links, pop)
-
-
-def _neighbor_level(ctx: _Ctx, links, device_id: int, depth: int) -> dict:
-    if device_id not in ctx.devices:
-        raise HTTPException(404, f"Device {device_id} not found")
-    adjacency: dict[int, set[int]] = defaultdict(set)
-    for link in links:
-        if link.a_device_id in ctx.devices and link.b_device_id in ctx.devices and link.a_device_id != link.b_device_id:
-            adjacency[link.a_device_id].add(link.b_device_id)
-            adjacency[link.b_device_id].add(link.a_device_id)
-    included, frontier, truncated = {device_id}, {device_id}, False
-    for _ in range(depth):
-        nxt = set()
-        for node in frontier:
-            for other in sorted(adjacency[node]):
-                if other not in included:
-                    if len(included) >= MAX_NEIGHBOR_NODES:
-                        truncated = True
-                        break
-                    included.add(other)
-                    nxt.add(other)
-        frontier = nxt
-    edges: dict[tuple[str, str, str], _Agg] = defaultdict(_Agg)
-    totals: dict[str, _Agg] = defaultdict(_Agg)
-    for link in links:
-        if link.a_device_id in included and link.b_device_id in included and link.a_device_id != link.b_device_id:
-            segment = _segment_of(ctx, link)
-            edges[(*_pair(f"dev:{link.a_device_id}", f"dev:{link.b_device_id}"), segment)].add(link)
-            totals[segment].add(link)
-    center = ctx.devices[device_id]
-    nodes = [_device_node(ctx, ctx.devices[i], i == device_id)
-             for i in sorted(included, key=lambda i: (ROLE_TIER.get(ctx.devices[i].role, 4), ctx.devices[i].hostname))]
-    _place_devices(ctx, nodes)
-    return {"level": "neighbors", "device": center.hostname, "device_id": device_id, "depth": depth,
-            "pop": ctx.pop_code(device_id), **_path_fields(ctx.path_of_pop(center.pop_id)), "truncated": truncated,
-            "nodes": nodes, "edges": _edges(edges), "segments": _segments(totals)}
 
 
 def _median(values: list[float]) -> float:

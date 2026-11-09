@@ -180,3 +180,60 @@ def test_should_assign_kept_ring_cluster_when_device_also_in_larger_dropped_comp
     ring = next(c for c in view["clusters"] if set(c["device_ids"]) == {d.id for d in agg})
     hub = next(n for n in view["nodes"] if n["device_id"] == agg[0].id)
     assert hub["cluster_id"] == ring["id"]
+
+
+def _neighbors(client, device, depth=1) -> dict:
+    response = client.get("/api/topology/view", params={"level": "neighbors", "device_id": device.id, "depth": depth})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_should_list_both_parallel_links_when_level_neighbors(client, network):
+    d = network["devices"]
+    view = _neighbors(client, d["pe1"])
+    parallel = [e for e in view["links"] if {e["a_device"], e["b_device"]} == {d["pe1"].hostname, d["pe2"].hostname}]
+    assert {e["a_interface"] for e in parallel} == {"Te0/0/0/1", "Te0/0/0/2"}
+    assert {e["source"] for e in parallel} <= {f"dev:{d['pe1'].id}", f"dev:{d['pe2'].id}"}
+
+
+def test_should_flag_device_spof_when_level_neighbors(client, network):
+    d = network["devices"]
+    nodes = {n["device_id"]: n for n in _neighbors(client, d["agg1"])["nodes"]}
+    assert nodes[d["agg1"].id]["spof"] is True  # the only way to OLT1 and PE1, although it sits on a ring
+    assert nodes[d["agg2"].id]["spof"] is True
+    assert nodes[d["agg3"].id]["spof"] is False
+
+
+def test_should_flag_link_spof_when_level_neighbors(client, network):
+    d = network["devices"]
+    entry = next(e for e in _neighbors(client, d["agg1"])["links"] if d["olt1"].hostname in (e["a_device"], e["b_device"]))
+    assert entry["spof"] is True
+
+
+def test_should_only_list_links_between_included_devices_when_level_neighbors(client, network):
+    d = network["devices"]
+    view = _neighbors(client, d["pe1"])
+    included = {n["device_id"] for n in view["nodes"]}
+    assert d["kbm"].id not in included
+    assert all(not {e["a_device"], e["b_device"]} & {d["kbm"].hostname} for e in view["links"])
+
+
+def test_should_keep_cluster_only_when_all_members_in_neighbors_view(client, network):
+    d = network["devices"]
+    full = _neighbors(client, d["agg1"])
+    assert [c["kind"] for c in full["clusters"]] == ["ring"]
+    node = next(n for n in full["nodes"] if n["device_id"] == d["agg1"].id)
+    assert node["cluster_id"] == full["clusters"][0]["id"]
+    partial = _neighbors(client, d["pe1"])  # AGG2 and AGG3 are two hops away
+    assert [c["kind"] for c in partial["clusters"]] == ["pair"]  # only the PE pair is complete
+    assert next(n for n in partial["nodes"] if n["device_id"] == d["agg1"].id)["cluster_id"] is None
+
+
+def test_should_list_pops_of_included_devices_when_level_neighbors(client, network):
+    d = network["devices"]
+    view = _neighbors(client, d["pe2"])
+    assert {p["code"] for p in view["pops"]} == {"PWT", "KBM"}
+    pwt = next(p for p in view["pops"] if p["code"] == "PWT")
+    assert pwt["device_count"] == 2  # PE1 and PE2 only
+    node = next(n for n in view["nodes"] if n["device_id"] == d["kbm"].id)
+    assert node["city"] == "Kab. Kebumen"

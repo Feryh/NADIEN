@@ -108,13 +108,16 @@ def _summarized(ctx: Ctx, local: dict[int, Any]) -> dict[int, list[int]]:
     return {pop_id: sorted(ids) for pop_id, ids in grouped.items()}
 
 
-def _clusters(ctx: Ctx, structure: Structure, local: dict[int, Any], hidden: set[int]) -> list[dict]:
+def _clusters(ctx: Ctx, structure: Structure, local: dict[int, Any], hidden: set[int],
+              tiers: tuple[int, ...] | None = CLUSTER_TIERS) -> list[dict]:
+    """Clusters whose members are all drawn. `tiers=None` keeps every kind of device (the neighbourhood is not
+    layered by city, so there is no tier to filter on)."""
     clusters = []
     for cluster in sorted(structure.clusters, key=lambda c: c.id):
         members = cluster.device_ids
         if not members <= local.keys() or members & hidden:
             continue
-        if any(ROLE_TIER.get(local[i].role, 4) not in CLUSTER_TIERS for i in members):
+        if tiers is not None and any(ROLE_TIER.get(local[i].role, 4) not in tiers for i in members):
             continue
         pops = {ctx.pop_code(i) for i in members}
         clusters.append({"id": cluster.id, "kind": cluster.kind, "pop": next(iter(pops)) if len(pops) == 1 else None,
@@ -122,8 +125,8 @@ def _clusters(ctx: Ctx, structure: Structure, local: dict[int, Any], hidden: set
     return clusters
 
 
-def _device_nodes(ctx: Ctx, local: dict[int, Any], hidden: set[int], city: str, structure: Structure,
-                  clusters: list[dict]) -> list[dict]:
+def _device_nodes(ctx: Ctx, local: dict[int, Any], hidden: set[int], structure: Structure, clusters: list[dict],
+                  center_id: int | None = None) -> list[dict]:
     # Only the clusters this view lists: the global pick may be one that was filtered out. Largest first, then id,
     # the same order the structure uses.
     kept_cluster_of: dict[int, str] = {}
@@ -135,7 +138,7 @@ def _device_nodes(ctx: Ctx, local: dict[int, Any], hidden: set[int], city: str, 
         if device.id in hidden:
             continue
         cluster_id = kept_cluster_of.get(device.id)
-        nodes.append({**device_node(ctx, device), "city": city,
+        nodes.append({**device_node(ctx, device, device.id == center_id), "city": ctx.path_of_pop(device.pop_id)[2],
                       "cluster_id": cluster_id,
                       "spof": device.id in structure.spof_devices})
     return nodes
@@ -160,12 +163,12 @@ def _external_nodes(ctx: Ctx, remote: dict[str, set[int]]) -> list[dict]:
             for code, devices in sorted(remote.items())]
 
 
-def _pop_entries(ctx: Ctx, pop_ids: set[int], local: dict[int, Any], regency: str) -> list[dict]:
+def _pop_entries(ctx: Ctx, pop_ids: set[int], local: dict[int, Any]) -> list[dict]:
     count: dict[int, int] = defaultdict(int)
     for device in local.values():
         count[device.pop_id] += 1
     return [{"code": ctx.pops[pid].code, "name": ctx.pops[pid].name,
-             "city": ctx.place_of_pop[pid].city or regency, "device_count": count[pid]}
+             "city": ctx.place_of_pop[pid].city or ctx.path_of_pop(pid)[2], "device_count": count[pid]}
             for pid in sorted(pop_ids, key=lambda pid: ctx.pops[pid].code)]
 
 
@@ -207,10 +210,68 @@ def city_view(db: Session, ctx: Ctx, area: str, province: str, regency: str) -> 
 
     link_ids, edges, totals, remote = _collect_links(db, ctx, local, node_of)
     clusters = _clusters(ctx, structure, local, hidden)
-    nodes = _device_nodes(ctx, local, hidden, regency, structure, clusters)
+    nodes = _device_nodes(ctx, local, hidden, structure, clusters)
     summary_nodes, described = _summary_nodes(ctx, summarized)
     nodes += summary_nodes + _external_nodes(ctx, remote)
     place_devices(ctx, nodes)
-    return {"level": "city", **path_fields(path), "nodes": nodes, "pops": _pop_entries(ctx, pop_ids, local, regency),
+    return {"level": "city", **path_fields(path), "nodes": nodes, "pops": _pop_entries(ctx, pop_ids, local),
             "clusters": clusters, "links": link_entries(db, ctx, link_ids, node_of, structure),
             "edges": edges_of(edges), "segments": segments_of(totals), "summarized": described}
+
+
+MAX_NEIGHBOR_NODES = 400
+
+
+def _reach(links: list[Any], ctx: Ctx, device_id: int, depth: int) -> tuple[set[int], bool]:
+    """Devices within `depth` hops of `device_id` (breadth first, capped) and whether the cap cut the walk short."""
+    adjacency: dict[int, set[int]] = defaultdict(set)
+    for link in links:
+        if link.a_device_id in ctx.devices and link.b_device_id in ctx.devices and link.a_device_id != link.b_device_id:
+            adjacency[link.a_device_id].add(link.b_device_id)
+            adjacency[link.b_device_id].add(link.a_device_id)
+    included, frontier, truncated = {device_id}, {device_id}, False
+    for _ in range(depth):
+        nxt: set[int] = set()
+        for node in frontier:
+            for other in sorted(adjacency[node]):
+                if other not in included:
+                    if len(included) >= MAX_NEIGHBOR_NODES:
+                        truncated = True
+                        break
+                    included.add(other)
+                    nxt.add(other)
+        frontier = nxt
+    return included, truncated
+
+
+def neighbors_view(db: Session, ctx: Ctx, device_id: int, depth: int) -> dict:
+    """One device and everything within `depth` hops, with the same node, link, cluster and POP shapes as the city
+    view so the frontend draws both with one code path."""
+    if device_id not in ctx.devices:
+        raise HTTPException(404, f"Device {device_id} not found")
+    links = load_links(db)
+    included, truncated = _reach(links, ctx, device_id, depth)
+    local = {i: ctx.devices[i] for i in included}
+
+    def node_of(other_id: int) -> str:
+        return f"dev:{other_id}"
+
+    link_ids: set[int] = set()
+    edges: dict[tuple[str, str, str], Agg] = defaultdict(Agg)
+    totals: dict[str, Agg] = defaultdict(Agg)
+    for link in links:
+        if link.a_device_id in included and link.b_device_id in included and link.a_device_id != link.b_device_id:
+            segment = link_segment(ctx.devices[link.a_device_id].role, ctx.devices[link.b_device_id].role)
+            edges[(*pair(node_of(link.a_device_id), node_of(link.b_device_id)), segment)].add(link)
+            totals[segment].add(link)
+            link_ids.add(link.id)
+    structure = network_structure(db)
+    clusters = _clusters(ctx, structure, local, set(), tiers=None)
+    nodes = _device_nodes(ctx, local, set(), structure, clusters, center_id=device_id)
+    place_devices(ctx, nodes)
+    center = ctx.devices[device_id]
+    return {"level": "neighbors", "device": center.hostname, "device_id": device_id, "depth": depth,
+            "pop": ctx.pop_code(device_id), **path_fields(ctx.path_of_pop(center.pop_id)), "truncated": truncated,
+            "nodes": nodes, "pops": _pop_entries(ctx, {d.pop_id for d in local.values()}, local),
+            "clusters": clusters, "links": link_entries(db, ctx, link_ids, node_of, structure),
+            "edges": edges_of(edges), "segments": segments_of(totals)}
