@@ -19,6 +19,7 @@ from ..collectors.runner import JobBusy, ensure_idle, runner
 from ..collectors.observium.sync import ALL_PARTS, CSR_SOURCE_NAME, SOURCE_NAME
 from ..config import settings
 from ..database import get_db
+from ..schemas import SyncAllIn
 from ..services import collector_settings
 from ..services.topology import norm_host
 
@@ -136,6 +137,20 @@ def _start(kind: str, fn) -> dict:
 def current_job():
     """The running sync (status, phase) or the last finished one with its full report."""
     return runner.current() or {"status": "idle"}
+
+
+@router.post("/all/sync", status_code=202)
+def sync_all(payload: SyncAllIn | None = None):
+    """Start one background job for everything: a single backup, Observium main + CSR, gitweb configs, one
+    LLDP/config topology discovery, RRD history main + CSR. Each step is reported; a failed step does not stop
+    the next. Poll /collectors/jobs/current for the per-step report."""
+    options = payload or SyncAllIn()
+
+    def job(db: Session, progress) -> dict:
+        return jobs.run_all(db, rrd_days=options.rrd_days, rrd_backfill_days=options.rrd_backfill_days,
+                            gitweb_full=options.gitweb_full, progress=progress)
+
+    return _start("sync-all", job)
 
 
 @router.post("/observium/sync", status_code=202)

@@ -26,7 +26,8 @@ Phase 1–3 (inventory, topology, capacity) sudah MVP. Lihat README.md untuk det
   untuk SQLite pakai batch, kolom NOT NULL baru butuh `server_default`); `alembic check` harus bersih
 - `cd backend && python -m app.collectors.run observium` — sync dari Observium (kredensial via env)
 - `cd backend && python -m app.collectors.run rrd --days 90` — histori utilisasi dari RRD Observium
-- `cd backend && python -m app.collectors.run gitweb [--full]` — config semua repo RANCID via gitweb (juga otomatis tiap hari)
+- `cd backend && python -m app.collectors.run gitweb [--full]` — config semua repo RANCID via gitweb
+- `cd backend && python -m app.collectors.run all [--rrd-days 2] [--rrd-backfill-days 90] [--gitweb-full]` — sync semua (Observium + CSR, gitweb, discovery, RRD; juga otomatis tiap hari)
 
 ## Architecture
 

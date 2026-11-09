@@ -420,3 +420,11 @@ class LinkCapacity(CapacityResult):
 class LinkCapacityDetail(LinkCapacity):
     history: list[SampleIn]
     forecast: list[ForecastPoint]
+
+
+class SyncAllIn(BaseModel):
+    """Options of the combined collector job; every field has the daily run's default."""
+
+    rrd_days: int = Field(2, ge=1, le=365, description="RRD window for links that already have history")
+    rrd_backfill_days: int = Field(90, ge=1, le=365, description="RRD window for links without history yet")
+    gitweb_full: bool = Field(False, description="Re-read every gitweb file, not only those changed")

@@ -1,7 +1,8 @@
 # Collector schedules go through the worker's API with NADIEN_JOB_TOKEN, so each run is a normal background job:
 # visible in the UI, backed up first, and refused (HTTP 409) while another sync runs. A 409 counts as success here:
-# the next run catches up. The daily gitweb update is scheduled inside the worker itself (NADIEN_GITWEB_DAILY_AT,
-# default 02:30 Asia/Jakarta).
+# the next run catches up. The daily sync-all (Observium main + CSR, gitweb configs, one LLDP/config discovery, RRD
+# history main + CSR) is scheduled inside the worker itself (NADIEN_GITWEB_DAILY_AT, default 02:30 Asia/Jakarta);
+# nadien-sync-all at the end is the same run for clusters that set NADIEN_SCHEDULER_ENABLED=false on the worker.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -225,6 +226,56 @@ spec:
                 - |
                   code=$(curl -sS --max-time 20 --retry 6 --retry-delay 5 --retry-connrefused -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $NADIEN_JOB_TOKEN" "http://nadien-worker:8000/api/collectors/observium-csr/rrd?days=7")
                   echo "POST /api/collectors/observium-csr/rrd?days=7 -> $code"
+                  [ "$code" = 202 ] || [ "$code" = 409 ]
+              env:
+                - name: NADIEN_JOB_TOKEN
+                  valueFrom: { secretKeyRef: { name: nadien-env, key: NADIEN_JOB_TOKEN } }
+              resources:
+                requests: { cpu: 10m, memory: 16Mi }
+                limits: { memory: 64Mi }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: [ALL] }
+---
+# Suspended: the worker's own scheduler already runs sync-all daily. Unsuspend only with NADIEN_SCHEDULER_ENABLED=false
+# on the worker, or the day runs twice. The run takes far longer than the trigger: the job continues in the worker.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nadien-sync-all
+spec:
+  schedule: "30 2 * * *"
+  timeZone: Asia/Jakarta
+  suspend: true
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 120
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels: { app: nadien-cron }
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            runAsGroup: 101
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: trigger
+              image: curlimages/curl:8.10.1
+              command:
+                - sh
+                - -c
+                - |
+                  code=$(curl -sS --max-time 20 --retry 6 --retry-delay 5 --retry-connrefused -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $NADIEN_JOB_TOKEN" "http://nadien-worker:8000/api/collectors/all/sync")
+                  echo "POST /api/collectors/all/sync -> $code"
                   [ "$code" = 202 ] || [ "$code" = 409 ]
               env:
                 - name: NADIEN_JOB_TOKEN

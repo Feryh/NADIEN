@@ -235,49 +235,85 @@ def _targets(db: Session, source: RrdSource, server: str = "main") -> tuple[list
     return targets, unmapped
 
 
+def rrd_window_days(has_history: bool, days: int, backfill_days: int | None) -> int:
+    """Days to read for one link: the routine window, or the backfill window for a link with no history yet."""
+    if backfill_days is None or has_history:
+        return days
+    return max(days, backfill_days)
+
+
+def links_with_history(db: Session, before: datetime) -> set[int]:
+    """Links holding a sample older than the routine window. Only the RRD import reaches that far back on a link
+    first seen recently, so a link without one has never had its history imported."""
+    return set(db.scalars(select(m.UtilizationSample.link_id).where(m.UtilizationSample.ts < before).distinct()))
+
+
+def _by_window(db: Session, targets: list[Target], days: int, backfill_days: int | None) -> dict[int, list[Target]]:
+    if backfill_days is None:
+        return {days: targets} if targets else {}
+    history = links_with_history(db, datetime.now(timezone.utc) - timedelta(days=days + 1))
+    windows: dict[int, list[Target]] = {}
+    for t in targets:
+        windows.setdefault(rrd_window_days(t.link.id in history, days, backfill_days), []).append(t)
+    return windows
+
+
+def _store(db: Session, t: Target, got: Any, nan_days: int, since: datetime, report: dict[str, Any]) -> None:
+    """Replace one link's samples inside the window with the fetched daily peaks."""
+    if got == "MISSING":
+        report["missing_files"] += 1
+        return
+    if not isinstance(got, list):
+        report["error_count"] += 1
+        if len(report["errors"]) < 20:
+            report["errors"].append(f"{t.link.name}: {got or 'no output'}")
+        return
+    report["days_without_data"] += nan_days
+    peak = max((max(rx, tx) for _, rx, tx in got), default=0.0)
+    if (t.link.capacity_gbps or 0) > DS_MAX_GBPS and (nan_days or peak >= DS_MAX_GBPS * 0.97):
+        if len(report["possibly_clipped"]) < 50:
+            report["possibly_clipped"].append(
+                f"{t.link.name}: {t.link.capacity_gbps:g}G link, peak {peak:.1f}G, {nan_days} hari tanpa data")
+    if not got:
+        return
+    db.execute(delete(m.UtilizationSample).where(m.UtilizationSample.link_id == t.link.id,
+                                                 m.UtilizationSample.ts >= since))
+    for ts, rx, tx in got:
+        in_g, out_g = (tx, rx) if t.swapped else (rx, tx)
+        db.add(m.UtilizationSample(link_id=t.link.id, ts=ts, in_gbps=round(in_g, 4), out_gbps=round(out_g, 4)))
+    # A bucket stamped within the last 24 h is still filling; the last complete day is the
+    # planning "current" (fall back to the partial one only when it's all there is).
+    full_days = [s for s in got if s[0] <= datetime.now(timezone.utc) - timedelta(days=1)] or got
+    last = full_days[-1]
+    t.link.current_gbps = round(max(last[1], last[2]), 3)
+    report["links_with_history"] += 1
+    report["samples"] += len(got)
+
+
 def sync_rrd(db: Session, source: RrdSource, days: int = 90,
-             progress: Callable[[str], None] | None = None, server: str = "main") -> dict[str, Any]:
+             progress: Callable[[str], None] | None = None, server: str = "main",
+             backfill_days: int | None = None) -> dict[str, Any]:
+    """Read `days` daily peaks per link. With `backfill_days`, links with no history yet get that longer window
+    instead, so a routine short run also fills in links discovered since the last one."""
     step = progress or (lambda _p: None)
     targets, unmapped = _targets(db, source, server)
+    windows = _by_window(db, targets, days, backfill_days)
     report: dict[str, Any] = {"source": source.name, "days": days, "links": len(targets) + unmapped,
                               "links_without_port_map": unmapped, "links_with_history": 0, "missing_files": 0,
                               "errors": [], "error_count": 0, "samples": 0, "days_without_data": 0,
                               "possibly_clipped": []}
-    since = datetime.now(timezone.utc) - timedelta(days=days + 1)
-    for start in range(0, len(targets), source.chunk_size):
-        chunk = targets[start:start + source.chunk_size]
-        step(f"rrd {start + len(chunk)}/{len(targets)}")
-        parsed = source.fetch(chunk, days)
-        for t in chunk:
-            got = parsed.get(str(t.link.id))
-            if got == "MISSING":
-                report["missing_files"] += 1
-                continue
-            if not isinstance(got, list):
-                report["error_count"] += 1
-                if len(report["errors"]) < 20:
-                    report["errors"].append(f"{t.link.name}: {got or 'no output'}")
-                continue
-            nan_days = int(parsed.get(f"{t.link.id}#nan", 0) or 0)
-            report["days_without_data"] += nan_days
-            peak = max((max(rx, tx) for _, rx, tx in got), default=0.0)
-            if (t.link.capacity_gbps or 0) > DS_MAX_GBPS and (nan_days or peak >= DS_MAX_GBPS * 0.97):
-                if len(report["possibly_clipped"]) < 50:
-                    report["possibly_clipped"].append(
-                        f"{t.link.name}: {t.link.capacity_gbps:g}G link, peak {peak:.1f}G, {nan_days} hari tanpa data")
-            if not got:
-                continue
-            db.execute(delete(m.UtilizationSample).where(m.UtilizationSample.link_id == t.link.id,
-                                                         m.UtilizationSample.ts >= since))
-            for ts, rx, tx in got:
-                in_g, out_g = (tx, rx) if t.swapped else (rx, tx)
-                db.add(m.UtilizationSample(link_id=t.link.id, ts=ts, in_gbps=round(in_g, 4), out_gbps=round(out_g, 4)))
-            # A bucket stamped within the last 24 h is still filling; the last complete day is the
-            # planning "current" (fall back to the partial one only when it's all there is).
-            full_days = [s for s in got if s[0] <= datetime.now(timezone.utc) - timedelta(days=1)] or got
-            last = full_days[-1]
-            t.link.current_gbps = round(max(last[1], last[2]), 3)
-            report["links_with_history"] += 1
-            report["samples"] += len(got)
-        db.commit()
+    if backfill_days is not None:
+        report["backfill_days"] = backfill_days
+        report["links_backfilled"] = sum(len(ts) for window, ts in windows.items() if window != days)
+    done = 0
+    for window, group in sorted(windows.items(), reverse=True):
+        since = datetime.now(timezone.utc) - timedelta(days=window + 1)
+        for start in range(0, len(group), source.chunk_size):
+            chunk = group[start:start + source.chunk_size]
+            done += len(chunk)
+            step(f"rrd {done}/{len(targets)}")
+            parsed = source.fetch(chunk, window)
+            for t in chunk:
+                _store(db, t, parsed.get(str(t.link.id)), int(parsed.get(f"{t.link.id}#nan", 0) or 0), since, report)
+            db.commit()
     return report

@@ -66,6 +66,8 @@ class SyncReport:
     diagnostics: dict[str, Any] = field(default_factory=dict)
     discovery: dict[str, Any] | None = None
     duration_s: float = 0.0
+    # Ports the NMS confirmed this run; a caller running discovery itself needs them for phantom-port cleanup.
+    valid_iface_ids: set[int] | None = field(default=None, repr=False)
 
     def warn(self, message: str, limit: int = 50) -> None:
         self.counts["warnings"] += 1
@@ -303,10 +305,11 @@ def sync_observium(
         _write_neighbours(db, client, device_by_obs, iface_by_port, report)
         db.commit()
 
-    if discover and parts & {"inventory", "neighbours"}:
+    if parts & {"inventory", "neighbours"}:
+        report.valid_iface_ids = {i.id for i in iface_by_port.values()}
+    if discover and report.valid_iface_ids is not None:
         step("discovery")
-        valid = {i.id for i in iface_by_port.values()}
-        report.discovery = discover_links(db, valid_iface_ids=valid).model_dump()
+        report.discovery = discover_links(db, valid_iface_ids=report.valid_iface_ids).model_dump()
 
     if "utilization" in parts:
         step("utilization")

@@ -1,4 +1,5 @@
-"""Daily in-process scheduler: the gitweb RANCID update at NADIEN_GITWEB_DAILY_AT (schedule time zone).
+"""Daily in-process scheduler: the sync-all job (Observium main + CSR, gitweb configs, LLDP/config topology,
+RRD history) at NADIEN_GITWEB_DAILY_AT (schedule time zone; the setting kept its name from the gitweb-only run).
 
 Every API process runs this loop; each day's run is claimed with a unique (job, date) row, so with
 several uvicorn workers or replicas it still starts exactly once. A run that is due but blocked by
@@ -12,7 +13,7 @@ from collections.abc import Callable
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
@@ -24,7 +25,10 @@ from .runner import JobBusy, JobRunner
 
 log = logging.getLogger("nadien.scheduler")
 CHECK_EVERY_S = 60
-GITWEB_JOB = "gitweb"
+SYNC_ALL_JOB = "sync-all"
+# Claimed by the gitweb-only daily run of earlier versions. A day it already ran counts as done, so a deploy after
+# 02:30 does not start a full Observium + RRD sync in the middle of the working day.
+LEGACY_JOBS = ("gitweb",)
 
 
 def parse_hhmm(value: str) -> time:
@@ -40,6 +44,12 @@ def _claim(session_factory: sessionmaker, job: str, run_date: str) -> bool:
             return True
     except IntegrityError:
         return False  # another process already took today's run
+
+
+def _ran_before_upgrade(session_factory: sessionmaker, run_date: str) -> bool:
+    with session_factory() as db:
+        return db.scalar(select(m.ScheduledRun.id).where(m.ScheduledRun.job.in_(LEGACY_JOBS),
+                                                         m.ScheduledRun.run_date == run_date).limit(1)) is not None
 
 
 def _release(session_factory: sessionmaker, job: str, run_date: str) -> None:
@@ -64,22 +74,22 @@ def tick(runner: JobRunner, session_factory: sessionmaker = SessionLocal, now: d
 
         collector_settings.refresh()
     at = (settings.gitweb_daily_at or "").strip()
-    if not at or not settings.gitweb_url:
+    if not at:  # every source is optional inside sync-all, so only the time decides
         return None
     local = now or datetime.now(ZoneInfo(settings.schedule_timezone))
     if local.time() < parse_hhmm(at) or runner.running():
         return None
     run_date = local.date().isoformat()
-    if not _claim(session_factory, GITWEB_JOB, run_date):
+    if _ran_before_upgrade(session_factory, run_date) or not _claim(session_factory, SYNC_ALL_JOB, run_date):
         return None
-    job_fn = start_job or (lambda db, progress: jobs.run_gitweb(db, progress=progress))
+    job_fn = start_job or (lambda db, progress: jobs.run_all(db, progress=progress))
     try:
-        job = runner.start("gitweb-scheduled", job_fn)
+        job = runner.start("sync-all-scheduled", job_fn)
     except JobBusy:
-        _release(session_factory, GITWEB_JOB, run_date)  # retry next minute
+        _release(session_factory, SYNC_ALL_JOB, run_date)  # retry next minute
         return None
-    _record(session_factory, GITWEB_JOB, run_date, job["id"])
-    log.info("scheduled gitweb update started (job %s)", job["id"])
+    _record(session_factory, SYNC_ALL_JOB, run_date, job["id"])
+    log.info("scheduled sync-all started (job %s)", job["id"])
     return job["id"]
 
 
