@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { project } from '../basemap'
-import { MAP_KEY, MAP_KEY_ELK, mapKeyFor, mapOverridePositions, mapViewKey, storedMapOn } from './mapArrange'
+import { MAP_KEY, MAP_KEY_ELK, mapKeyFor, mapOverridePositions, mapViewKey, ringExternal, storedMapOn } from './mapArrange'
 
 const storage = (values: Record<string, string>) => (key: string) => values[key] ?? null
 
@@ -52,5 +52,34 @@ describe('mapOverridePositions', () => {
     const result = mapOverridePositions([{ id: 'dev:2', pos: { x: 10, y: 10 } }], new Map([['dev:2', { x: 10, y: 10 }]]),
       { 'dev:2': { lat: -6, lon: 106 } }, k)
     expect(result).toEqual({ 'dev:2': { lat: -6, lon: 106 } })
+  })
+})
+
+describe('ringExternal', () => {
+  const nodes = [
+    { id: 'dev:1', kind: 'device' },
+    { id: 'dev:2', kind: 'device' },
+    { id: 'pop:SMG', kind: 'external_pop' },
+    { id: 'pop:YGK', kind: 'external_pop' },
+  ]
+  const home = () => new Map([
+    ['dev:1', { x: 0, y: 0 }],
+    ['dev:2', { x: 100, y: 0 }],
+    ['pop:SMG', { x: 50000, y: 0 }],
+    ['pop:YGK', { x: 0, y: 50000 }],
+  ])
+
+  it('should pull other POPs onto a ring around the devices when they are not pinned', () => {
+    const positions = home()
+    ringExternal(nodes, positions, new Set())
+    expect(Math.abs(positions.get('pop:SMG')!.x)).toBeLessThan(1000)
+    expect(Math.abs(positions.get('pop:YGK')!.y)).toBeLessThan(1000)
+  })
+
+  it('should keep saved external POP spot when ring places other POPs', () => {
+    const positions = home()
+    ringExternal(nodes, positions, new Set(['pop:SMG']))
+    expect(positions.get('pop:SMG')).toEqual({ x: 50000, y: 0 })
+    expect(Math.abs(positions.get('pop:YGK')!.y)).toBeLessThan(1000)
   })
 })
