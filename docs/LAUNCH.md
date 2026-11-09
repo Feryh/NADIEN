@@ -307,20 +307,27 @@ Backup otomatis hanya dijalankan lewat jalur ini. Tambahkan dengan `crontab -e` 
 
 Jangan menjadwalkan Full sync dan RRD pada jam yang sama. Keduanya membebani Observium.
 
-**Update RANCID gitweb tidak perlu cron.** Backend menjalankannya sendiri setiap hari pada `NADIEN_GITWEB_DAILY_AT`
-(default 02:30, zona `NADIEN_SCHEDULE_TIMEZONE`). Perilakunya:
+**Sync semua harian tidak perlu cron.** Backend menjalankan job `sync-all` sendiri setiap hari pada
+`NADIEN_GITWEB_DAILY_AT` (default 02:30, zona `NADIEN_SCHEDULE_TIMEZONE`; namanya tetap dari versi yang hanya
+meng-update gitweb). Perilakunya:
 
-- Hanya file yang berubah sejak sync terakhir yang diunduh.
-- Backup dibuat hanya kalau memang ada perubahan.
+- Satu backup di awal; kalau backup gagal, tidak ada yang ditulis.
+- Urutan: Observium utama (inventory, LLDP, utilisasi), Observium CSR, config gitweb (hanya file yang berubah),
+  satu kali discovery topologi LLDP/config, histori RRD utama dan CSR.
+- RRD rutin 2 hari; link yang belum punya histori langsung diambil 90 hari.
+- Langkah yang gagal dicatat, langkah berikutnya tetap jalan. CSR dan gitweb dilewati kalau URL-nya kosong.
 - Jatah tiap hari diklaim satu kali di database, sehingga dengan 4 worker atau beberapa replica sync tetap jalan
-  sekali saja.
+  sekali saja. Hari yang sudah menjalankan update gitweb versi lama dianggap selesai.
 - Kalau server mati pada jam itu, sync dijalankan begitu server hidup lagi.
-- Sync manual tetap bisa dari UI (**Collectors → RANCID gitweb**) atau dari CLI:
+- Sync manual tetap bisa dari UI (**Collectors → Sync semua**) atau dari CLI (exit code 1 kalau ada langkah gagal):
 
 ```bash
-docker compose exec -T backend python -m app.collectors.run gitweb          # perubahan terbaru
-docker compose exec -T backend python -m app.collectors.run gitweb --full   # baca ulang semua file
+docker compose exec -T backend python -m app.collectors.run all                # semua langkah
+docker compose exec -T backend python -m app.collectors.run gitweb             # hanya config gitweb, perubahan terbaru
+docker compose exec -T backend python -m app.collectors.run gitweb --full      # baca ulang semua file
 ```
+
+Dengan job harian ini, cron Full sync 01:00 dan RRD 03:00 di atas boleh dihapus; utilisasi 10 menit tetap perlu.
 
 ### Langkah 7: Backup & restore
 

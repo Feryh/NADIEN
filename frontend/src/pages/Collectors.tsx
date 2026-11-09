@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
+import { STEP_LABELS, formatDuration, phaseLabel, stepSummary, syncAllSteps } from './syncAllReport'
 
 interface BackupList {
   directory: string
@@ -96,7 +97,8 @@ export default function Collectors() {
       const current = await api.get<SyncJob>('/collectors/jobs/current')
       setJob(current)
       if (current.status !== 'running') {
-        if (current.status === 'ok') setResult(current.report)
+        // A sync-all job with a failed step still carries the report of every other step.
+        if (current.status === 'ok' || current.report) setResult(current.report)
         if (current.status === 'failed') setError(current.error)
         loadStatus()
         return
@@ -152,9 +154,46 @@ export default function Collectors() {
   const query = vendor ? `?vendor=${vendor}` : ''
   const [rrdDays, setRrdDays] = useState('90')
   const rrdReady = !!status?.rrd.configured && (status?.rrd.mapped_ports ?? 0) > 0
+  const resultSteps = syncAllSteps(result)
+  // The combined job reports under its own card; every other job keeps reporting under Observium.
+  const syncAllJob = !!job?.kind?.startsWith('sync-all') // an idle answer carries no kind
+  const jobBanner = job && job.status !== 'idle' && (
+    <div className={job.status === 'failed' ? 'error' : 'notice'}>
+      {jobRunning ? '⏳ ' : job.status === 'ok' ? '✓ ' : '✗ '}
+      Sync <b>{job.kind}</b> — {jobRunning ? `tahap: ${phaseLabel(job.phase, PHASES)}` : job.status === 'ok' ? 'selesai' : 'gagal'} ·{' '}
+      {Math.floor(elapsed / 60)}m {elapsed % 60}s
+      {!jobRunning && job.finished_at && ` · ${new Date(job.finished_at).toLocaleString()}`}
+    </div>
+  )
 
   return (
     <div className="capacity">
+      <div className="card">
+        <div className="toolbar">
+          <h2>Sync semua</h2>
+          {status?.gitweb.schedule.enabled ? (
+            <span className="pill pill-ok">
+              otomatis tiap hari {status.gitweb.schedule.daily_at} ({status.gitweb.schedule.timezone})
+            </span>
+          ) : (
+            <span className="pill pill-muted">tidak terjadwal</span>
+          )}
+          <Link to="/settings" className="small">Jadwal →</Link>
+          <div className="spacer" />
+          <button className="primary" disabled={!!busy || jobRunning} onClick={() => startJob('/collectors/all/sync')}
+            title="Satu backup, lalu Observium + CSR, config gitweb, topologi LLDP/config, dan histori RRD">
+            Sync semua
+          </button>
+        </div>
+        {syncAllJob && jobBanner}
+        <p className="hint">
+          Satu job untuk semuanya: backup database sekali, Observium utama (inventory, LLDP, utilisasi), Observium CSR, config
+          RANCID gitweb (hanya yang berubah), satu kali discovery topologi, lalu histori RRD utama dan CSR (2 hari terakhir;
+          link yang belum punya histori langsung 90 hari). Langkah yang gagal dicatat dan langkah berikutnya tetap jalan;
+          CSR dan gitweb dilewati kalau belum di-set. Tombol per langkah di bawah tetap bisa dipakai.
+        </p>
+      </div>
+
       <div className="card">
         <div className="toolbar">
           <h2>Observium</h2>
@@ -175,14 +214,7 @@ export default function Collectors() {
             Full sync
           </button>
         </div>
-        {job && job.status !== 'idle' && (
-          <div className={job.status === 'failed' ? 'error' : 'notice'}>
-            {jobRunning ? '⏳ ' : job.status === 'ok' ? '✓ ' : '✗ '}
-            Sync <b>{job.kind}</b> — {jobRunning ? `tahap: ${PHASES[job.phase] ?? job.phase}` : job.status === 'ok' ? 'selesai' : 'gagal'} ·{' '}
-            {Math.floor(elapsed / 60)}m {elapsed % 60}s
-            {!jobRunning && job.finished_at && ` · ${new Date(job.finished_at).toLocaleString()}`}
-          </div>
-        )}
+        {!syncAllJob && jobBanner}
         <p className="hint">
           {status?.observium.url} · device, port, IPv4, LLDP neighbour, dan rate port → inventory, topologi, sampel utilisasi.
           {status?.observium.last_sync_at && ` Terakhir: ${new Date(status.observium.last_sync_at).toLocaleString()} — ${status.observium.last_status}`}
@@ -452,7 +484,42 @@ export default function Collectors() {
       {result !== null && (
         <div className="card">
           <h2>Hasil</h2>
-          <pre className="result">{JSON.stringify(result, null, 2)}</pre>
+          {resultSteps && (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Langkah</th>
+                    <th>Status</th>
+                    <th className="num">Durasi</th>
+                    <th>Ringkasan</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {resultSteps.map((s) => (
+                    <tr key={s.step}>
+                      <td>{STEP_LABELS[s.step] ?? s.step}</td>
+                      <td>
+                        <span className={`pill ${s.status === 'ok' ? 'pill-ok' : s.status === 'failed' ? 'pill-bad' : 'pill-muted'}`}>
+                          {s.status === 'ok' ? 'ok' : s.status === 'failed' ? 'gagal' : 'dilewati'}
+                        </span>
+                      </td>
+                      <td className="num">{formatDuration(s.duration_s)}</td>
+                      <td>{stepSummary(s)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {resultSteps ? (
+            <details>
+              <summary>Laporan lengkap (JSON)</summary>
+              <pre className="result">{JSON.stringify(result, null, 2)}</pre>
+            </details>
+          ) : (
+            <pre className="result">{JSON.stringify(result, null, 2)}</pre>
+          )}
         </div>
       )}
     </div>

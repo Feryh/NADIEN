@@ -1,4 +1,4 @@
-"""Topology search, manual POP area, the daily gitweb scheduler and DB-backed job state."""
+"""Topology search, manual POP area, the daily scheduler and DB-backed job state (sync-all: test_sync_all.py)."""
 
 from datetime import datetime, timedelta, timezone
 
@@ -72,16 +72,6 @@ def sched(db, tmp_path, monkeypatch):
 
 def _at(hour: int, minute: int) -> datetime:
     return datetime(2026, 11, 3, hour, minute, tzinfo=timezone(timedelta(hours=7)))
-
-
-def test_should_start_gitweb_once_per_day_when_schedule_time_has_passed(sched):
-    factory, runner = sched
-    calls = []
-    job = lambda db, progress: calls.append(1) or {}  # noqa: E731
-    first = scheduler.tick(runner, factory, now=_at(2, 31), start_job=job)
-    runner.wait(5)
-    second = scheduler.tick(runner, factory, now=_at(9, 0), start_job=job)
-    assert first is not None and second is None and calls == [1]
 
 
 def test_should_wait_when_schedule_time_has_not_come(sched):

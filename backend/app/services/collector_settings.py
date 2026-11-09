@@ -59,7 +59,8 @@ FIELDS: list[FieldSpec] = [
     FieldSpec("gitweb_url", "gitweb", "URL gitweb RANCID", help="mis. http://172.17.12.232/gitweb/"),
     FieldSpec("gitweb_user", "gitweb", "Username (opsional)"),
     FieldSpec("gitweb_password", "gitweb", "Password (opsional)", "secret"),
-    FieldSpec("gitweb_daily_at", "gitweb", "Jadwal update harian (HH:MM)", help="Kosong = tidak terjadwal"),
+    FieldSpec("gitweb_daily_at", "gitweb", "Jadwal sync semua harian (HH:MM)",
+              help="Observium + CSR, config gitweb, topologi LLDP/config, histori RRD. Kosong = tidak terjadwal"),
 ]
 FIELD_BY_KEY = {f.key: f for f in FIELDS}
 # Changing one of these URLs needs that system's credentials in the same request.

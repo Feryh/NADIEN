@@ -1,5 +1,7 @@
 """Command-line entry point for scheduled collection (cron / systemd timer / Celery beat).
 
+    python -m app.collectors.run all [--gitweb-full]           # everything: one backup, Observium main + CSR, gitweb,
+                                                               # one discovery, RRD 2 days (90 for links without history)
     python -m app.collectors.run observium                     # full sync (backup first)
     python -m app.collectors.run observium --parts utilization # rates only, no backup (run every 5–15 min)
     python -m app.collectors.run observium-csr                 # cell-site routers from the CSR Observium (backup first)
@@ -38,6 +40,10 @@ from .observium.sync import ALL_PARTS
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m app.collectors.run")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    every = sub.add_parser("all", help="Observium main + CSR, gitweb configs, discovery, RRD history")
+    every.add_argument("--rrd-days", type=int, default=2, help="routine RRD window for links with history")
+    every.add_argument("--rrd-backfill-days", type=int, default=90, help="RRD window for links without history")
+    every.add_argument("--gitweb-full", action="store_true", help="re-read every gitweb file, not only changed ones")
     obs = sub.add_parser("observium")
     obs.add_argument("--parts", default=",".join(sorted(ALL_PARTS)))
     obs.add_argument("--no-discover", action="store_true")
@@ -61,7 +67,11 @@ def main(argv: list[str] | None = None) -> int:
     with SessionLocal() as db:
         collector_settings.apply(db)  # settings saved in the UI apply to the CLI too
         try:
-            if args.cmd == "observium":
+            if args.cmd == "all":
+                report = jobs.run_all(db, rrd_days=max(1, min(args.rrd_days, 365)),
+                                      rrd_backfill_days=max(1, min(args.rrd_backfill_days, 365)),
+                                      gitweb_full=args.gitweb_full)
+            elif args.cmd == "observium":
                 report = jobs.run_observium(db, set(args.parts.split(",")), not args.no_discover)
             elif args.cmd == "observium-csr":
                 report = jobs.run_observium_csr(db)
@@ -87,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 2
     print(json.dumps(report, indent=2, default=str))
-    return 0
+    return 1 if report.get("status") == "failed" else 0  # sync-all: a step failed, the rest still ran
 
 
 if __name__ == "__main__":

@@ -99,8 +99,14 @@ class JobRunner:
         beat.start()
         db = self._session_factory()
         try:
-            job["report"] = fn(db, lambda phase: self._set_phase(job, phase))
-            job["status"] = "ok"
+            report = fn(db, lambda phase: self._set_phase(job, phase))
+            job["report"] = report
+            # A multi-step job (sync-all) finishes and keeps its report even when one step failed.
+            if isinstance(report, dict) and report.get("status") == "failed":
+                job["status"] = "failed"
+                job["error"] = report.get("error") or f"failed steps: {', '.join(report.get('failed_steps') or [])}"
+            else:
+                job["status"] = "ok"
         except Exception as exc:  # noqa: BLE001 — any failure must end up in the job, not kill the thread silently
             db.rollback()
             job["status"] = "failed"

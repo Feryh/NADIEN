@@ -8,9 +8,9 @@ di `postgres.yaml` dan `backend.yaml`, `ingressClassName` di `ingress.yaml`, dan
 |---|---|
 | `nadien-frontend` | 2 replica nginx. `/api/collectors`, `/api/backups`, `/api/changes` ke worker, sisanya ke api |
 | `nadien-api` | 2–6 replica (HPA) × 2 proses, tanpa state dan tanpa scheduler |
-| `nadien-worker` | 1 pod: sync, backup `pg_dump`, push ke perangkat, jadwal gitweb harian. Punya PVC `nadien-backups` |
+| `nadien-worker` | 1 pod: sync, backup `pg_dump`, push ke perangkat, jadwal sync semua harian. Punya PVC `nadien-backups` |
 | `nadien-db` | StatefulSet PostGIS 16, 1 replica, PVC 100 Gi. **Satu titik gagal**: lihat bagian Backup |
-| CronJob | Utilisasi tiap 10 menit, Full sync 01:00, Sync CSR 01:30, RRD 04:30, RRD CSR 05:30 |
+| CronJob | Utilisasi tiap 10 menit, Full sync 01:00, Sync CSR 01:30, RRD 04:30, RRD CSR 05:30; `nadien-sync-all` 02:30 (suspend, hanya bila scheduler worker dimatikan) |
 
 Syarat cluster: Kubernetes ≥ 1.27 (`timeZone` CronJob), metrics-server (HPA), CNI yang menegakkan NetworkPolicy,
 ingress-nginx, dan registry image yang bisa dijangkau.
@@ -85,6 +85,14 @@ kubectl -n nadien rollout status deploy/nadien-worker deploy/nadien-api deploy/n
 Migrasi database berjalan sendiri saat pod backend start, dan advisory lock membuatnya aman untuk banyak replica.
 
 ## 4. Isi data pertama kali
+
+Sekaligus (satu backup; Observium + CSR, config gitweb, topologi, RRD 90 hari untuk link yang belum punya histori):
+
+```bash
+kubectl -n nadien exec deploy/nadien-worker -- python -m app.collectors.run all
+```
+
+Atau per langkah:
 
 ```bash
 kubectl -n nadien exec deploy/nadien-worker -- python -m app.collectors.run observium
