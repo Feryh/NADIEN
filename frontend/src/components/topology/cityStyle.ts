@@ -109,6 +109,10 @@ export const CITY_STYLE = [
   { selector: 'edge[sourceEndpoint]', style: { 'source-endpoint': 'data(sourceEndpoint)', 'target-endpoint': 'data(targetEndpoint)' } },
   { selector: 'edge[?down]', style: { 'line-style': 'dashed', 'line-color': '#ef4444' } },
   { selector: 'edge.labeled, edge:selected', style: { label: 'data(display)', opacity: 1 } },
+  // Problem highlight dims with its own class: the tap highlight clears `.faded` and would otherwise undo it.
+  { selector: '.calm', style: { opacity: 0.12 } },
+  { selector: 'node.spof', style: { 'underlay-color': '#f97316', 'underlay-opacity': 0.5, 'underlay-padding': 6 } },
+  { selector: 'edge.spof', style: { 'underlay-color': '#f97316', 'underlay-opacity': 0.55, 'underlay-padding': 5 } },
   { selector: 'node.fresh', style: { 'border-color': '#4ade80', 'border-width': 4, 'underlay-color': '#4ade80', 'underlay-opacity': 0.35, 'underlay-padding': 6 } },
   { selector: 'edge.fresh', style: { 'underlay-color': '#4ade80', 'underlay-opacity': 0.45, 'underlay-padding': 4, opacity: 1 } },
   { selector: 'edge.went-down', style: { 'underlay-color': '#ef4444', 'underlay-opacity': 0.55, 'underlay-padding': 5, opacity: 1 } },

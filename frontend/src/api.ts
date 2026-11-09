@@ -129,7 +129,7 @@ export interface DeviceSummary {
 
 export interface TopologySearch {
   pops: { pop_id: number; code: string; name: string; area: string; devices: number }[]
-  devices: { device_id: number; hostname: string; pop: string; role: string; category: string; area: string }[]
+  devices: { device_id: number; hostname: string; pop: string; role: string; category: string; area: string; mgmt_ip: string | null }[]
 }
 
 export interface OltCapacity {

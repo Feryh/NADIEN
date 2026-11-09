@@ -163,7 +163,9 @@ def test_should_summarize_access_devices_when_city_exceeds_threshold(client, net
 
 def test_should_find_device_by_mgmt_ip_when_searching(client, network):
     response = client.get("/api/topology/search", params={"q": "10.0.0.5"})
-    assert response.json()["devices"][0]["hostname"] == "PWT-NDC-PE1"
+    hit = response.json()["devices"][0]
+    assert hit["hostname"] == "PWT-NDC-PE1"
+    assert hit["mgmt_ip"] == "10.0.0.5"
 
 
 def test_should_assign_kept_ring_cluster_when_device_also_in_larger_dropped_component(client, db):

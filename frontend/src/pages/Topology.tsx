@@ -6,8 +6,10 @@ import { BasemapShape, Box, declutter, loadBasemap, project } from '../component
 import { NamingStandard, TopologyChanges } from '../components/TopologyInsights'
 import TopologyLegend from '../components/TopologyLegend'
 import { PopAreaEditor, SearchHit, TopologySearchBox } from '../components/TopologyTools'
+import TopologyDetail, { CityFilterBar } from '../components/TopologyDetail'
 import { fmtG } from '../components/ui'
-import { buildCityElements, canUpdateInPlace, citySizeOf, linkColor, liveData } from '../components/topology/cityElements'
+import { buildCityElements, canUpdateInPlace, citySizeOf, linkColor, liveData, type NodeHealth } from '../components/topology/cityElements'
+import { isCompound, isProblemLink, isProblemNode, linkVisible, NO_FILTER, nodeVisible, vendorsIn, type CityFilter } from '../components/topology/cityFilters'
 import { CITY_STYLE } from '../components/topology/cityStyle'
 import { layoutCity, LayoutCancelled } from '../components/topology/elkLayout'
 import { edgeWidth, ROLE_COLOR, SEGMENT_COLOR, shortName } from '../components/topology/shared'
@@ -306,6 +308,8 @@ interface Target {
   focus?: string
 }
 
+const NO_POP = '?'
+
 /** What opening a node shows: one level down in Area > Provinsi > Kab/Kota > POP > Perangkat. */
 function drillTarget(n: NodeData): Target | null {
   switch (n.kind) {
@@ -321,11 +325,14 @@ function drillTarget(n: NodeData): Target | null {
       return { level: 'city', area: n.area, province: n.province, regency: n.regency }
     case 'pop':
     case 'pop_lane':
-    case 'external_pop':
-      return { level: 'device', pop: n.code ?? n.label }
+    case 'external_pop': {
+      // "?" is the placeholder for devices without a POP, not a POP that can be opened.
+      const code = n.code ?? n.label
+      return code === NO_POP ? null : { level: 'device', pop: code }
+    }
     case 'summary':
       // Collapsed access devices of one POP: that POP's own device level shows them all.
-      return n.pop ? { level: 'device', pop: n.pop } : null
+      return n.pop && n.pop !== NO_POP ? { level: 'device', pop: n.pop } : null
     case 'device':
       return n.device_id != null ? { level: 'neighbors', device_id: n.device_id, depth: 1 } : null
     case 'cluster':
@@ -760,10 +767,13 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   const devicesLocated = view?.nodes.filter((n) => n.kind === 'device' && n.located).length ?? 0
   const mapAvailable = isGroupLevel(level) || level === 'pop' || devicesLocated > 0
   const onMap = mapOn && mapAvailable && view?.level === level
+  // City / neighbours drawn by ELK: the only drawing that has the filters, problem highlight and the per-link panel.
+  const cityMode = !!view && usesElk(view.level, onMap)
   const onMapRef = useRef(onMap)
   onMapRef.current = onMap
   const [loading, setLoading] = useState(false)
-  const [selected, setSelected] = useState<{ node?: NodeData; edge?: EdgeData; link?: CityLink } | null>(null)
+  // City / neighbours keep only the id of the tapped link: the panel reads its details from the current view.
+  const [selected, setSelected] = useState<{ node?: NodeData; edge?: EdgeData; linkId?: number } | null>(null)
   const [message, setMessage] = useState<{ text: string; error?: boolean } | null>(null)
   const [colorFilter, setColorFilter] = useState<'all' | 'warn' | 'red'>('all')
   const [edgeLabels, setEdgeLabels] = useState(false)
@@ -780,6 +790,9 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   const [labelMode, setLabelMode] = useState<LabelMode>(() => stored('nadien.topology.labels', 'short'))
   const [legendOpen, setLegendOpen] = useState(() => stored('nadien.topology.legend', '1') === '1')
   const [live, setLive] = useState(() => stored('nadien.topology.live', '1') === '1')
+  const [cityFilter, setCityFilter] = useState<CityFilter>(NO_FILTER)
+  const [highlightProblems, setHighlightProblems] = useState(() => stored<string>('nadien.topology.highlight-problems', '0') === '1')
+  const [highlightSpof, setHighlightSpof] = useState(() => stored<string>('nadien.topology.highlight-spof', '0') === '1')
   const [lastCheck, setLastCheck] = useState<Date | null>(null)
   const [liveNote, setLiveNote] = useState<string | null>(null)
   const viewRef = useRef<View | null>(null)
@@ -1024,7 +1037,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
     })
     cy.on('tap', 'edge', (e) => {
       // City / neighbours edges are single link records, the other levels draw aggregates of node pairs.
-      setSelected(elk ? { link: e.target.data() as CityLink } : { edge: e.target.data() as EdgeData })
+      setSelected(elk ? { linkId: e.target.data('link_id') as number } : { edge: e.target.data() as EdgeData })
       highlight(e.target.id())
     })
     cy.on('tap', (e) => {
@@ -1133,11 +1146,39 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
       const color = edge.data('color') as CapacityColor
       const capacityOk = colorFilter === 'all' || (colorFilter === 'red' ? color === 'red' : color !== 'green')
       const visible = capacityOk && segmentsShown.has(edge.data('segment') as Segment)
+        && (!cityMode || linkVisible(edge.data() as CityLink, cityFilter))
       edge.style('display', visible ? 'element' : 'none')
       if (edgeLabels) edge.addClass('labeled')
       else edge.removeClass('labeled')
     })
-  }, [colorFilter, edgeLabels, segmentsShown, view, onMap, layoutTick])
+  }, [colorFilter, edgeLabels, segmentsShown, view, onMap, layoutTick, cityMode, cityFilter])
+
+  // A vendor or layer picked in one city says nothing about the next one.
+  const viewKey = view?.layout_key
+  useEffect(() => {
+    setCityFilter((filter) => ({ ...filter, vendors: new Set(), layers: new Set() }))
+  }, [viewKey])
+
+  // City / neighbours: node filters and the problem / SPOF highlights. Only display and classes change, so the ELK
+  // layout stays. Compounds are never dimmed or hidden: they pass their opacity on to the children they hold.
+  useEffect(() => {
+    const cy = cyRef.current
+    if (!cy || !cityMode) return
+    cy.batch(() => {
+      cy.nodes().forEach((node) => {
+        const data = node.data() as { kind: string; vendor?: string | null; tier?: number; health: NodeHealth; spof?: boolean }
+        if (isCompound(data.kind)) return
+        const problemLink = node.connectedEdges().some((e) => isProblemLink(e.data() as CityLink))
+        node.style('display', nodeVisible(data, problemLink, cityFilter) ? 'element' : 'none')
+        node.toggleClass('calm', highlightProblems && !isProblemNode(data.health) && !problemLink)
+        node.toggleClass('spof', highlightSpof && !!data.spof)
+      })
+      cy.edges().forEach((edge) => {
+        edge.toggleClass('calm', highlightProblems && !isProblemLink(edge.data() as CityLink))
+        edge.toggleClass('spof', highlightSpof && !!edge.data('spof'))
+      })
+    })
+  }, [cityMode, cityFilter, highlightProblems, highlightSpof, view, layoutTick])
 
   // Colour and label modes restyle the drawing in place (no new layout, the view stays put).
   useEffect(() => {
@@ -1281,7 +1322,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
 
   const node = selected?.node
   const edge = selected?.edge
-  const link = selected?.link
+  const linkId = selected?.linkId
   const nameOf = (id: string) => view?.nodes.find((n) => n.id === id)?.label ?? id
   const viewArea = view?.area ?? area
   const viewProvince = view?.province ?? province
@@ -1424,6 +1465,13 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
         )}
       </div>
 
+      {cityMode && view && (
+        <CityFilterBar vendors={vendorsIn(asCityView(view))} filter={cityFilter} onFilter={setCityFilter}
+          highlightProblems={highlightProblems} highlightSpof={highlightSpof}
+          onHighlightProblems={(on) => { setHighlightProblems(on); remember('nadien.topology.highlight-problems', on ? '1' : '0') }}
+          onHighlightSpof={(on) => { setHighlightSpof(on); remember('nadien.topology.highlight-spof', on ? '1' : '0') }} />
+      )}
+
       {liveNote && (
         <div className="notice live-note" onClick={() => setLiveNote(null)} title="Klik untuk menutup">
           {liveNote}. Yang baru ditandai hijau, link yang baru down ditandai merah, selama 10 menit.
@@ -1472,12 +1520,16 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
               ? ` · ${devicesLocated} perangkat dengan koordinat site, ${view.nodes.filter((n) => n.kind === 'device' && !n.located).length} di sekitar POP (garis putus-putus)`
               : ''}
           </div>
-          {(node || edge || link || (level === 'device' && view?.pop_id != null)) && (
+          {cityMode && view && (node || linkId != null) && (
+            <TopologyDetail view={asCityView(view)} node={node} linkId={linkId} onClose={() => setSelected(null)}
+              drill={node && drillTarget(node) ? { label: DRILL_LABEL[node.kind], run: () => go(drillTarget(node)!) } : null} />
+          )}
+          {!cityMode && (node || edge || (level === 'device' && view?.pop_id != null)) && (
             <aside className="detail-panel card">
-              {(node || edge || link) && (
+              {(node || edge) && (
                 <button className="panel-close" onClick={() => setSelected(null)} aria-label="Tutup">×</button>
               )}
-          {level === 'device' && view?.pop_id != null && !node && !edge && !link && (
+          {level === 'device' && view?.pop_id != null && !node && !edge && (
             <div className="detail">
               <h3>{view.city ?? `POP ${view.pop}`}</h3>
               <div className="small muted">POP {view.pop} · {[view.regency, view.province, view.area].filter(Boolean).join(' · ')}</div>
@@ -1555,20 +1607,6 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
                 <dt>Committed</dt><dd>{edge.committed_pct}%</dd>
               </dl>
               {(level === 'device' || level === 'neighbors') && <RouterLink to="/capacity">Detail kapasitas & forecast →</RouterLink>}
-            </div>
-          )}
-          {link && (
-            <div className="detail">
-              <h3>{link.a_device} ↔ {link.b_device}</h3>
-              <dl>
-                <dt>Interface</dt><dd>{link.a_interface ?? '–'} ↔ {link.b_interface ?? '–'}</dd>
-                <dt>Fungsi</dt><dd>{SEGMENT_LABEL[link.segment as Segment] ?? link.segment}</dd>
-                <dt>Status</dt><dd>{link.status}{link.spof ? ' · SPOF' : ''}</dd>
-                <dt>Kapasitas</dt><dd>{link.capacity_gbps > 0 ? fmtG(link.capacity_gbps) : 'belum diketahui'}</dd>
-                <dt>Trafik</dt><dd>{fmtG(link.current_gbps)} ({link.utilization_pct}%)</dd>
-                <dt>Committed</dt><dd>{link.committed_pct}%</dd>
-              </dl>
-              <RouterLink to="/capacity">Detail kapasitas & forecast →</RouterLink>
             </div>
           )}
             </aside>

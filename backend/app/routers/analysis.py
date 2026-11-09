@@ -846,7 +846,8 @@ def topology_search(q: str = Query(..., min_length=2), limit: int = Query(15, ge
         "pops": [{"pop_id": p.id, "code": p.code, "name": p.name, "area": ctx.area_of_pop[p.id],
                   "devices": sum(1 for d in ctx.devices.values() if d.pop_id == p.id)} for p in pops[:limit]],
         "devices": [{"device_id": d.id, "hostname": d.hostname, "pop": ctx.pop_code(d.id), "role": d.role,
-                     "category": category_for(d.role), "area": ctx.area_of_device(d.id)} for d in devices[:limit]],
+                     "category": category_for(d.role), "area": ctx.area_of_device(d.id),
+                     "mgmt_ip": d.mgmt_ip} for d in devices[:limit]],
     }
 
 

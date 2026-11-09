@@ -19,7 +19,7 @@ const NODE_HEIGHT = 30
 
 // A link only counts as congested when its capacity is known: with capacity 0 the backend colour means nothing
 // and the link is drawn grey, so it must not turn its devices yellow either.
-function linkTroubled(link: CityLink): boolean {
+export function linkTroubled(link: Pick<CityLink, 'status' | 'capacity_gbps' | 'color'>): boolean {
   if (link.status === 'down') return true
   return link.capacity_gbps > 0 && (link.color === 'yellow' || link.color === 'red')
 }
