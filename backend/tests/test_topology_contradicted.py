@@ -1,8 +1,12 @@
-"""A port described by only one end, whose far port's own description points to another city."""
+"""Description-based links that LLDP or the far end contradicts, and pairs approved by hand."""
 
+import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app import models as m
+from app.database import get_db
+from app.main import app
 from app.services.topology import discover_links
 
 
@@ -79,8 +83,8 @@ def test_should_list_port_whose_lldp_neighbour_is_unknown_when_its_bundle_names_
     _network(db, "to MKS-BSW-ME3-M8:Eth-Trunk7 via INDOSAT")
     _lldp_to_unknown_box(db)
     rows = unknown_lldp_peers(db)
-    assert [(r["device"], r["port"], r["bundle"], r["lldp_neighbor"], r["described_device"]) for r in rows] == [
-        ("KDR-PUW-BNG1-M4", "25GE0/5/30", "Eth-Trunk1", "744aa42a7fc8", "MKS-BSW-ME3-M8")]
+    assert [(r["device"], r["port"], [x["neighbor"] for x in r["lldp"]], r["described_device"]) for r in rows] == [
+        ("KDR-PUW-BNG1-M4", "Eth-Trunk1", ["744aa42a7fc8"], "MKS-BSW-ME3-M8")]
 
 
 def test_should_pair_cell_site_uplink_when_its_mac_only_lldp_neighbour_reports_a_port_of_the_described_csr(db):
@@ -103,3 +107,54 @@ def test_should_pair_cell_site_uplink_when_its_mac_only_lldp_neighbour_reports_a
     ])
     db.commit()
     assert discover_links(db).config_links == 1
+
+
+# --------------------------------------------------------------------------- manual approval
+
+
+@pytest.fixture
+def client(db):
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def _blocked_pair(db) -> tuple[int, int]:
+    """PAD Eth-Trunk74 <> KDR Eth-Trunk1, refused by discovery because LLDP on KDR's member sees an unknown box."""
+    _network(db, "to PAD-PAU-BNG1-M4:Eth-Trunk74")
+    _lldp_to_unknown_box(db)
+    pad, kdr = (db.scalar(select(m.Interface).where(m.Interface.name == n)) for n in ("Eth-Trunk74", "Eth-Trunk1"))
+    return pad.id, kdr.id
+
+
+def test_should_list_blocked_port_with_its_described_peer_port_when_lldp_sees_an_unknown_box(db, client):
+    pad, kdr = _blocked_pair(db)
+    rows = client.get("/api/topology/lldp-unknown-peers").json()
+    assert [(r["interface_id"], r["peer_interface_id"], r["approval"]) for r in rows] == [(kdr, pad, None)]
+
+
+def test_should_draw_approved_links_and_keep_them_through_discovery_when_approved_together(db, client):
+    pad, kdr = _blocked_pair(db)
+    response = client.post("/api/topology/link-approvals", json={"pairs": [{"interface_id": kdr, "peer_interface_id": pad}]})
+    assert response.status_code == 201 and response.json()["approved"] == 1
+    discover_links(db)
+    links = db.scalars(select(m.Link)).all()
+    assert [(l.discovery_source, l.status) for l in links] == [("approved", "up")]
+
+
+def test_should_approve_none_when_one_pair_of_a_batch_is_invalid(db, client):
+    pad, kdr = _blocked_pair(db)
+    pairs = [{"interface_id": kdr, "peer_interface_id": pad}, {"interface_id": kdr, "peer_interface_id": 999_999}]
+    assert client.post("/api/topology/link-approvals", json={"pairs": pairs}).status_code == 404
+    assert db.scalars(select(m.LinkApproval)).all() == [] and db.scalars(select(m.Link)).all() == []
+
+
+def test_should_remove_link_and_not_redraw_it_when_approval_is_revoked(db, client):
+    pad, kdr = _blocked_pair(db)
+    client.post("/api/topology/link-approvals", json={"pairs": [{"interface_id": kdr, "peer_interface_id": pad}]})
+    approval = db.scalar(select(m.LinkApproval))
+    assert client.delete(f"/api/topology/link-approvals/{approval.id}").status_code == 204
+    discover_links(db)
+    assert db.scalars(select(m.Link)).all() == []

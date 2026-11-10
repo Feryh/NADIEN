@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from ..models import Device, Interface, Link, LldpNeighbor, TopologyEvent, UtilizationSample
+from ..models import Device, Interface, Link, LinkApproval, LldpNeighbor, TopologyEvent, UtilizationSample
 from ..schemas import DiscoveryResult
 from .areas import csr_parts
 
@@ -257,6 +257,14 @@ class _Discovery:
                 remaining.remove(b)
                 self.add(a, b, "config")
 
+    def from_approvals(self) -> None:
+        """Pairs an engineer confirmed by hand (LinkApproval), unless LLDP or the config already linked either port:
+        once the box in between is in the inventory, what LLDP sees wins and the approval is no longer used."""
+        for approval in self.db.scalars(select(LinkApproval)):
+            a, b = self.ifaces.get(approval.a_interface_id), self.ifaces.get(approval.b_interface_id)
+            if a is not None and b is not None and a.id not in self.covered and b.id not in self.covered:
+                self.add(a, b, "approved")
+
     def one_sided(self, pair: frozenset[int], sides: dict[int, list[Interface]]) -> None:
         """Only one end describes the other (typical for a cell-site uplink to a metro box that is
         not described back). Accepted only when the description also names an existing, uncovered
@@ -376,6 +384,7 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
     run = _Discovery(db)
     unresolved = run.from_lldp()
     run.from_config()
+    run.from_approvals()
 
     now = datetime.now(timezone.utc)
     existing = {
@@ -390,7 +399,7 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
     for key, adj in run.adjacencies.items():
         a_dev, b_dev = run.devices[adj.a.device_id], run.devices[adj.b.device_id]
         cap = run.capacity(adj)
-        up = all(run.ifaces[i].oper_status == "up" for i in key) if adj.source == "config" else True
+        up = all(run.ifaces[i].oper_status == "up" for i in key) if adj.source != "lldp" else True
         link = existing.get(key)
         if link is None:
             link = Link(
@@ -432,7 +441,7 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
     phantom = run.phantom_ids(valid_iface_ids)
     marked_down = superseded = 0
     for key, link in existing.items():
-        if link.id in seen_ids or link.discovery_source not in ("lldp", "config"):
+        if link.id in seen_ids or link.discovery_source not in ("lldp", "config", "approved"):
             continue
         replaced = (
             key in member_pairs
@@ -440,6 +449,7 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
             or bool(key & phantom)
             or (link.discovery_source == "config"
                 and (key in run.contradicted or bool(key & (run.lldp_seen | run.lldp_refused))))
+            or link.discovery_source == "approved"  # approval revoked, or LLDP now sees the ports directly
         )
         if replaced:
             db.execute(delete(UtilizationSample).where(UtilizationSample.link_id == link.id))
@@ -477,9 +487,11 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
 def unknown_lldp_peers(db: Session) -> list[dict[str, Any]]:
     """Ports whose description (or their bundle's) names a peer that LLDP rules out: the neighbour is a system
     outside the inventory (a transport node), or sent only its MAC and a port name the described peer does not have
-    (a carrier's box). With LLDP deciding no link is drawn there; adding the box LLDP sees to the NMS shows the path."""
+    (a carrier's box). One row per port that would carry the link (the bundle, else the port), with the peer port the
+    description names and any approval (LinkApproval) an engineer gave it."""
     run = _Discovery(db)
-    rows = []
+    approvals = {frozenset((x.a_interface_id, x.b_interface_id)): x for x in db.scalars(select(LinkApproval))}
+    rows: dict[int, dict[str, Any]] = {}
     for n in db.scalars(select(LldpNeighbor)):
         local = run.devices.get(n.device_id)
         if local is None or run.by_host.get(norm_host(n.remote_system_name)) is not None:
@@ -488,7 +500,8 @@ def unknown_lldp_peers(db: Session) -> list[dict[str, Any]]:
         if port is None:
             continue
         bundle = run.ifaces.get(port.parent_id) if port.parent_id else None
-        described = next((p for p in (port, bundle) if p is not None and p.description), None)
+        target = bundle or port
+        described = next((p for p in (target, port) if p.description), None)
         if described is None:
             continue
         named = run.mentioned_device(described.description)
@@ -503,9 +516,79 @@ def unknown_lldp_peers(db: Session) -> list[dict[str, Any]]:
         if mac_only and named is not None and norm_if(n.remote_port_id or "") in {
                 norm_if(p.name) for p in run.ports_of(named.id)}:
             continue  # the described peer itself, announcing only its MAC (cell sites do)
-        rows.append({"device_id": local.id, "device": local.hostname, "port": port.name,
-                     "bundle": bundle.name if bundle else None, "lldp_neighbor": n.remote_system_name,
-                     "lldp_port": n.remote_port_id, "description": described.description,
-                     "described_device_id": named.id if named else None,
-                     "described_device": named.hostname if named else token})
-    return sorted(rows, key=lambda r: (r["device"], r["port"]))
+        row = rows.get(target.id)
+        if row is None:
+            peer = run.named_port(named.id, described.description) if named else None
+            approval = approvals.get(frozenset((target.id, peer.id))) if peer else None
+            row = rows[target.id] = {
+                "device_id": local.id, "device": local.hostname, "interface_id": target.id, "port": target.name,
+                "is_bundle": bundle is not None, "lldp": [], "description": described.description,
+                "described_device_id": named.id if named else None,
+                "described_device": named.hostname if named else token,
+                "peer_interface_id": peer.id if peer else None, "peer_port": peer.name if peer else None,
+                "approval": None if approval is None else {
+                    "id": approval.id, "approved_by": approval.approved_by, "approved_at": approval.approved_at},
+            }
+        row["lldp"].append({"local_port": port.name, "neighbor": n.remote_system_name, "port": n.remote_port_id})
+    return sorted(rows.values(), key=lambda r: (r["device"], r["port"]))
+
+
+class ApprovalError(ValueError):
+    """A pair that cannot be approved; `status` is the HTTP status to answer with."""
+
+    def __init__(self, message: str, status: int):
+        super().__init__(message)
+        self.status = status
+
+
+def _link_on(db: Session, a_id: int, b_id: int) -> Link | None:
+    return db.scalar(select(Link).where(
+        ((Link.a_interface_id == a_id) & (Link.b_interface_id == b_id))
+        | ((Link.a_interface_id == b_id) & (Link.b_interface_id == a_id))))
+
+
+def approve_link(db: Session, interface_id: int, peer_interface_id: int, username: str) -> int:
+    """Record the approval and draw the link now (discovery keeps it from then on). Returns the link id."""
+    a, b = db.get(Interface, interface_id), db.get(Interface, peer_interface_id)
+    if a is None or b is None:
+        raise ApprovalError(f"Port {interface_id if a is None else peer_interface_id} tidak ditemukan", 404)
+    if a.device_id == b.device_id:
+        raise ApprovalError("Kedua port ada di perangkat yang sama", 422)
+    link = _link_on(db, a.id, b.id)
+    busy = db.scalar(select(Link).where(Link.status == "up", Link.id != (link.id if link else -1),
+                                        Link.a_interface_id.in_((a.id, b.id)) | Link.b_interface_id.in_((a.id, b.id))))
+    if busy is not None:
+        raise ApprovalError(f"Port sudah dipakai link lain: {busy.name}", 409)
+    low, high = sorted((a.id, b.id))
+    if db.scalar(select(LinkApproval).where(LinkApproval.a_interface_id == low,
+                                            LinkApproval.b_interface_id == high)) is None:
+        db.add(LinkApproval(a_interface_id=low, b_interface_id=high, approved_by=username[:64]))
+    if link is None:
+        a_dev, b_dev = db.get(Device, a.device_id), db.get(Device, b.device_id)
+        speeds = [s for s in (a.speed_gbps, b.speed_gbps) if s]
+        link = Link(name=f"{a_dev.hostname}:{a.name} <> {b_dev.hostname}:{b.name}", a_device_id=a.device_id,
+                    a_interface_id=a.id, b_device_id=b.device_id, b_interface_id=b.id,
+                    capacity_gbps=min(speeds) if speeds else 0,
+                    link_type="bundle" if a.if_type == b.if_type == "bundle" else "metro_e")
+        db.add(link)
+    if link.discovery_source != "manual":
+        link.discovery_source = "approved"
+    link.status = "up" if a.oper_status == b.oper_status == "up" else "down"
+    link.last_seen = datetime.now(timezone.utc)
+    db.flush()
+    db.add(TopologyEvent(at=datetime.now(timezone.utc), kind="link_added", link_id=link.id, device_id=link.a_device_id,
+                         title=link.name[:255], detail=f"disetujui manual oleh {username}"))
+    return link.id
+
+
+def revoke_link(db: Session, approval_id: int) -> bool:
+    """Drop the approval and the link drawn only because of it. False when there is no such approval."""
+    approval = db.get(LinkApproval, approval_id)
+    if approval is None:
+        return False
+    link = _link_on(db, approval.a_interface_id, approval.b_interface_id)
+    if link is not None and link.discovery_source == "approved":
+        db.execute(delete(UtilizationSample).where(UtilizationSample.link_id == link.id))
+        db.delete(link)
+    db.delete(approval)
+    return True

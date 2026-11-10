@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link as RouterLink } from 'react-router-dom'
 import { api } from '../api'
+import { useAuth } from '../auth'
 import { Pager, PagerControls, usePaged, usePageSize } from './Pager'
 import { Kpi } from './ui'
 
@@ -314,59 +315,185 @@ const EVENT_PILL: Record<EventKind, string> = {
 interface UnknownLldpPeer {
   device_id: number
   device: string
+  /** The port that would carry the link: the bundle when the LLDP port is a member of one. */
+  interface_id: number
   port: string
-  bundle: string | null
-  lldp_neighbor: string
-  lldp_port: string
+  is_bundle: boolean
+  lldp: { local_port: string; neighbor: string; port: string }[]
   description: string
   /** null when the description names a box the inventory does not have (e.g. a replaced one). */
   described_device_id: number | null
   described_device: string
+  peer_interface_id: number | null
+  peer_port: string | null
+  approval: { id: number; approved_by: string; approved_at: string } | null
 }
 
-/** Ports where LLDP sees a box the inventory lacks: no link is drawn there until that box is in the NMS. */
+type PeerState = 'pending' | 'approved' | 'no_peer'
+const PEER_STATE_LABEL: Record<PeerState, string> = {
+  pending: 'Bisa disetujui', approved: 'Disetujui', no_peer: 'Port lawan tidak dikenali',
+}
+const PEER_STATE_PILL: Record<PeerState, string> = { pending: 'pill-warn', approved: 'pill-ok', no_peer: 'pill-muted' }
+
+function peerState(r: UnknownLldpPeer): PeerState {
+  if (r.approval) return 'approved'
+  return r.peer_interface_id != null ? 'pending' : 'no_peer'
+}
+
+function pairLabel(r: UnknownLldpPeer): string {
+  return `${r.device}:${r.port} ↔ ${r.described_device}:${r.peer_port ?? '?'}`
+}
+
+function confirmPairs(action: string, list: UnknownLldpPeer[]): boolean {
+  const preview = list.slice(0, 10).map((r) => `• ${pairLabel(r)}`).join('\n')
+  const more = list.length > 10 ? `\n… dan ${list.length - 10} lainnya` : ''
+  return window.confirm(`${action} ${list.length} link?\n\n${preview}${more}`)
+}
+
+/** Ports where LLDP sees a box the inventory lacks. An approver can confirm, several at once, that the link the
+ *  description names is real; discovery then draws it until the approval is revoked. */
 export function UnknownLldpPeers() {
+  const { can } = useAuth()
+  const mayApprove = can('approver')
   const [rows, setRows] = useState<UnknownLldpPeer[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [q, setQ] = useState('')
+  const [filter, setFilter] = useState<PeerState | ''>('')
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [busy, setBusy] = useState(false)
 
-  useEffect(() => {
+  function load() {
     api.get<UnknownLldpPeer[]>('/topology/lldp-unknown-peers').then(setRows).catch((e: Error) => setError(e.message))
-  }, [])
-  const needle = q.trim().toLowerCase()
-  const shown = (rows ?? []).filter((r) => !needle || [r.device, r.port, r.lldp_neighbor, r.described_device, r.description]
-    .some((v) => v.toLowerCase().includes(needle)))
-  const paged = usePaged(shown, needle)
+  }
+  useEffect(load, [])
 
+  const needle = q.trim().toLowerCase()
+  const shown = useMemo(() => (rows ?? []).filter((r) => (!filter || peerState(r) === filter) && (!needle
+    || [r.device, r.port, r.described_device, r.description, ...r.lldp.map((x) => x.neighbor)]
+      .some((v) => v.toLowerCase().includes(needle)))), [rows, filter, needle])
+  const paged = usePaged(shown, `${needle}|${filter}`)
+  const byId = useMemo(() => new Map((rows ?? []).map((r) => [r.interface_id, r])), [rows])
+  const picked = [...selected].map((id) => byId.get(id)).filter((r): r is UnknownLldpPeer => r != null)
+  const toApprove = picked.filter((r) => peerState(r) === 'pending')
+  const toRevoke = picked.filter((r) => r.approval != null)
+  const selectable = paged.pageRows.filter((r) => peerState(r) !== 'no_peer')
+  const allOnPage = selectable.length > 0 && selectable.every((r) => selected.has(r.interface_id))
+
+  function toggle(ids: number[], on: boolean) {
+    setSelected((current) => {
+      const next = new Set(current)
+      ids.forEach((id) => (on ? next.add(id) : next.delete(id)))
+      return next
+    })
+  }
+
+  async function approve() {
+    if (!toApprove.length || !confirmPairs('Setujui sesuai deskripsi', toApprove)) return
+    setBusy(true)
+    setError(null)
+    try {
+      const pairs = toApprove.map((r) => ({ interface_id: r.interface_id, peer_interface_id: r.peer_interface_id }))
+      const result = await api.post<{ approved: number }>('/topology/link-approvals', { pairs })
+      setNotice(`${result.approved} link disetujui dan digambar di topologi.`)
+      setSelected(new Set())
+      load()
+    } catch (e) {
+      setError(`Tidak ada yang disetujui: ${(e as Error).message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function revoke() {
+    if (!toRevoke.length || !confirmPairs('Cabut persetujuan', toRevoke)) return
+    setBusy(true)
+    setError(null)
+    let done = 0
+    try {
+      for (const r of toRevoke) {
+        await api.del(`/topology/link-approvals/${r.approval!.id}`)
+        done += 1
+      }
+      setNotice(`${done} persetujuan dicabut; link-nya dihapus dari topologi.`)
+    } catch (e) {
+      setError(`${done} dari ${toRevoke.length} dicabut, lalu gagal: ${(e as Error).message}`)
+    } finally {
+      setSelected(new Set())
+      setBusy(false)
+      load()
+    }
+  }
+
+  const columns = mayApprove ? 7 : 6
   return (
     <div className="card">
       <div className="toolbar">
         <h2>LLDP ke perangkat di luar inventory</h2>
         <span className="muted small">
-          LLDP adalah sumber utama: port ini melihat perangkat yang tidak ada di Observium, jadi link ke perangkat di
-          deskripsi tidak digambar. Masukkan perangkat tetangga LLDP ke Observium agar link-nya muncul.
+          LLDP adalah sumber utama: port ini melihat perangkat yang tidak ada di Observium, jadi link menurut deskripsi
+          tidak digambar. Masukkan perangkat tetangga LLDP ke Observium, atau setujui link-nya bila memang benar.
         </span>
-        <div className="spacer" />
-        <input placeholder="Cari perangkat, port, tetangga…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
       {error && <div className="error" onClick={() => setError(null)}>{error}</div>}
+      {notice && <div className="notice" onClick={() => setNotice(null)}>{notice}</div>}
+      <div className="toolbar">
+        <input placeholder="Cari perangkat, port, tetangga…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <select value={filter} onChange={(e) => setFilter(e.target.value as PeerState | '')}>
+          <option value="">Semua status</option>
+          {(Object.keys(PEER_STATE_LABEL) as PeerState[]).map((k) => <option key={k} value={k}>{PEER_STATE_LABEL[k]}</option>)}
+        </select>
+        <div className="spacer" />
+        {mayApprove ? (
+          <>
+            <button className="primary" disabled={busy || !toApprove.length} onClick={approve}>
+              Setujui terpilih ({toApprove.length})
+            </button>
+            <button disabled={busy || !toRevoke.length} onClick={revoke}>Cabut persetujuan ({toRevoke.length})</button>
+          </>
+        ) : <span className="muted small">Persetujuan butuh role approver</span>}
+      </div>
       <div className="table-wrap">
         <table>
-          <thead><tr><th>Perangkat</th><th>Port</th><th>Tetangga LLDP</th><th>Menurut deskripsi</th><th>Deskripsi</th></tr></thead>
+          <thead>
+            <tr>
+              {mayApprove && (
+                <th><input type="checkbox" aria-label="Pilih semua di halaman ini" checked={allOnPage}
+                  disabled={!selectable.length} onChange={(e) => toggle(selectable.map((r) => r.interface_id), e.target.checked)} /></th>
+              )}
+              <th>Perangkat</th><th>Port</th><th>Tetangga LLDP</th><th>Menurut deskripsi</th><th>Status</th><th>Deskripsi</th>
+            </tr>
+          </thead>
           <tbody>
-            {paged.pageRows.map((r) => (
-              <tr key={`${r.device_id}|${r.port}|${r.lldp_neighbor}`}>
-                <td><RouterLink to={`/topology?level=neighbors&device_id=${r.device_id}`}>{r.device}</RouterLink></td>
-                <td className="mono">{r.port}{r.bundle ? <span className="muted"> ({r.bundle})</span> : null}</td>
-                <td><span className="pill">?</span> {r.lldp_neighbor} <span className="mono muted">{r.lldp_port}</span></td>
-                <td>{r.described_device_id != null
-                  ? <RouterLink to={`/topology?level=neighbors&device_id=${r.described_device_id}`}>{r.described_device}</RouterLink>
-                  : <span title="Tidak ada di inventory">{r.described_device} <span className="muted">(tidak di inventory)</span></span>}</td>
-                <td className="small">{r.description}</td>
-              </tr>
-            ))}
-            {rows && !shown.length && <tr><td colSpan={5} className="empty">Tidak ada.</td></tr>}
-            {!rows && !error && <tr><td colSpan={5} className="empty">Memuat…</td></tr>}
+            {paged.pageRows.map((r) => {
+              const state = peerState(r)
+              return (
+                <tr key={r.interface_id}>
+                  {mayApprove && (
+                    <td><input type="checkbox" aria-label={`Pilih ${pairLabel(r)}`} disabled={state === 'no_peer'}
+                      checked={selected.has(r.interface_id)} onChange={(e) => toggle([r.interface_id], e.target.checked)} /></td>
+                  )}
+                  <td><RouterLink to={`/topology?level=neighbors&device_id=${r.device_id}`}>{r.device}</RouterLink></td>
+                  <td className="mono">{r.port}</td>
+                  <td>{r.lldp.map((x) => (
+                    <div key={x.local_port}>
+                      <span className="pill">?</span> {x.neighbor} <span className="mono muted">{x.port}</span>
+                      {r.is_bundle && <span className="muted small"> via {x.local_port}</span>}
+                    </div>
+                  ))}</td>
+                  <td>{r.described_device_id != null
+                    ? <><RouterLink to={`/topology?level=neighbors&device_id=${r.described_device_id}`}>{r.described_device}</RouterLink>
+                      {r.peer_port && <span className="mono muted"> {r.peer_port}</span>}</>
+                    : <span>{r.described_device} <span className="muted">(tidak di inventory)</span></span>}</td>
+                  <td><span className={`pill ${PEER_STATE_PILL[state]}`}
+                    title={r.approval ? `oleh ${r.approval.approved_by}, ${new Date(r.approval.approved_at).toLocaleString('id-ID')}` : undefined}>
+                    {PEER_STATE_LABEL[state]}</span></td>
+                  <td className="small">{r.description}</td>
+                </tr>
+              )
+            })}
+            {rows && !shown.length && <tr><td colSpan={columns} className="empty">Tidak ada.</td></tr>}
+            {!rows && !error && <tr><td colSpan={columns} className="empty">Memuat…</td></tr>}
           </tbody>
         </table>
       </div>

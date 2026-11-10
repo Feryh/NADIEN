@@ -298,7 +298,7 @@ class Link(TimestampMixin, Base):
     latency_ms: Mapped[float | None] = mapped_column(Float)
     distance_km: Mapped[float | None] = mapped_column(Float)
     status: Mapped[str] = mapped_column(String(16), default="up")  # up | down | planned
-    discovery_source: Mapped[str] = mapped_column(String(16), default="manual")  # lldp | config | manual
+    discovery_source: Mapped[str] = mapped_column(String(16), default="manual")  # lldp | config | approved | manual
     last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     fiber_id: Mapped[int | None] = mapped_column(ForeignKey("fibers.id"))
     wavelength_id: Mapped[int | None] = mapped_column(ForeignKey("dwdm_wavelengths.id"))
@@ -623,3 +623,19 @@ class TopologyEvent(Base):
     device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id", ondelete="SET NULL"), index=True)
     title: Mapped[str] = mapped_column(String(255))
     detail: Mapped[str | None] = mapped_column(Text)
+
+
+class LinkApproval(Base):
+    """An engineer's confirmation that two ports are linked as their descriptions say, although LLDP on one of them
+    sees a box outside the inventory (a carrier or transport node in between). Discovery then draws the link
+    (discovery_source "approved") until the approval is revoked or LLDP sees the two ports directly."""
+
+    __tablename__ = "link_approvals"
+    __table_args__ = (UniqueConstraint("a_interface_id", "b_interface_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Stored with a_interface_id < b_interface_id, so a pair has one row whichever end was approved from.
+    a_interface_id: Mapped[int] = mapped_column(ForeignKey("interfaces.id", ondelete="CASCADE"), index=True)
+    b_interface_id: Mapped[int] = mapped_column(ForeignKey("interfaces.id", ondelete="CASCADE"), index=True)
+    approved_by: Mapped[str] = mapped_column(String(64))
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
