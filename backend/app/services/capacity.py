@@ -11,9 +11,11 @@ utilization samples (peak of in/out per sample).
 """
 
 import math
+from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
+from statistics import median
 
 from ..config import settings
 from ..schemas import CapacityResult, ForecastPoint
@@ -90,6 +92,51 @@ class TrendFit:
 def peak_series(samples: Sequence) -> list[tuple[float, float]]:
     """(day, peak of in/out in Gbps) per sample, oldest first."""
     return sorted((s.ts.timestamp() / 86400, max(s.in_gbps or 0, s.out_gbps or 0)) for s in samples)
+
+
+SPIKE_WINDOW_DAYS = 7  # days on each side a daily peak is compared with
+SPIKE_MIN_NEIGHBOURS = 4  # with fewer there is no baseline to judge by
+
+
+def spike_indexes(series: Sequence[tuple[float, float]], capacity_gbps: float | None) -> set[int]:
+    """Positions in a (day, peak) series, oldest first, holding a one-off spike: above NADIEN_SPIKE_RATIO × the
+    median peak within ±SPIKE_WINDOW_DAYS, higher than that median by NADIEN_SPIKE_MIN_RISE_PCT of the capacity,
+    and with neither adjacent sample as high. A counter glitch (a 10G link "peaking" at 15G one day between 4G
+    days) stands alone; a real step up keeps the next day high too, so it stays — on the newest day it reads as a
+    spike until that next day arrives."""
+    min_rise = (capacity_gbps or 0) * settings.spike_min_rise_pct / 100
+    if min_rise <= 0:  # without a capacity there is no scale to tell a burst from a glitch
+        return set()
+    days = [day for day, _ in series]
+    spikes = set()
+    for k, (day, peak) in enumerate(series):
+        lo, hi = bisect_left(days, day - SPIKE_WINDOW_DAYS), bisect_right(days, day + SPIKE_WINDOW_DAYS)
+        neighbours = [series[j][1] for j in range(lo, hi) if j != k]
+        if len(neighbours) < SPIKE_MIN_NEIGHBOURS:
+            continue
+        baseline = median(neighbours)
+        ceiling = settings.spike_ratio * baseline
+        if peak <= ceiling or peak - baseline < min_rise:
+            continue
+        if all(series[j][1] <= ceiling for j in (k - 1, k + 1) if 0 <= j < len(series)):
+            spikes.add(k)
+    return spikes
+
+
+def without_spikes(series: Sequence[tuple[float, float]],
+                   capacity_gbps: float | None) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """(kept, spikes) of a (day, peak) series."""
+    spikes = spike_indexes(series, capacity_gbps)
+    return [p for k, p in enumerate(series) if k not in spikes], [p for k, p in enumerate(series) if k in spikes]
+
+
+def planning_current(series: Sequence[tuple[float, float]], capacity_gbps: float | None,
+                     today: float) -> float | None:
+    """Peak of the newest complete day that is not a spike (a day stamped within the last 24 h is still filling;
+    it counts only when nothing else is there). None for an empty series."""
+    kept, _ = without_spikes(series, capacity_gbps)
+    full = [peak for day, peak in kept if day <= today - 1] or [peak for _, peak in kept]
+    return full[-1] if full else None
 
 
 def fit_trend(points: Sequence[tuple[float, float]]) -> TrendFit | None:

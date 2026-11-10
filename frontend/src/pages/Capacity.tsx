@@ -6,6 +6,7 @@ import {
   Legend,
   Line,
   ResponsiveContainer,
+  Scatter,
   Tooltip,
   XAxis,
   YAxis,
@@ -258,12 +259,19 @@ function LinkDetail({ linkId, onClose }: { linkId: number; onClose: () => void }
   const chart = useMemo(() => {
     if (!detail) return []
     // Numeric time axis so 90 daily samples and 24 monthly forecast points are spaced by real time.
-    const history = detail.history.map((h) => ({
-      t: Date.parse(h.ts),
-      actual: Math.max(h.in_gbps, h.out_gbps),
-      capacity: detail.capacity_gbps,
-      threshold: detail.forecast[0].threshold_gbps,
-    }))
+    // One-off spikes the backend left out of current and trend: drawn as dots, not on the actual line.
+    const spikes = new Set(detail.spike_days)
+    const history = detail.history.map((h) => {
+      const peak = Math.max(h.in_gbps, h.out_gbps)
+      const spike = spikes.has(h.ts)
+      return {
+        t: Date.parse(h.ts),
+        actual: spike ? undefined : peak,
+        spike: spike ? peak : undefined,
+        capacity: detail.capacity_gbps,
+        threshold: detail.forecast[0].threshold_gbps,
+      }
+    })
     const forecast = detail.forecast.slice(1).map((f) => ({
       t: Date.parse(f.date),
       projected: f.projected_gbps,
@@ -304,6 +312,11 @@ function LinkDetail({ linkId, onClose }: { linkId: number; onClose: () => void }
               {TREND_WINDOWS.map((w) => fmtTrend(detail.growth_trends?.[w])).join(' · ')} per bln
             </div>
             <div><span className="muted">Histori</span> {detail.samples_days} hari</div>
+            {detail.spike_days.length > 0 && (
+              <div title="Puncak harian yang tidak didukung hari-hari di sekitarnya (mis. glitch counter); tidak dipakai untuk current dan tren">
+                <span className="muted">Spike diabaikan</span> {detail.spike_days.map((d) => d.slice(0, 10)).join(', ')}
+              </div>
+            )}
             <div><span className="muted">Ke 80%</span> {fmtMonths(detail.months_to_threshold)}</div>
             <div><span className="muted">Penuh</span> {fmtMonths(detail.months_to_full)} {detail.exhaustion_date && `(${detail.exhaustion_date})`}</div>
           </div>
@@ -327,7 +340,10 @@ function LinkDetail({ linkId, onClose }: { linkId: number; onClose: () => void }
                   formatter={(v) => `${Number(v).toFixed(1)}G`}
                 />
                 <Legend />
-                <Line type="monotone" dataKey="actual" name="Aktual (peak)" stroke="#38bdf8" dot={false} strokeWidth={2} />
+                <Line type="monotone" dataKey="actual" name="Aktual (peak)" stroke="#38bdf8" dot={false} strokeWidth={2} connectNulls />
+                {detail.spike_days.length > 0 && (
+                  <Scatter dataKey="spike" name="Spike sesaat (diabaikan)" fill="#f97316" />
+                )}
                 <Line type="monotone" dataKey="projected" name="Forecast (+reserved)" stroke="#a78bfa" dot={false} strokeDasharray="6 4" strokeWidth={2} />
                 <Line type="stepAfter" dataKey="threshold" name="Ambang 80%" stroke={CAPACITY_HEX.yellow} dot={false} />
                 <Line type="stepAfter" dataKey="capacity" name="Capacity" stroke={CAPACITY_HEX.red} dot={false} />

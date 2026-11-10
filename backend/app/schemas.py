@@ -415,6 +415,8 @@ class LinkCapacity(CapacityResult):
     # Least-squares growth (Gbps/month) over the last 7 / 30 / 90 days of samples.
     growth_trends: dict[str, float | None] = {}
     samples_days: int = 0
+    # Samples left out of current and trend as one-off spikes (services/capacity.spike_indexes).
+    spike_days: list[datetime] = []
 
 
 class LinkCapacityDetail(LinkCapacity):
