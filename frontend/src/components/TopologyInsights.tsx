@@ -311,6 +311,70 @@ const EVENT_PILL: Record<EventKind, string> = {
   device_added: 'pill-ok', link_added: 'pill-ok', link_down: 'pill-bad', link_up: 'pill-warn', discovery: 'pill-muted',
 }
 
+interface UnknownLldpPeer {
+  device_id: number
+  device: string
+  port: string
+  bundle: string | null
+  lldp_neighbor: string
+  lldp_port: string
+  description: string
+  /** null when the description names a box the inventory does not have (e.g. a replaced one). */
+  described_device_id: number | null
+  described_device: string
+}
+
+/** Ports where LLDP sees a box the inventory lacks: no link is drawn there until that box is in the NMS. */
+export function UnknownLldpPeers() {
+  const [rows, setRows] = useState<UnknownLldpPeer[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [q, setQ] = useState('')
+
+  useEffect(() => {
+    api.get<UnknownLldpPeer[]>('/topology/lldp-unknown-peers').then(setRows).catch((e: Error) => setError(e.message))
+  }, [])
+  const needle = q.trim().toLowerCase()
+  const shown = (rows ?? []).filter((r) => !needle || [r.device, r.port, r.lldp_neighbor, r.described_device, r.description]
+    .some((v) => v.toLowerCase().includes(needle)))
+  const paged = usePaged(shown, needle)
+
+  return (
+    <div className="card">
+      <div className="toolbar">
+        <h2>LLDP ke perangkat di luar inventory</h2>
+        <span className="muted small">
+          LLDP adalah sumber utama: port ini melihat perangkat yang tidak ada di Observium, jadi link ke perangkat di
+          deskripsi tidak digambar. Masukkan perangkat tetangga LLDP ke Observium agar link-nya muncul.
+        </span>
+        <div className="spacer" />
+        <input placeholder="Cari perangkat, port, tetangga…" value={q} onChange={(e) => setQ(e.target.value)} />
+      </div>
+      {error && <div className="error" onClick={() => setError(null)}>{error}</div>}
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>Perangkat</th><th>Port</th><th>Tetangga LLDP</th><th>Menurut deskripsi</th><th>Deskripsi</th></tr></thead>
+          <tbody>
+            {paged.pageRows.map((r) => (
+              <tr key={`${r.device_id}|${r.port}|${r.lldp_neighbor}`}>
+                <td><RouterLink to={`/topology?level=neighbors&device_id=${r.device_id}`}>{r.device}</RouterLink></td>
+                <td className="mono">{r.port}{r.bundle ? <span className="muted"> ({r.bundle})</span> : null}</td>
+                <td><span className="pill">?</span> {r.lldp_neighbor} <span className="mono muted">{r.lldp_port}</span></td>
+                <td>{r.described_device_id != null
+                  ? <RouterLink to={`/topology?level=neighbors&device_id=${r.described_device_id}`}>{r.described_device}</RouterLink>
+                  : <span title="Tidak ada di inventory">{r.described_device} <span className="muted">(tidak di inventory)</span></span>}</td>
+                <td className="small">{r.description}</td>
+              </tr>
+            ))}
+            {rows && !shown.length && <tr><td colSpan={5} className="empty">Tidak ada.</td></tr>}
+            {!rows && !error && <tr><td colSpan={5} className="empty">Memuat…</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <Pager paged={paged} unit="port" />
+    </div>
+  )
+}
+
 export function TopologyChanges() {
   const [kind, setKind] = useState<EventKind | ''>('')
   const [days, setDays] = useState(7)

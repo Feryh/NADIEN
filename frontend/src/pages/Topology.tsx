@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link as RouterLink, useSearchParams } from 'react-router-dom'
 import { api, CapacityColor, DiscoveryResult } from '../api'
 import { BasemapShape, Box, declutter, loadBasemap, project } from '../components/basemap'
-import { NamingStandard, TopologyChanges } from '../components/TopologyInsights'
+import { NamingStandard, TopologyChanges, UnknownLldpPeers } from '../components/TopologyInsights'
 import TopologyLegend from '../components/TopologyLegend'
 import { PopAreaEditor, SearchHit, TopologySearchBox } from '../components/TopologyTools'
 import TopologyDetail, { CityFilterBar } from '../components/TopologyDetail'
@@ -686,9 +686,10 @@ interface LiveKeep {
   pan: Pos
 }
 
-type Tab = 'map' | 'naming' | 'changes'
+type Tab = 'map' | 'naming' | 'lldp' | 'changes'
 const TABS: { key: Tab; label: string }[] = [
-  { key: 'map', label: 'Peta topologi' }, { key: 'naming', label: 'Standar penamaan & label' }, { key: 'changes', label: 'Log perubahan' },
+  { key: 'map', label: 'Peta topologi' }, { key: 'naming', label: 'Standar penamaan & label' },
+  { key: 'lldp', label: 'LLDP tak dikenal' }, { key: 'changes', label: 'Log perubahan' },
 ]
 
 export default function Topology() {
@@ -710,6 +711,7 @@ export default function Topology() {
       </div>
       {tab === 'map' && <TopologyMap dirtyRef={mapDirtyRef} />}
       {tab === 'naming' && <NamingStandard />}
+      {tab === 'lldp' && <UnknownLldpPeers />}
       {tab === 'changes' && <TopologyChanges />}
     </div>
   )
