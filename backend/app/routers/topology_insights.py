@@ -11,8 +11,10 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from .. import models as m
+from .. import schemas as s
 from ..database import get_db
 from ..services import cache
+from ..services.auth import CurrentUser, require
 from ..services.naming_report import Inventory, device_rows, device_script, port_rows, summary
 from .analysis import _context
 
@@ -178,3 +180,29 @@ def lldp_unknown_peers(db: Session = Depends(get_db)):
     from ..services.topology import unknown_lldp_peers  # late: discovery helpers load every port
 
     return cache.cached(("topology", "lldp-unknown-peers"), lambda: unknown_lldp_peers(db))
+
+
+@router.post("/link-approvals", status_code=201)
+def approve_links(payload: s.LinkApprovalsIn, user: CurrentUser = Depends(require("approver")),
+                  db: Session = Depends(get_db)):
+    """Confirm description pairs LLDP cannot see (a carrier/transport box in between). Each pair is drawn at once as
+    an "approved" link and kept by discovery until revoked or until LLDP sees the two ports directly."""
+    from ..services.topology import ApprovalError, approve_link  # late: discovery helpers load every port
+
+    try:
+        links = [approve_link(db, p.interface_id, p.peer_interface_id, user.username) for p in payload.pairs]
+    except ApprovalError as error:
+        db.rollback()  # all or nothing: one bad pair approves none of them
+        raise HTTPException(error.status, str(error)) from error
+    db.commit()
+    return {"approved": len(links), "link_ids": links}
+
+
+@router.delete("/link-approvals/{approval_id}", status_code=204)
+def revoke_link_approval(approval_id: int, _: CurrentUser = Depends(require("approver")),
+                         db: Session = Depends(get_db)):
+    from ..services.topology import revoke_link
+
+    if not revoke_link(db, approval_id):
+        raise HTTPException(404, "Persetujuan tidak ditemukan")
+    db.commit()

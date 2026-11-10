@@ -228,7 +228,7 @@ class LinkCreate(BaseModel):
     latency_ms: float | None = Field(default=None, ge=0)
     distance_km: float | None = Field(default=None, ge=0)
     status: Literal["up", "down", "planned"] = "up"
-    discovery_source: Literal["lldp", "config", "manual"] = "manual"
+    discovery_source: Literal["lldp", "config", "approved", "manual"] = "manual"
     fiber_id: int | None = None
     wavelength_id: int | None = None
 
@@ -337,6 +337,17 @@ class TopologyLayoutIn(BaseModel):
             raise ValueError(f"positions of view {self.view_key} must be {'lat/lon' if on_map else 'x/y'}: "
                              + ", ".join(wrong[:5]))
         return self
+
+
+class LinkApprovalPair(BaseModel):
+    interface_id: int
+    peer_interface_id: int
+
+
+class LinkApprovalsIn(BaseModel):
+    """Several description pairs confirmed at once (Topologi > LLDP tak dikenal)."""
+
+    pairs: list[LinkApprovalPair] = Field(min_length=1, max_length=500)
 
 
 class DiscoveryResult(BaseModel):
