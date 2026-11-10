@@ -13,7 +13,7 @@ directions swapped, when A is not usable) and read `days` daily peaks from one o
     rrdtool xport --start end-90d --end now --step 86400 DEF:i=<f>:INOCTETS:MAX DEF:o=<f>:OUTOCTETS:MAX
 
 Samples of each link from the first day the source returned are replaced by the daily peaks, and `current_gbps`
-becomes the last full day's peak.
+becomes the last full day's peak that is not a one-off spike (settle_current).
 """
 
 import re
@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from ... import models as m
 from ...config import settings
+from ...services.capacity import SPIKE_WINDOW_DAYS, peak_series, planning_current
 
 CHUNK = 250  # RRD files per remote execution
 # Observium creates port RRDs with DS max 12,500,000,000 bytes/s (100 Gbps); RRD stores anything
@@ -258,16 +259,17 @@ def _by_window(db: Session, targets: list[Target], days: int, backfill_days: int
     return windows
 
 
-def _store(db: Session, t: Target, got: Any, nan_days: int, report: dict[str, Any]) -> None:
-    """Replace one link's samples from the first day the fetch returned onwards with the fetched daily peaks."""
+def _store(db: Session, t: Target, got: Any, nan_days: int, report: dict[str, Any]) -> bool:
+    """Replace one link's samples from the first day the fetch returned onwards with the fetched daily peaks.
+    True when something was stored."""
     if got == "MISSING":
         report["missing_files"] += 1
-        return
+        return False
     if not isinstance(got, list):
         report["error_count"] += 1
         if len(report["errors"]) < 20:
             report["errors"].append(f"{t.link.name}: {got or 'no output'}")
-        return
+        return False
     report["days_without_data"] += nan_days
     peak = max((max(rx, tx) for _, rx, tx in got), default=0.0)
     if (t.link.capacity_gbps or 0) > DS_MAX_GBPS and (nan_days or peak >= DS_MAX_GBPS * 0.97):
@@ -275,7 +277,7 @@ def _store(db: Session, t: Target, got: Any, nan_days: int, report: dict[str, An
             report["possibly_clipped"].append(
                 f"{t.link.name}: {t.link.capacity_gbps:g}G link, peak {peak:.1f}G, {nan_days} hari tanpa data")
     if not got:
-        return
+        return False
     # Never from the window start: the oldest day of a window that does not start at midnight is partial and
     # dropped by the source, so deleting it would erase the complete peak an earlier run stored for that day.
     first_day = min(ts for ts, _, _ in got)
@@ -284,13 +286,9 @@ def _store(db: Session, t: Target, got: Any, nan_days: int, report: dict[str, An
     for ts, rx, tx in got:
         in_g, out_g = (tx, rx) if t.swapped else (rx, tx)
         db.add(m.UtilizationSample(link_id=t.link.id, ts=ts, in_gbps=round(in_g, 4), out_gbps=round(out_g, 4)))
-    # A bucket stamped within the last 24 h is still filling; the last complete day is the
-    # planning "current" (fall back to the partial one only when it's all there is).
-    full_days = [s for s in got if s[0] <= datetime.now(timezone.utc) - timedelta(days=1)] or got
-    last = full_days[-1]
-    t.link.current_gbps = round(max(last[1], last[2]), 3)
     report["links_with_history"] += 1
     report["samples"] += len(got)
+    return True
 
 
 def sync_rrd(db: Session, source: RrdSource, days: int = 90,
@@ -304,7 +302,7 @@ def sync_rrd(db: Session, source: RrdSource, days: int = 90,
     report: dict[str, Any] = {"source": source.name, "days": days, "links": len(targets) + unmapped,
                               "links_without_port_map": unmapped, "links_with_history": 0, "missing_files": 0,
                               "errors": [], "error_count": 0, "samples": 0, "days_without_data": 0,
-                              "possibly_clipped": []}
+                              "possibly_clipped": [], "spikes_ignored": 0}
     if backfill_days is not None:
         report["backfill_days"] = backfill_days
         report["links_backfilled"] = sum(len(ts) for window, ts in windows.items() if window != days)
@@ -315,7 +313,33 @@ def sync_rrd(db: Session, source: RrdSource, days: int = 90,
             done += len(chunk)
             step(f"rrd {done}/{len(targets)}")
             parsed = source.fetch(chunk, window)
-            for t in chunk:
-                _store(db, t, parsed.get(str(t.link.id)), int(parsed.get(f"{t.link.id}#nan", 0) or 0), report)
+            stored = [t.link for t in chunk
+                      if _store(db, t, parsed.get(str(t.link.id)), int(parsed.get(f"{t.link.id}#nan", 0) or 0), report)]
+            db.flush()
+            report["spikes_ignored"] += settle_current(db, stored)
             db.commit()
     return report
+
+
+def settle_current(db: Session, links: list[m.Link]) -> int:
+    """Each link's current_gbps = the newest complete day's peak in its stored history that is not a one-off spike
+    (services/capacity.spike_indexes), so a counter glitch neither shows as a 147% hotspot nor starts the forecast.
+    Returns how many links had their newest complete day dropped as a spike."""
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(days=2 * SPIKE_WINDOW_DAYS + 2)  # the newest day plus its whole comparison window
+    samples: dict[int, list[Any]] = {}
+    for row in db.execute(select(m.UtilizationSample.link_id, m.UtilizationSample.ts, m.UtilizationSample.in_gbps,
+                                 m.UtilizationSample.out_gbps)
+                          .where(m.UtilizationSample.link_id.in_([l.id for l in links]),
+                                 m.UtilizationSample.ts >= since)):
+        samples.setdefault(row.link_id, []).append(row)
+    today, ignored = now.timestamp() / 86400, 0
+    for link in links:
+        series = peak_series(samples.get(link.id, []))
+        current = planning_current(series, link.capacity_gbps, today)
+        if current is None:
+            continue
+        raw = planning_current(series, None, today)
+        ignored += raw is not None and abs(raw - current) > 1e-9
+        link.current_gbps = round(current, 3)
+    return ignored

@@ -170,6 +170,8 @@ export interface LinkCapacity extends CapacityResult {
   /** Growth G/bulan per trend window ("7", "30", "90" hari), null when the window has too few samples. */
   growth_trends: Record<string, number | null>
   samples_days: number
+  /** Timestamps of daily peaks left out of current and trend as one-off spikes (same format as history[].ts). */
+  spike_days: string[]
 }
 
 export interface LinkCapacityDetail extends LinkCapacity {

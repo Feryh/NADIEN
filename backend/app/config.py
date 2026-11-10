@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     hotspot_warning_pct: float = 70.0
     hotspot_critical_pct: float = 90.0
     hotspot_suspect_pct: float = 150.0  # above this the link capacity is treated as wrong data
+    # A daily peak the days around it do not support (a counter glitch) is left out of current and trend: above
+    # spike_ratio × the median peak of the surrounding days and higher than it by spike_min_rise_pct of the capacity.
+    spike_ratio: float = 2.0
+    spike_min_rise_pct: float = 25.0
     # ONTs one GPON port takes at its split ratio (1:64): a PON port's occupancy is its online ONTs against this.
     pon_max_onts: int = 64
 

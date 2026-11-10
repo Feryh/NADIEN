@@ -103,6 +103,20 @@ def test_should_use_5_minute_peaks_for_last_7_days_and_2_hour_peaks_before(synce
     assert sorted(q["from"][0] for q in calls if q["id"] == ["1001"]) == ["-7d", "-90d"]
 
 
+def flat_with_glitch_yesterday(t: int, step: int) -> tuple[float, float]:
+    """100 G every day, except a counter glitch that reads 300 G yesterday."""
+    gbps = 300 if (t - 1) // DAY == TODAY - 1 else 100
+    return gbps * 1e9, gbps * 0.5e9
+
+
+def test_should_not_take_current_from_a_one_day_glitch(synced):
+    report = sync_rrd(synced, api_source({"1001": flat_with_glitch_yesterday}, []), days=30)
+    core, by_day = core_samples(synced)
+    assert by_day[TODAY - 1].in_gbps == 300  # the raw sample is kept for the record
+    assert core.current_gbps == 100
+    assert report["spikes_ignored"] == 1
+
+
 def test_should_report_error_and_keep_going_when_port_has_no_rrd(synced):
     report = sync_rrd(synced, api_source({}, []), days=30)
     assert report["links_with_history"] == 0

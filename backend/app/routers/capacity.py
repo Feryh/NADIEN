@@ -22,6 +22,7 @@ from ..services.capacity import (
     hotspot_level,
     peak_series,
     port_utilization_pct,
+    spike_indexes,
 )
 from ..services.olt import PonUsage, is_pon_port, olt_layout, onts_online, pon_level, pon_port_occupancy
 
@@ -61,7 +62,9 @@ def _forecast_inputs(manual_growth: float | None, fit: TrendFit | None) -> tuple
 
 
 def _link_capacity(link, samples, devices, pops) -> s.LinkCapacity:
-    series = peak_series(samples)
+    samples = sorted(samples, key=lambda x: x.ts)  # same order as peak_series, so indexes line up
+    spikes = spike_indexes(peak_series(samples), link.capacity_gbps)
+    series = peak_series([x for k, x in enumerate(samples) if k not in spikes])
     fits = _trend_fits(series)
     growth, source, trend = _forecast_inputs(link.growth_gbps_per_month, fits[settings.trend_window_days])
     result = calculate(link.capacity_gbps, link.current_gbps, link.reserved_gbps, growth_abs=growth,
@@ -79,6 +82,7 @@ def _link_capacity(link, samples, devices, pops) -> s.LinkCapacity:
         b_pop=pops.get(b.pop_id) if b else None,
         growth_trends=_growth_per_window(fits),
         samples_days=round(series[-1][0] - series[0][0]) if len(series) >= 2 else 0,
+        spike_days=[samples[k].ts for k in sorted(spikes)],
     )
 
 
@@ -225,6 +229,12 @@ def _daily_peaks(db: Session) -> dict[int, dict[str, float]]:
     return peaks
 
 
+def _without_spike_days(peaks: dict[str, float], capacity_gbps: float | None) -> dict[str, float]:
+    days = sorted(peaks)
+    spikes = spike_indexes([(datetime.fromisoformat(d).timestamp() / 86400, peaks[d]) for d in days], capacity_gbps)
+    return {d: peaks[d] for k, d in enumerate(days) if k not in spikes}
+
+
 class _Node:
     def __init__(self, key: str, label: str, pop: str | None):
         self.key, self.label, self.pop = key, label, pop
@@ -288,7 +298,7 @@ def _node_rows(db: Session, level: str) -> list[dict[str, Any]]:
             if key not in nodes:
                 label = d.hostname if level == "device" else pops.get(d.pop_id, "?")
                 nodes[key] = _Node(f"{level}:{key}", label, pops.get(d.pop_id))
-            nodes[key].add(link, peaks.get(link.id, {}))
+            nodes[key].add(link, _without_spike_days(peaks.get(link.id, {}), link.capacity_gbps))
     return [n.forecast() for n in nodes.values() if n.capacity > 0]
 
 

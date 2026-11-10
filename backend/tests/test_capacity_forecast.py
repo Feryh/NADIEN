@@ -133,3 +133,12 @@ def test_should_ignore_reserved_when_computing_utilization_pct():
 
 def test_should_return_zero_when_capacity_is_none_for_utilization_pct():
     assert utilization_pct(2, None) == 0.0
+
+
+def test_should_leave_one_day_glitch_out_of_trend_and_list_it_when_showing_link_detail(client, db):
+    peaks = [40.0] * 20
+    peaks[15] = 150.0  # a 100G link "peaking" at 150G for one day between 40G days
+    link = _network(db, peaks)
+    detail = client.get(f"/api/capacity/links/{link.id}").json()
+    assert [d[:10] for d in detail["spike_days"]] == [detail["history"][15]["ts"][:10]]
+    assert abs(detail["growth_trends"]["30"]) < 0.01  # flat without the glitch
