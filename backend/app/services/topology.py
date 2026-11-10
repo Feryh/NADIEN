@@ -12,6 +12,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -52,11 +53,23 @@ def norm_if(name: str) -> str:
 
 _SPLIT = re.compile(r"[^a-z0-9]+")
 _SLOT_PORT = re.compile(r"(\d+):(\d+)")  # FiberHome port id in neighbours' LLDP (9:1 = SFP+ 9/1)
+_MAC = re.compile(r"[0-9a-fA-F]{12}")
+_HOSTNAME_SHAPED = re.compile(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]*)(?:[-_][A-Za-z0-9]+){2,}")
 
 
 def host_key(name: str) -> str:
     """'JKT_P_01.metro.net' -> 'jkt-p-01': the form used to spot hostnames inside descriptions."""
     return "-".join(p for p in _SPLIT.split(norm_host(name)) if p)
+
+
+def _city(name: str) -> str | None:
+    """'PAD-PAU-BNG1-M4' -> 'pad', cell site 'SUL-SA-MND-0230-ME1-ZTE' -> 'mnd'. None for role-first names
+    ('PEIN1-H-SIT-PNJ'), whose first part is no city."""
+    csr = csr_parts(name.replace("_", "-"))
+    if csr:
+        return csr[2].lower()
+    first = host_key(name).split("-")[0]
+    return first if first.isalpha() else None
 
 
 def _names_port(text: str, name: str) -> bool:
@@ -95,6 +108,16 @@ class _Discovery:
         self.if_index = {(i.device_id, norm_if(i.name)): i for i in self.ifaces.values()}
         self.adjacencies: dict[frozenset[int], _Adjacency] = {}
         self.covered: set[int] = set()
+        # Port pairs only one end describes while the other end's description names a third device.
+        self.contradicted: set[frozenset[int]] = set()
+        # LLDP is the authority on what is plugged into a port. Ports (and the bundle of such a member) whose LLDP
+        # neighbour names a system the inventory lacks (a carrier/transport box): no description may pair them.
+        self.lldp_seen: set[int] = set()
+        # Ports whose LLDP neighbour sends only its MAC (cell-site ZTE boxes do): -> the neighbour's port names. A
+        # description may pair such a port only with a device that has a port of that name.
+        self.lldp_mac_ports: dict[int, set[str]] = {}
+        # Ports a description named a peer for, refused because their LLDP neighbour cannot be that peer.
+        self.lldp_refused: set[int] = set()
         self.created_ids: set[int] = set()
         self._ports_by_device: dict[int, list[Interface]] | None = None
 
@@ -164,6 +187,14 @@ class _Discovery:
             remote = self.by_host.get(norm_host(n.remote_system_name))
             if local is None or remote is None:
                 unresolved.append(f"{local.hostname if local else n.device_id}:{n.local_interface} -> {n.remote_system_name}")
+                port = self.if_index.get((local.id, norm_if(n.local_interface))) if local else None
+                if port is None:
+                    continue
+                for port_id in (i for i in (port.id, port.parent_id) if i):
+                    if _MAC.fullmatch(re.sub(r"[:.\-\s]", "", n.remote_system_name or "")):
+                        self.lldp_mac_ports.setdefault(port_id, set()).add(norm_if(n.remote_port_id or ""))
+                    else:
+                        self.lldp_seen.add(port_id)
                 continue
             self.add(self.iface(local, n.local_interface), self.iface(remote, n.remote_port_id), "lldp")
         return unresolved
@@ -191,16 +222,19 @@ class _Discovery:
         """Pair uncovered ports whose descriptions name each other's hostname.
 
         Only for device pairs LLDP saw no adjacency between at all: otherwise a bundle described
-        "TO-X" would be paired on top of its LLDP-discovered members and counted twice.
+        "TO-X" would be paired on top of its LLDP-discovered members and counted twice. Never where LLDP rules the
+        described peer out (lldp_allows): the description then names the far end of a carrier or transport path
+        (KDR-PUW-BNG1-M4 Eth-Trunk1 "to MKS-BSW-BNG2-M4" over INDOSAT), not what is plugged into the port.
         Ports are grouped by device pair first, so the work is linear in the number of ports.
         """
         lldp_pairs = {frozenset((adj.a.device_id, adj.b.device_id)) for adj in self.adjacencies.values()}
         by_pair: dict[frozenset[int], dict[int, list[Interface]]] = {}
         for iface in self.ifaces.values():
-            if iface.id in self.covered or iface.parent_id or not iface.description or iface.if_type == "subinterface":
+            if (iface.id in self.covered or iface.id in self.lldp_seen or iface.parent_id or not iface.description
+                    or iface.if_type == "subinterface"):
                 continue
             remote = self.mentioned_device(iface.description)
-            if remote is None or remote.id == iface.device_id:
+            if remote is None or remote.id == iface.device_id or not self.lldp_allows(iface, remote.id):
                 continue
             pair = frozenset((iface.device_id, remote.id))
             if pair in lldp_pairs:
@@ -226,13 +260,46 @@ class _Discovery:
     def one_sided(self, pair: frozenset[int], sides: dict[int, list[Interface]]) -> None:
         """Only one end describes the other (typical for a cell-site uplink to a metro box that is
         not described back). Accepted only when the description also names an existing, uncovered
-        port of the remote device — the hostname alone is not enough to call it a link."""
+        port of the remote device — the hostname alone is not enough to call it a link — and that port's own
+        description does not name a third device: then ours is a stale or mistyped description
+        (PAD-PAU-BNG1-M4 Eth-Trunk74 "to KDR-PUW-BNG1-M4:Eth-Trunk1" while that trunk says "to MKS-BSW-BNG2-M4")."""
         ((device_id, ours),) = sides.items()
         remote_id = next(iter(pair - {device_id}))
         for a in ours:
             b = self.named_port(remote_id, a.description or "")
-            if b is not None and b.id not in self.covered:
-                self.add(a, b, "config")
+            if b is None or b.id in self.covered or b.id in self.lldp_seen or not self.lldp_allows(b, device_id):
+                continue
+            if self.names_another_device(b, device_id):
+                self.contradicted.add(frozenset((a.id, b.id)))
+                continue
+            self.add(a, b, "config")
+
+    def lldp_allows(self, port: Interface, peer_device_id: int) -> bool:
+        """LLDP does not rule out `peer_device_id` behind `port`: the neighbour is no unknown named system, and a
+        neighbour that sent only its MAC reported port names `peer_device_id` has (a cell site's xgei-1/1/0/9 — yes;
+        a carrier ZTE's xxvgei-1/1/0/12 behind a Huawei peer — no)."""
+        seen = self.lldp_mac_ports.get(port.id)
+        if seen is None:
+            return True
+        peer_ports = {norm_if(p.name) for p in self.ports_of(peer_device_id)}
+        if seen <= peer_ports:
+            return True
+        self.lldp_refused.add(port.id)
+        return False
+
+    def names_another_device(self, port: Interface, expected_device_id: int) -> bool:
+        """The port's description points to a city other than `expected_device_id`'s and other than its own:
+        hostname-shaped words (three or more -/_ joined parts starting like an inventory hostname, known to the NMS
+        or not — MKS-BSW-BNG2-M4 is not) compared by their city code. Descriptions often spell the same box
+        differently (DUM-DMB for DUM-DUB) or keep the name of a box that was replaced in the same city (BJM-NDC
+        for BJM-STO), and role-first names (PEIN1-H-…) carry no city, so only a different city is a contradiction."""
+        expected = _city(self.devices[expected_device_id].hostname)
+        if expected is None:
+            return False
+        cities = {_city(m.group(0)) for m in _HOSTNAME_SHAPED.finditer(port.description or "")
+                  if m.group(1).lower() in self.host_first_parts}
+        cities.discard(_city(self.devices[port.device_id].hostname))  # a local OLT/box, not a remote peer
+        return bool(cities) and None not in cities and expected not in cities
 
     def named_port(self, device_id: int, description: str) -> Interface | None:
         """Port of `device_id` written in the description, longest name wins (xgei-1/1/0/10 over /1)."""
@@ -355,7 +422,9 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
     # rather than lost:
     #  - a member-level link whose ports now belong to a discovered bundle;
     #  - a config-described link between devices LLDP now sees directly;
-    #  - a link on a phantom port (created from an LLDP name that matched no real port).
+    #  - a link on a phantom port (created from an LLDP name that matched no real port);
+    #  - a config-described link the far end's own description now contradicts (it never existed);
+    #  - a config-described link on a port where LLDP sees a box outside the inventory (LLDP decides).
     member_pairs = {pair for adj in run.adjacencies.values() if adj.link_type == "bundle" for pair in adj.member_pairs}
     lldp_device_pairs = {
         frozenset((adj.a.device_id, adj.b.device_id)) for adj in run.adjacencies.values() if adj.source == "lldp"
@@ -369,6 +438,8 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
             key in member_pairs
             or (link.discovery_source == "config" and frozenset((link.a_device_id, link.b_device_id)) in lldp_device_pairs)
             or bool(key & phantom)
+            or (link.discovery_source == "config"
+                and (key in run.contradicted or bool(key & (run.lldp_seen | run.lldp_refused))))
         )
         if replaced:
             db.execute(delete(UtilizationSample).where(UtilizationSample.link_id == link.id))
@@ -401,3 +472,40 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
         interfaces_removed=removed,
         unresolved_neighbors=unresolved,
     )
+
+
+def unknown_lldp_peers(db: Session) -> list[dict[str, Any]]:
+    """Ports whose description (or their bundle's) names a peer that LLDP rules out: the neighbour is a system
+    outside the inventory (a transport node), or sent only its MAC and a port name the described peer does not have
+    (a carrier's box). With LLDP deciding no link is drawn there; adding the box LLDP sees to the NMS shows the path."""
+    run = _Discovery(db)
+    rows = []
+    for n in db.scalars(select(LldpNeighbor)):
+        local = run.devices.get(n.device_id)
+        if local is None or run.by_host.get(norm_host(n.remote_system_name)) is not None:
+            continue
+        port = run.if_index.get((local.id, norm_if(n.local_interface)))
+        if port is None:
+            continue
+        bundle = run.ifaces.get(port.parent_id) if port.parent_id else None
+        described = next((p for p in (port, bundle) if p is not None and p.description), None)
+        if described is None:
+            continue
+        named = run.mentioned_device(described.description)
+        if named is not None and named.id == local.id:
+            continue
+        token = next((m.group(0) for m in _HOSTNAME_SHAPED.finditer(described.description)
+                      if m.group(1).lower() in run.host_first_parts
+                      and _city(m.group(0)) != _city(local.hostname)), None)
+        if named is None and token is None:
+            continue
+        mac_only = bool(_MAC.fullmatch(re.sub(r"[:.\-\s]", "", n.remote_system_name or "")))
+        if mac_only and named is not None and norm_if(n.remote_port_id or "") in {
+                norm_if(p.name) for p in run.ports_of(named.id)}:
+            continue  # the described peer itself, announcing only its MAC (cell sites do)
+        rows.append({"device_id": local.id, "device": local.hostname, "port": port.name,
+                     "bundle": bundle.name if bundle else None, "lldp_neighbor": n.remote_system_name,
+                     "lldp_port": n.remote_port_id, "description": described.description,
+                     "described_device_id": named.id if named else None,
+                     "described_device": named.hostname if named else token})
+    return sorted(rows, key=lambda r: (r["device"], r["port"]))

@@ -170,3 +170,11 @@ def naming_device_script(device_id: int, db: Session = Depends(get_db)):
     if device_id not in inv.devices:
         raise HTTPException(404, "Device not found")
     return device_script(_ports(db), device_id, inv)
+
+
+@router.get("/lldp-unknown-peers")
+def lldp_unknown_peers(db: Session = Depends(get_db)):
+    """Ports whose LLDP neighbour is outside the inventory while their description names an inventory device."""
+    from ..services.topology import unknown_lldp_peers  # late: discovery helpers load every port
+
+    return cache.cached(("topology", "lldp-unknown-peers"), lambda: unknown_lldp_peers(db))
