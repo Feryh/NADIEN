@@ -165,7 +165,7 @@ class _Discovery:
         if self._ports_by_device is None:
             self._ports_by_device = {}
             for iface in self.ifaces.values():
-                if iface.if_type != "subinterface":
+                if iface.if_type not in ("subinterface", "virtual"):  # a link ends on a port or a bundle
                     self._ports_by_device.setdefault(iface.device_id, []).append(iface)
         return self._ports_by_device.get(device_id, [])
 
@@ -196,6 +196,12 @@ class _Discovery:
                         self.lldp_mac_ports.setdefault(port_id, set()).add(norm_if(n.remote_port_id or ""))
                     else:
                         self.lldp_seen.add(port_id)
+                continue
+            if self.is_logical(local, n.local_interface) or self.is_logical(remote, n.remote_port_id):
+                # A VLAN interface, management port or the like (Vbdif59, MEth0/0/1, spi-0/3/0/1) carries no link of
+                # its own: the neighbour announced it instead of the physical port. The pair stays open for the
+                # config, whose description may name the real port.
+                self.stats["lldp_logical_ports"] += 1
                 continue
             self.add(self.iface(local, n.local_interface), self.iface(remote, n.remote_port_id), "lldp")
         return unresolved
@@ -232,7 +238,7 @@ class _Discovery:
         by_pair: dict[frozenset[int], dict[int, list[Interface]]] = {}
         for iface in self.ifaces.values():
             if (iface.id in self.covered or iface.id in self.lldp_seen or iface.parent_id or not iface.description
-                    or iface.if_type == "subinterface"):
+                    or iface.if_type in ("subinterface", "virtual")):
                 continue
             remote = self.mentioned_device(iface.description)
             if remote is None or remote.id == iface.device_id or not self.lldp_allows(iface, remote.id):
@@ -285,6 +291,15 @@ class _Discovery:
                 self.contradicted.add(frozenset((a.id, b.id)))
                 continue
             self.add(a, b, "config")
+
+    def is_logical(self, device: Device, port_name: str | None) -> bool:
+        """A port that is no physical port or bundle: classified virtual from the NMS, or named like one."""
+        from ..collectors.observium.parsers import VIRTUAL_NAME  # late: the parsers import this module
+
+        port = self.if_index.get((device.id, norm_if(port_name or "")))
+        if port is not None:
+            return port.if_type == "virtual"
+        return bool(VIRTUAL_NAME.match((port_name or "").strip()))
 
     def replacement_for(self, hostname: str) -> Device | None:
         """The one inventory device whose name differs from `hostname` only in its last part, the model suffix
@@ -468,6 +483,7 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
             or (link.discovery_source == "config"
                 and (key in run.contradicted or bool(key & (run.lldp_seen | run.lldp_refused))))
             or link.discovery_source == "approved"  # approval revoked, or LLDP now sees the ports directly
+            or any(run.ifaces[i].if_type == "virtual" for i in key if i in run.ifaces)  # a VLAN/management interface
         )
         if replaced:
             db.execute(delete(UtilizationSample).where(UtilizationSample.link_id == link.id))
