@@ -5,6 +5,7 @@ import { api, CapacityColor, DiscoveryResult } from '../api'
 import { BasemapShape, Box, declutter, loadBasemap, project } from '../components/basemap'
 import { NamingStandard, TopologyChanges, UnknownLldpPeers } from '../components/TopologyInsights'
 import TopologyLegend from '../components/TopologyLegend'
+import ZoomControls from '../components/topology/ZoomControls'
 import { PopAreaEditor, SearchHit, TopologySearchBox } from '../components/TopologyTools'
 import TopologyDetail, { CityFilterBar } from '../components/TopologyDetail'
 import { fmtG } from '../components/ui'
@@ -1657,6 +1658,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
             </svg>
           )}
           <div className="graph-canvas" ref={container} />
+          <ZoomControls getCy={() => (cyRef.current && !cyRef.current.destroyed() ? cyRef.current : null)} />
           {dirty && (
             <div className="unsaved-bar" role="status">
               <span className="unsaved-dot" />
