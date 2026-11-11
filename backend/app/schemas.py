@@ -99,6 +99,24 @@ class DeviceRead(DeviceCreate, ORMRead):
     last_polled_at: datetime | None = None
 
 
+class DeviceBulkEditIn(BaseModel):
+    """Several devices at once: move them to one POP, and/or put their POPs in one area. The area belongs to the
+    POP, so every device of those POPs follows it, not only the chosen ones."""
+
+    device_ids: list[int] = Field(min_length=1, max_length=10000)
+    pop_id: int | None = Field(default=None, description="Move the devices here; they are locked to it (pop_locked)")
+    area: str | None = Field(default=None, min_length=1, max_length=64, description="Area for the devices' POPs")
+    clear_area: bool = Field(default=False, description="Put the devices' POPs back on the automatic area")
+
+    @model_validator(mode="after")
+    def check_change(self) -> "DeviceBulkEditIn":
+        if self.pop_id is None and self.area is None and not self.clear_area:
+            raise ValueError("pilih POP tujuan atau area")
+        if self.area is not None and self.clear_area:
+            raise ValueError("area dan clear_area tidak bisa sekaligus")
+        return self
+
+
 class InterfaceCreate(BaseModel):
     device_id: int
     name: str

@@ -10,6 +10,7 @@ from .. import schemas as s
 from ..collectors import runner as jobs_runner
 from ..crud import crud_router
 from ..database import get_db
+from ..services.areas import UNMAPPED_AREA
 
 router = APIRouter()
 
@@ -68,6 +69,44 @@ _GUARDS = {"/pops": _pop_guard, "/devices": _device_guard}
 
 for prefix, model, create, read, tag, search in _ENTITIES:
     router.include_router(crud_router(prefix, model, create, read, tag, search, guard=_GUARDS.get(prefix)))
+
+
+# --------------------------------------------------------------------------- bulk edit of devices
+
+
+@router.patch("/devices")
+def bulk_edit_devices(payload: s.DeviceBulkEditIn, db: Session = Depends(get_db)):
+    """Edit several devices at once (Inventory > Router, ticked rows): move them to one POP, locked there like a
+    POP picked one by one, and/or set the area of their POPs. The UNASSIGNED POP holds devices of many cities and
+    gets no area: it is reported in `skipped_pops`."""
+    devices = list(db.scalars(select(m.Device).where(m.Device.id.in_(payload.device_ids))))
+    missing = sorted(set(payload.device_ids) - {d.id for d in devices})
+    if missing:
+        raise HTTPException(404, f"Perangkat tidak ditemukan: {', '.join(map(str, missing[:20]))}")
+    moved = 0
+    if payload.pop_id is not None:
+        if db.get(m.Pop, payload.pop_id) is None:
+            raise HTTPException(404, f"POP {payload.pop_id} tidak ditemukan")
+        for device in devices:
+            if device.pop_id != payload.pop_id:
+                device.pop_id = payload.pop_id
+                moved += 1
+            device.pop_locked = True
+    changed, skipped = [], []
+    if payload.area is not None or payload.clear_area:
+        area = (payload.area or "").strip()
+        for pop in db.scalars(select(m.Pop).where(m.Pop.id.in_({d.pop_id for d in devices}))):
+            if pop.code.upper() == UNASSIGNED_POP:
+                skipped.append(pop.code)
+                continue
+            pop.region = None if payload.clear_area or area == UNMAPPED_AREA else area
+            changed.append(pop.code)
+    db.flush()
+    following = db.scalar(select(func.count(m.Device.id)).join(m.Pop, m.Pop.id == m.Device.pop_id)
+                          .where(m.Pop.code.in_(changed))) if changed else 0
+    db.commit()
+    return {"devices": len(devices), "devices_moved": moved, "pops_area_changed": sorted(changed),
+            "devices_in_changed_pops": following, "skipped_pops": skipped}
 
 
 # --------------------------------------------------------------------------- merge POPs

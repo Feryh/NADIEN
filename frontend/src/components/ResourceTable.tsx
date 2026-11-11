@@ -2,6 +2,7 @@ import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from 
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { ENTITY_BY_KEY, Entity, Field } from '../entities'
+import DeviceBulkBar from './DeviceBulkBar'
 import { Pager, usePaged } from './Pager'
 
 type Row = Record<string, unknown> & { id: number }
@@ -26,6 +27,10 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [serverQuery, setServerQuery] = useState('')
+  // Devices only: ticked rows for the bulk POP / area edit.
+  const bulk = entity.endpoint === '/devices'
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [notice, setNotice] = useState<string | null>(null)
 
   const refKeys = useMemo(
     () => [...new Set(entity.fields.filter((f) => f.ref).map((f) => f.ref as string))],
@@ -60,6 +65,7 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
   useEffect(() => {
     setQ('')
     setServerQuery('')
+    setSelected(new Set())
   }, [entity])
 
   const truncated = rows.length >= FETCH_LIMIT
@@ -92,6 +98,15 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
 
   const paged = usePaged(filtered, `${entity.key}|${q}|${serverQuery}`)
   const pageRows = paged.pageRows
+  const allOnPage = pageRows.length > 0 && pageRows.every((r) => selected.has(r.id))
+
+  function tick(ids: number[], on: boolean) {
+    setSelected((current) => {
+      const next = new Set(current)
+      ids.forEach((id) => (on ? next.add(id) : next.delete(id)))
+      return next
+    })
+  }
 
   async function remove(row: Row) {
     if (!confirm(`Hapus ${entity.label} "${row[entity.display]}"?`)) return
@@ -151,10 +166,32 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
         </p>
       )}
 
+      {notice && <div className="notice" onClick={() => setNotice(null)}>{notice}</div>}
+      {bulk && selected.size > 0 && (
+        <DeviceBulkBar
+          ids={[...selected]}
+          pops={(refs.pops ?? []) as { id: number; code: string; name?: string | null }[]}
+          total={filtered.length}
+          onSelectAll={() => tick(filtered.map((r) => r.id), true)}
+          onClear={() => setSelected(new Set())}
+          onDone={async (message) => {
+            setNotice(message)
+            setSelected(new Set())
+            await load()
+          }}
+        />
+      )}
+
       <div className="table-wrap">
         <table>
           <thead>
             <tr>
+              {bulk && (
+                <th>
+                  <input type="checkbox" aria-label="Pilih semua di halaman ini" checked={allOnPage}
+                    onChange={(e) => tick(pageRows.map((r) => r.id), e.target.checked)} />
+                </th>
+              )}
               <th>ID</th>
               {columns.map((f) => (
                 <th key={f.name}>{f.label}</th>
@@ -164,7 +201,13 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
           </thead>
           <tbody>
             {pageRows.map((row) => (
-              <tr key={row.id}>
+              <tr key={row.id} className={selected.has(row.id) ? 'selected' : undefined}>
+                {bulk && (
+                  <td>
+                    <input type="checkbox" aria-label={`Pilih ${String(row[entity.display])}`} checked={selected.has(row.id)}
+                      onChange={(e) => tick([row.id], e.target.checked)} />
+                  </td>
+                )}
                 <td className="muted">{row.id}</td>
                 {columns.map((f) => {
                   const value = row[f.name]
@@ -193,7 +236,7 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
             ))}
             {!pageRows.length && (
               <tr>
-                <td colSpan={columns.length + 2} className="empty">
+                <td colSpan={columns.length + (bulk ? 3 : 2)} className="empty">
                   {loading ? 'Memuat…' : 'Belum ada data'}
                 </td>
               </tr>
