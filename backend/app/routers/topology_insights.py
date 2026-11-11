@@ -186,16 +186,27 @@ def lldp_unknown_peers(db: Session = Depends(get_db)):
 def approve_links(payload: s.LinkApprovalsIn, user: CurrentUser = Depends(require("approver")),
                   db: Session = Depends(get_db)):
     """Confirm description pairs LLDP cannot see (a carrier/transport box in between). Each pair is drawn at once as
-    an "approved" link and kept by discovery until revoked or until LLDP sees the two ports directly."""
+    an "approved" link and kept by discovery until revoked or until LLDP sees the two ports directly.
+    Pairs are judged one by one: a refused pair (port already linked, port gone) is reported in `rejected` with its
+    reason and the others are still approved. 409 only when none of them could be."""
     from ..services.topology import ApprovalError, approve_link  # late: discovery helpers load every port
 
-    try:
-        links = [approve_link(db, p.interface_id, p.peer_interface_id, user.username) for p in payload.pairs]
-    except ApprovalError as error:
-        db.rollback()  # all or nothing: one bad pair approves none of them
-        raise HTTPException(error.status, str(error)) from error
+    links: list[int] = []
+    rejected: list[dict[str, Any]] = []
+    for pair in payload.pairs:
+        savepoint = db.begin_nested()
+        try:
+            links.append(approve_link(db, pair.interface_id, pair.peer_interface_id, user.username))
+            savepoint.commit()
+        except ApprovalError as error:
+            savepoint.rollback()
+            rejected.append({"interface_id": pair.interface_id, "peer_interface_id": pair.peer_interface_id,
+                             "reason": str(error)})
+    if not links:
+        db.rollback()
+        raise HTTPException(409, "Tidak ada yang disetujui: " + "; ".join(r["reason"] for r in rejected[:5]))
     db.commit()
-    return {"approved": len(links), "link_ids": links}
+    return {"approved": len(links), "link_ids": links, "rejected": rejected}
 
 
 @router.delete("/link-approvals/{approval_id}", status_code=204)

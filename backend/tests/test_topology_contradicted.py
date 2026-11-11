@@ -144,11 +144,18 @@ def test_should_draw_approved_links_and_keep_them_through_discovery_when_approve
     assert [(l.discovery_source, l.status) for l in links] == [("approved", "up")]
 
 
-def test_should_approve_none_when_one_pair_of_a_batch_is_invalid(db, client):
+def test_should_approve_the_valid_pairs_and_report_the_refused_one_when_a_batch_mixes_them(db, client):
     pad, kdr = _blocked_pair(db)
-    pairs = [{"interface_id": kdr, "peer_interface_id": pad}, {"interface_id": kdr, "peer_interface_id": 999_999}]
-    assert client.post("/api/topology/link-approvals", json={"pairs": pairs}).status_code == 404
-    assert db.scalars(select(m.LinkApproval)).all() == [] and db.scalars(select(m.Link)).all() == []
+    pairs = [{"interface_id": kdr, "peer_interface_id": 999_999}, {"interface_id": kdr, "peer_interface_id": pad}]
+    body = client.post("/api/topology/link-approvals", json={"pairs": pairs}).json()
+    assert (body["approved"], [r["peer_interface_id"] for r in body["rejected"]]) == (1, [999_999])
+    assert len(db.scalars(select(m.LinkApproval)).all()) == 1
+
+
+def test_should_answer_409_and_approve_nothing_when_no_pair_of_a_batch_can_be_approved(db, client):
+    _, kdr = _blocked_pair(db)
+    response = client.post("/api/topology/link-approvals", json={"pairs": [{"interface_id": kdr, "peer_interface_id": 999_999}]})
+    assert response.status_code == 409 and db.scalars(select(m.LinkApproval)).all() == []
 
 
 def test_should_remove_link_and_not_redraw_it_when_approval_is_revoked(db, client):
@@ -196,3 +203,30 @@ def test_should_keep_both_links_when_two_sites_are_approved_to_the_same_hub_trun
     assert client.post("/api/topology/link-approvals", json={"pairs": pairs}).status_code == 201
     discover_links(db)
     assert sorted(l.discovery_source for l in db.scalars(select(m.Link))) == ["approved", "approved"]
+
+
+def test_should_suggest_the_full_device_when_description_writes_its_name_without_the_model_suffix(db, client):
+    _network(db, "to MKS-BSW-BNG2:Eth-Trunk7 via INDOSAT")  # MKS-BSW-BNG2-M8 written without -M8
+    _lldp_to_unknown_box(db)
+    m8 = m.Device(hostname="MKS-BSW-BNG2-M8", pop_id=db.scalar(select(m.Pop.id)))
+    db.add(m8)
+    db.flush()
+    db.add(m.Interface(device_id=m8.id, name="Eth-Trunk7", if_type="bundle", speed_gbps=10, oper_status="up"))
+    db.commit()
+    (row,) = client.get("/api/topology/lldp-unknown-peers").json()
+    assert (row["suggested_device"], row["peer_port"]) == ("MKS-BSW-BNG2-M8", "Eth-Trunk7")
+
+
+def test_should_name_the_link_that_already_uses_the_peer_port_when_listing_a_pair(db, client):
+    pad, _ = _blocked_pair(db)
+    other = m.Device(hostname="PAD-PAU-OLT1-ZTE", pop_id=db.scalar(select(m.Pop.id)))
+    db.add(other)
+    db.flush()
+    olt_port = m.Interface(device_id=other.id, name="xgei-1/10/1", speed_gbps=10, oper_status="up")
+    db.add(olt_port)
+    db.flush()
+    db.add(m.Link(name="PAD-PAU-BNG1-M4:Eth-Trunk74 <> PAD-PAU-OLT1-ZTE:xgei-1/10/1", a_device_id=db.get(m.Interface, pad).device_id,
+                  a_interface_id=pad, b_device_id=other.id, b_interface_id=olt_port.id, discovery_source="lldp", status="up"))
+    db.commit()
+    (row,) = client.get("/api/topology/lldp-unknown-peers").json()
+    assert row["taken_by"] == "PAD-PAU-BNG1-M4:Eth-Trunk74 <> PAD-PAU-OLT1-ZTE:xgei-1/10/1"

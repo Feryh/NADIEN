@@ -302,9 +302,11 @@ class _Discovery:
         return bool(VIRTUAL_NAME.match((port_name or "").strip()))
 
     def replacement_for(self, hostname: str) -> Device | None:
-        """The one inventory device whose name differs from `hostname` only in its last part, the model suffix
-        (MKS-BSW-BNG2-M4 -> MKS-BSW-BNG2-M8 after a hardware swap). None when no or several devices qualify."""
-        parts = host_key(hostname).split("-")
+        """The one inventory device a description most likely means by a name the inventory does not have: the name
+        with another model suffix (MKS-BSW-BNG2-M4 -> MKS-BSW-BNG2-M8 after a hardware swap), else the name written
+        without its suffix (JKT-CSF-SPE1 -> JKT-CSF-SPE1-ASR9K). None when no or several devices qualify."""
+        key = host_key(hostname)
+        parts = key.split("-")
         if len(parts) < 3:
             return None
         if self._by_stem is None:
@@ -313,6 +315,8 @@ class _Discovery:
                 stem = "-".join(host_key(device.hostname).split("-")[:-1])
                 self._by_stem.setdefault(stem, []).append(device)
         found = self._by_stem.get("-".join(parts[:-1]), [])
+        if not found:
+            found = self._by_stem.get(key, [])  # the devices named `hostname` plus one more part
         return found[0] if len(found) == 1 else None
 
     def lldp_allows(self, port: Interface, peer_device_id: int) -> bool:
@@ -527,6 +531,12 @@ def unknown_lldp_peers(db: Session) -> list[dict[str, Any]]:
     approvals: dict[int, LinkApproval] = {}
     for approval in db.scalars(select(LinkApproval)):
         approvals[approval.a_interface_id] = approvals[approval.b_interface_id] = approval
+    # Ports LLDP or the config already link: approving onto one is refused (approve_link), so say so up front.
+    taken: dict[int, str] = {}
+    for link in db.scalars(select(Link).where(Link.status == "up", Link.discovery_source != "approved")):
+        for port_id in (link.a_interface_id, link.b_interface_id):
+            if port_id:
+                taken[port_id] = link.name
     rows: dict[int, dict[str, Any]] = {}
     for n in db.scalars(select(LldpNeighbor)):
         local = run.devices.get(n.device_id)
@@ -572,6 +582,8 @@ def unknown_lldp_peers(db: Session) -> list[dict[str, Any]]:
                 "peer_device_id": peer_device.id if peer_device else None,
                 "peer_device": peer_device.hostname if peer_device else None,
                 "peer_interface_id": peer.id if peer else None, "peer_port": peer.name if peer else None,
+                # The link already on the peer port (or on this one), when that blocks approving the pair.
+                "taken_by": None if approval is not None else taken.get(target.id) or (taken.get(peer.id) if peer else None),
                 "approval": None if approval is None else {
                     "id": approval.id, "approved_by": approval.approved_by, "approved_at": approval.approved_at},
             }
