@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from ... import models as m
 from ...config import settings
 from ...services.areas import FUNCTION_TOKENS, csr_parts, is_city_code
+from ...services.capacity import read_narrow_end
 from ...services.topology import discover_links, legacy_host_key, norm_host, norm_if
 from .client import ObserviumClient
 from .parsers import (
@@ -445,7 +446,8 @@ def _write_utilization(db: Session, rates: dict[int, tuple[float | None, float |
         a = rates.get(link.a_interface_id or -1)
         b = rates.get(link.b_interface_id or -1)
         a_ok, b_ok = bool(a and a[0] is not None), bool(b and b[0] is not None)
-        if a_ok and b_ok and _narrower(speeds.get(link.b_interface_id), speeds.get(link.a_interface_id)):
+        if a_ok and b_ok and read_narrow_end(speeds.get(link.b_interface_id), speeds.get(link.a_interface_id),
+                                             max(b[0] or 0, b[1] or 0), max(a[0] or 0, a[1] or 0)):
             # A bundle whose members lead to several boxes (smartgroup210: one member to this peer, one elsewhere)
             # carries more than this link: the narrower end only carries what goes over it.
             a_ok = False
@@ -460,10 +462,6 @@ def _write_utilization(db: Session, rates: dict[int, tuple[float | None, float |
         link.current_gbps = round(max(in_g, out_g), 3)
         report.counts["utilization_samples"] += 1
     db.commit()
-
-
-def _narrower(speed: float | None, other: float | None) -> bool:
-    return bool(speed and other and speed < other)
 
 
 def _record_source(db: Session, report: SyncReport, kind: str = "main") -> None:

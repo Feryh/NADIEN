@@ -22,6 +22,7 @@ from ..services.capacity import (
     hotspot_level,
     peak_series,
     port_utilization_pct,
+    read_narrow_end,
     spike_indexes,
 )
 from ..services.olt import PonUsage, is_pon_port, olt_layout, onts_online, pon_level, pon_port_occupancy
@@ -305,7 +306,8 @@ def _node_rows(db: Session, level: str) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------- hotspots
 
 
-_NO_ENDS: dict[str, Any] = {"a_device_id": None, "b_device_id": None, "a_port": None, "b_port": None, "bundle": False}
+_NO_ENDS: dict[str, Any] = {"a_device_id": None, "b_device_id": None, "a_port": None, "b_port": None, "bundle": False,
+                            "live_gbps": None}
 
 
 def _link_ends(db: Session) -> dict[int, dict[str, Any]]:
@@ -313,7 +315,8 @@ def _link_ends(db: Session) -> dict[int, dict[str, Any]]:
     checked on the device straight away."""
     rows = db.execute(select(m.Link.id, m.Link.a_device_id, m.Link.a_interface_id, m.Link.b_device_id,
                              m.Link.b_interface_id)).all()
-    ports = {i.id: i for i in db.execute(select(m.Interface.id, m.Interface.name, m.Interface.if_type)
+    ports = {i.id: i for i in db.execute(select(m.Interface.id, m.Interface.name, m.Interface.if_type,
+                                                m.Interface.speed_gbps, m.Interface.in_gbps, m.Interface.out_gbps)
                                          .where(m.Interface.id.in_(select(m.Link.a_interface_id).union(
                                              select(m.Link.b_interface_id)))))}
     ends = {}
@@ -321,8 +324,23 @@ def _link_ends(db: Session) -> dict[int, dict[str, Any]]:
         a, b = ports.get(r.a_interface_id), ports.get(r.b_interface_id)
         ends[r.id] = {"a_device_id": r.a_device_id, "b_device_id": r.b_device_id,
                       "a_port": a.name if a else None, "b_port": b.name if b else None,
-                      "bundle": any(p is not None and p.if_type == "bundle" for p in (a, b))}
+                      "bundle": any(p is not None and p.if_type == "bundle" for p in (a, b)),
+                      "live_gbps": _live_rate(a, b)}
     return ends
+
+
+def _live_rate(a: Any, b: Any) -> float | None:
+    """The busier direction Observium reported at the last Full sync, read on the same end the history comes from
+    (the narrower one): the number to hold against Observium's port page, next to the planning value."""
+    def busiest(port: Any) -> float | None:
+        return None if port is None else max(port.in_gbps or 0.0, port.out_gbps or 0.0)
+
+    narrow_b = a is not None and b is not None and read_narrow_end(b.speed_gbps, a.speed_gbps, busiest(b), busiest(a))
+    order = (b, a) if narrow_b else (a, b)
+    for port in order:
+        if port is not None and (port.in_gbps is not None or port.out_gbps is not None):
+            return round(max(port.in_gbps or 0.0, port.out_gbps or 0.0), 3)
+    return None
 
 
 @router.get("/hotspots")

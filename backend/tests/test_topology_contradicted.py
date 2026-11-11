@@ -158,3 +158,41 @@ def test_should_remove_link_and_not_redraw_it_when_approval_is_revoked(db, clien
     assert client.delete(f"/api/topology/link-approvals/{approval.id}").status_code == 204
     discover_links(db)
     assert db.scalars(select(m.Link)).all() == []
+
+
+def _replaced_box(db) -> int:
+    """KDR's trunk still names MKS-BSW-BNG2-M4, replaced by MKS-BSW-BNG2-M8 (the only -BNG2- box at MKS-BSW)."""
+    _network(db, "to MKS-BSW-BNG2-M4:Eth-Trunk7.100 via INDOSAT ISAT IOH CID")
+    _lldp_to_unknown_box(db)
+    m8 = m.Device(hostname="MKS-BSW-BNG2-M8", pop_id=db.scalar(select(m.Pop.id)))
+    db.add(m8)
+    db.flush()
+    db.add(m.Interface(device_id=m8.id, name="Eth-Trunk7", if_type="bundle", speed_gbps=10, oper_status="up"))
+    db.commit()
+    return m8.id
+
+
+def test_should_suggest_the_replacement_box_and_its_port_when_description_names_a_box_no_longer_in_inventory(db, client):
+    _replaced_box(db)
+    (row,) = client.get("/api/topology/lldp-unknown-peers").json()
+    assert (row["described_device"], row["suggested_device"], row["peer_device"], row["peer_port"]) == (
+        "MKS-BSW-BNG2-M4", "MKS-BSW-BNG2-M8", "MKS-BSW-BNG2-M8", "Eth-Trunk7")
+
+
+def test_should_show_the_hand_picked_peer_when_row_was_approved_with_another_port(db, client):
+    _replaced_box(db)
+    (row,) = client.get("/api/topology/lldp-unknown-peers").json()
+    pad = db.scalar(select(m.Interface).where(m.Interface.name == "Eth-Trunk74"))
+    client.post("/api/topology/link-approvals", json={"pairs": [{"interface_id": row["interface_id"], "peer_interface_id": pad.id}]})
+    (row,) = client.get("/api/topology/lldp-unknown-peers").json()
+    assert (row["peer_device"], row["peer_port"], row["approval"] is not None) == ("PAD-PAU-BNG1-M4", "Eth-Trunk74", True)
+
+
+def test_should_keep_both_links_when_two_sites_are_approved_to_the_same_hub_trunk(db, client):
+    m8 = _replaced_box(db)
+    hub = db.scalar(select(m.Interface).where(m.Interface.device_id == m8, m.Interface.name == "Eth-Trunk7"))
+    kdr, pad = (db.scalar(select(m.Interface).where(m.Interface.name == n)) for n in ("Eth-Trunk1", "Eth-Trunk74"))
+    pairs = [{"interface_id": kdr.id, "peer_interface_id": hub.id}, {"interface_id": pad.id, "peer_interface_id": hub.id}]
+    assert client.post("/api/topology/link-approvals", json={"pairs": pairs}).status_code == 201
+    discover_links(db)
+    assert sorted(l.discovery_source for l in db.scalars(select(m.Link))) == ["approved", "approved"]

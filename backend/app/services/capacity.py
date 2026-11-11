@@ -245,3 +245,18 @@ def forecast_series(result: CapacityResult, months: int = 24, threshold_pct: flo
             )
         )
     return points
+
+
+def is_narrower(speed: float | None, other: float | None) -> bool:
+    """`speed` is the slower end of a link: the end whose traffic is this link's alone when the other end is a
+    wider bundle that also reaches other boxes."""
+    return bool(speed and other and speed < other)
+
+
+def read_narrow_end(narrow_speed: float | None, wide_speed: float | None,
+                    narrow_rate: float | None, wide_rate: float | None) -> bool:
+    """Read the link's traffic on its narrower end — unless that end counts nothing while the other does: a VLAN
+    interface (Vbdif59) or a trunk without counters would read the link as idle."""
+    if not is_narrower(narrow_speed, wide_speed):
+        return False
+    return not (not narrow_rate and wide_rate)

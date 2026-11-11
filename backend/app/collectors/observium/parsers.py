@@ -287,6 +287,17 @@ def _rate_gbps(row: dict[str, Any], key: str) -> float | None:
     return round(rate * 8 / 1e9, 4) if rate is not None else None
 
 
+RATE_SLACK = 1.5  # Observium's per-poll rate overshoots line rate a little on polling jitter, never by half
+
+
+def _plausible_rate(gbps: float | None, speed_gbps: float | None) -> float | None:
+    """The rate, unless it is impossible for the port: a counter wrap or reset reads as thousands of Gbps on a
+    10G port (548,832 Gbps seen). Unknown is better than a value that makes the link the busiest in the network."""
+    if gbps is not None and speed_gbps and gbps > speed_gbps * RATE_SLACK:
+        return None
+    return gbps
+
+
 def parse_port(row: dict[str, Any]) -> PortRecord | None:
     if str(row.get("deleted") or "0") == "1":
         return None
@@ -315,8 +326,8 @@ def parse_port(row: dict[str, Any]) -> PortRecord | None:
         admin_status=admin_status,
         oper_status=oper_status,
         description=(row.get("ifAlias") or "").strip()[:MAX_DESCRIPTION] or None,
-        in_gbps=_rate_gbps(row, "ifInOctets_rate"),
-        out_gbps=_rate_gbps(row, "ifOutOctets_rate"),
+        in_gbps=_plausible_rate(_rate_gbps(row, "ifInOctets_rate"), speed_gbps),
+        out_gbps=_plausible_rate(_rate_gbps(row, "ifOutOctets_rate"), speed_gbps),
         if_index=_int(row.get("ifIndex")),
         mib_type=if_type[:64] or None,
     )

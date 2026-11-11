@@ -106,3 +106,68 @@ def test_should_leave_down_links_out_when_listing_hot_links(db):
     finally:
         app.dependency_overrides.clear()
     assert rows == []
+
+
+def test_should_read_rrd_history_from_the_narrower_bundle_when_its_far_end_bundle_is_wider(db):
+    from app.collectors.observium.rrd import _targets
+
+    a, b = _devices(db)
+    sg1 = m.Interface(device_id=a.id, name="smartgroup1", if_type="bundle", speed_gbps=200)  # to two switches
+    pc47 = m.Interface(device_id=b.id, name="port-channel47", if_type="bundle", speed_gbps=100)
+    db.add_all([sg1, pc47])
+    db.flush()
+    db.add_all([m.Link(name="mlag", a_device_id=a.id, a_interface_id=sg1.id, b_device_id=b.id, b_interface_id=pc47.id,
+                       capacity_gbps=100, status="up", link_type="bundle"),
+                m.ObserviumPort(interface_id=sg1.id, observium_port_id=11, if_index=1, observium_hostname="a"),
+                m.ObserviumPort(interface_id=pc47.id, observium_port_id=22, if_index=2, observium_hostname="b")])
+    db.commit()
+
+    class Source:
+        def usable(self, ref):
+            return True
+
+    (target,), _ = _targets(db, Source())
+    assert (target.ref.observium_port_id, target.swapped) == (22, True)
+
+
+def test_should_leave_rate_unknown_when_observium_reports_more_than_the_port_can_carry():
+    rec = parse_port({"port_id": "1", "device_id": "1", "ifName": "ethernet0/9/0", "ifHighSpeed": "10000",
+                      "ifOperStatus": "up", "ifInOctets_rate": str(int(548832e9 / 8)), "ifOutOctets_rate": "125000000"})
+    assert (rec.in_gbps, rec.out_gbps) == (None, 1.0)
+
+
+def test_should_show_the_narrower_ends_live_rate_next_to_the_planning_value_in_hotspots(db):
+    from app.routers.capacity import _hotspots
+
+    a, b = _devices(db)
+    sg1 = m.Interface(device_id=a.id, name="smartgroup1", if_type="bundle", speed_gbps=200, in_gbps=150.0, out_gbps=9.0)
+    pc47 = m.Interface(device_id=b.id, name="port-channel47", if_type="bundle", speed_gbps=100, in_gbps=8.0, out_gbps=81.5)
+    db.add_all([sg1, pc47])
+    db.flush()
+    db.add(m.Link(name="mlag", a_device_id=a.id, a_interface_id=sg1.id, b_device_id=b.id, b_interface_id=pc47.id,
+                  capacity_gbps=100, current_gbps=84.0, status="up", link_type="bundle"))
+    db.commit()
+    (row,) = _hotspots(db, 10)["links"]["rows"]
+    assert (row["current_gbps"], row["live_gbps"]) == (84.0, 81.5)
+
+
+def test_should_read_the_wider_end_when_the_narrower_one_counts_no_traffic(db):
+    from app.collectors.observium.rrd import _targets
+
+    a, b = _devices(db)
+    trunk = m.Interface(device_id=a.id, name="Eth-Trunk5", if_type="bundle", speed_gbps=200, in_gbps=80.0, out_gbps=6.0)
+    vlanif = m.Interface(device_id=b.id, name="Vbdif59", if_type="virtual", speed_gbps=1, in_gbps=0.0, out_gbps=0.0)
+    db.add_all([trunk, vlanif])
+    db.flush()
+    db.add_all([m.Link(name="vlanif", a_device_id=a.id, a_interface_id=trunk.id, b_device_id=b.id, b_interface_id=vlanif.id,
+                       capacity_gbps=1, status="up"),
+                m.ObserviumPort(interface_id=trunk.id, observium_port_id=11, if_index=1, observium_hostname="a"),
+                m.ObserviumPort(interface_id=vlanif.id, observium_port_id=22, if_index=2, observium_hostname="b")])
+    db.commit()
+
+    class Source:
+        def usable(self, ref):
+            return True
+
+    (target,), _ = _targets(db, Source())
+    assert (target.ref.observium_port_id, target.swapped) == (11, False)

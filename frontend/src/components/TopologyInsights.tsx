@@ -324,9 +324,15 @@ interface UnknownLldpPeer {
   /** null when the description names a box the inventory does not have (e.g. a replaced one). */
   described_device_id: number | null
   described_device: string
+  /** Inventory device under the old name in the description (MKS-BSW-BNG2-M8 for "MKS-BSW-BNG2-M4"). */
+  suggested_device: string | null
+  peer_device_id: number | null
+  peer_device: string | null
   peer_interface_id: number | null
   peer_port: string | null
   approval: { id: number; approved_by: string; approved_at: string } | null
+  /** Client side only: the far end was picked by hand in this session. */
+  manual?: boolean
 }
 
 type PeerState = 'pending' | 'approved' | 'no_peer'
@@ -341,7 +347,68 @@ function peerState(r: UnknownLldpPeer): PeerState {
 }
 
 function pairLabel(r: UnknownLldpPeer): string {
-  return `${r.device}:${r.port} ↔ ${r.described_device}:${r.peer_port ?? '?'}`
+  return `${r.device}:${r.port} ↔ ${r.peer_device ?? r.described_device}:${r.peer_port ?? '?'}`
+}
+
+interface PeerChoice { device_id: number; device: string; interface_id: number; port: string }
+
+/** Pick the far end by hand: a device (searched by name) and one of its ports, sub-interfaces left out. */
+function PeerPicker({ initial, exclude, onPick, onCancel }: {
+  initial: { id: number; hostname: string } | null
+  exclude: number
+  onPick: (choice: PeerChoice) => void
+  onCancel: () => void
+}) {
+  const [text, setText] = useState(initial?.hostname ?? '')
+  const [devices, setDevices] = useState<{ id: number; hostname: string }[]>([])
+  const [device, setDevice] = useState(initial)
+  const [ports, setPorts] = useState<{ id: number; name: string; if_type: string; description: string | null }[] | null>(null)
+  const [portId, setPortId] = useState<number | ''>('')
+
+  useEffect(() => {
+    const needle = text.trim()
+    if (needle.length < 3 || needle === device?.hostname) return
+    const timer = window.setTimeout(() => {
+      api.get<{ id: number; hostname: string }[]>(`/devices?q=${encodeURIComponent(needle)}&limit=20`)
+        .then((found) => setDevices(found.filter((d) => d.id !== exclude))).catch(() => setDevices([]))
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [text, device, exclude])
+
+  useEffect(() => {
+    setPorts(null)
+    setPortId('')
+    if (!device) return
+    api.get<{ id: number; name: string; if_type: string; description: string | null }[]>(`/interfaces?device_id=${device.id}&limit=10000`)
+      .then((all) => setPorts(all.filter((p) => p.if_type !== 'subinterface').sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))))
+      .catch(() => setPorts([]))
+  }, [device])
+
+  function chooseDevice(value: string) {
+    setText(value)
+    const match = devices.find((d) => d.hostname === value)
+    if (match) setDevice(match)
+  }
+
+  const port = ports?.find((p) => p.id === portId)
+  return (
+    <div className="peer-picker">
+      <input list={`peer-devices-${exclude}`} placeholder="Ketik nama perangkat (min. 3 huruf)" value={text}
+        onChange={(e) => chooseDevice(e.target.value)} />
+      <datalist id={`peer-devices-${exclude}`}>
+        {devices.map((d) => <option key={d.id} value={d.hostname} />)}
+      </datalist>
+      <select value={portId} disabled={!ports} onChange={(e) => setPortId(e.target.value ? Number(e.target.value) : '')}>
+        <option value="">{device ? (ports ? 'Pilih port' : 'Memuat port…') : 'Pilih perangkat dulu'}</option>
+        {ports?.map((p) => <option key={p.id} value={p.id}>{p.name}{p.description ? ` — ${p.description.slice(0, 50)}` : ''}</option>)}
+      </select>
+      <button className="primary" disabled={!device || !port}
+        onClick={() => device && port && onPick({ device_id: device.id, device: device.hostname, interface_id: port.id, port: port.name })}>
+        Pakai
+      </button>
+      <button onClick={onCancel}>Batal</button>
+    </div>
+  )
 }
 
 function confirmPairs(action: string, list: UnknownLldpPeer[]): boolean {
@@ -362,6 +429,17 @@ export function UnknownLldpPeers() {
   const [filter, setFilter] = useState<PeerState | ''>('')
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [busy, setBusy] = useState(false)
+  const [editing, setEditing] = useState<number | null>(null)
+
+  /** Use a hand-picked far end for one row and tick it, ready to approve with the others. */
+  function applyPeer(interfaceId: number, choice: PeerChoice) {
+    setRows((current) => current?.map((r) => r.interface_id !== interfaceId ? r : {
+      ...r, peer_device_id: choice.device_id, peer_device: choice.device, peer_interface_id: choice.interface_id,
+      peer_port: choice.port, manual: true,
+    }) ?? null)
+    setSelected((current) => new Set(current).add(interfaceId))
+    setEditing(null)
+  }
 
   function load() {
     api.get<UnknownLldpPeer[]>('/topology/lldp-unknown-peers').then(setRows).catch((e: Error) => setError(e.message))
@@ -481,10 +559,26 @@ export function UnknownLldpPeers() {
                       {r.is_bundle && <span className="muted small"> via {x.local_port}</span>}
                     </div>
                   ))}</td>
-                  <td>{r.described_device_id != null
-                    ? <><RouterLink to={`/topology?level=neighbors&device_id=${r.described_device_id}`}>{r.described_device}</RouterLink>
-                      {r.peer_port && <span className="mono muted"> {r.peer_port}</span>}</>
-                    : <span>{r.described_device} <span className="muted">(tidak di inventory)</span></span>}</td>
+                  <td>
+                    {r.peer_device_id != null
+                      ? <><RouterLink to={`/topology?level=neighbors&device_id=${r.peer_device_id}`}>{r.peer_device}</RouterLink>
+                        {r.peer_port && <span className="mono muted"> {r.peer_port}</span>}</>
+                      : <span>{r.described_device}</span>}
+                    {r.manual && <div className="muted small">dipilih manual (deskripsi: {r.described_device})</div>}
+                    {!r.manual && r.suggested_device && (
+                      <div className="muted small">saran: deskripsi menyebut {r.described_device} (tidak di inventory)</div>
+                    )}
+                    {!r.manual && r.described_device_id == null && !r.suggested_device && (
+                      <div className="muted small">tidak di inventory</div>
+                    )}
+                    {!r.manual && r.peer_device_id != null && !r.peer_port && <div className="muted small">port lawan tidak tertulis</div>}
+                    {mayApprove && !r.approval && (editing === r.interface_id
+                      ? <PeerPicker exclude={r.device_id} onCancel={() => setEditing(null)}
+                          initial={r.peer_device_id != null && r.peer_device ? { id: r.peer_device_id, hostname: r.peer_device } : null}
+                          onPick={(choice) => applyPeer(r.interface_id, choice)} />
+                      : <button className="link-button small" onClick={() => setEditing(r.interface_id)}>
+                        {state === 'no_peer' ? 'Pilih port lawan' : 'Ubah'}</button>)}
+                  </td>
                   <td><span className={`pill ${PEER_STATE_PILL[state]}`}
                     title={r.approval ? `oleh ${r.approval.approved_by}, ${new Date(r.approval.approved_at).toLocaleString('id-ID')}` : undefined}>
                     {PEER_STATE_LABEL[state]}</span></td>
