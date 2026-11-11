@@ -12,7 +12,9 @@ import { buildCityElements, canUpdateInPlace, citySizeOf, linkColor, liveData, t
 import { isCompound, isProblemLink, isProblemNode, linkVisible, NO_FILTER, nodeVisible, vendorsIn, type CityFilter } from '../components/topology/cityFilters'
 import { CITY_STYLE } from '../components/topology/cityStyle'
 import { layoutCity, LayoutCancelled } from '../components/topology/elkLayout'
-import { type GeoPoint, MAP_DRAGGABLE, mapKeyFor, mapOverridePositions, mapViewKey, movedFrom, ringExternal, storedMapOn } from '../components/topology/mapArrange'
+import type { FreeNode } from '../components/topology/freeLayout'
+import { FreeLayoutSuperseded, freeLayoutInWorker } from '../components/topology/freeLayoutClient'
+import { freeViewKey, type GeoPoint, MAP_DRAGGABLE, mapKeyFor, mapOverridePositions, mapViewKey, movedFrom, ringExternal, storedMapOn } from '../components/topology/mapArrange'
 import { edgeWidth, ROLE_COLOR, SEGMENT_COLOR, shortName } from '../components/topology/shared'
 import type { CityLink, CityView } from '../components/topology/types'
 
@@ -122,6 +124,7 @@ interface View {
   layout_key?: string  // which saved arrangement this view uses
   layout?: Record<string, Pos>  // node id -> position arranged by hand and saved
   map_layout?: Record<string, GeoPoint>  // device node id -> where it was dragged on the map
+  free_layout?: Record<string, Pos>  // node id -> where it was put in the free arrangement (Susunan bebas)
   nodes: NodeData[]
   edges: EdgeData[]
   segments: Record<Segment, Totals>
@@ -615,25 +618,47 @@ function mapLayout(cy: Core, view: View, keep?: Map<string, Pos>) {
   } as cytoscape.LayoutOptions).run()
 }
 
-/** Schematic views with tier bands: POPs and devices, not the area / province / regency overviews or the map. */
-function usesBands(level: Level, onMap: boolean): boolean {
-  return !onMap && !isGroupLevel(level)
+/** Schematic views with tier bands: POPs and devices, not the area / province / regency overviews, the map or the free arrangement. */
+function usesBands(level: Level, onMap: boolean, free: boolean): boolean {
+  return !onMap && !free && !isGroupLevel(level)
+}
+
+/** The schematic's own arrangement: area rows, group grid or role rows. The free arrangement starts from it. */
+function schematicLayout(view: View): Record<string, Pos> {
+  return view.level === 'area' ? areaLayout(view) : isGroupLevel(view.level) ? groupLayout(view) : layeredLayout(view, 120)
+}
+
+/**
+ * Susunan bebas: positions from the force-directed layout, away from the map and the role rows, with no node over
+ * another and no link through a node. Node boxes are measured on the canvas, labels included.
+ */
+function freeArrangement(cy: Core, view: View): Promise<Record<string, Pos>> {
+  const nodes: FreeNode[] = cy.nodes().not('[kind="band"]').map((n) => {
+    const box = n.boundingBox({ includeLabels: true, includeOverlays: false })
+    return { id: n.id(), width: box.w, height: box.h }
+  })
+  const edges = view.edges.map((e) => ({ source: e.source, target: e.target }))
+  // Big group boxes (an area with its counts) need longer links than device dots to leave room for the lines.
+  const typical = nodes.reduce((sum, n) => sum + Math.max(n.width, n.height), 0) / Math.max(nodes.length, 1)
+  return freeLayoutInWorker(nodes, edges, schematicLayout(view), view.free_layout ?? {},
+                            { spacing: Math.max(170, typical * 1.8) })
 }
 
 /**
  * `keep`: positions of nodes from before a live refresh, so the drawing does not jump around; nodes that are new
- * get their place from the layout. Band nodes are never positioned: they wrap their rows.
+ * get their place from the layout. Band nodes are never positioned: they wrap their rows. `auto`: computed positions
+ * to use instead of the schematic's own (the free arrangement).
  */
-function runLayout(cy: Core, view: View, onMap: boolean, keep?: Map<string, Pos>) {
+function runLayout(cy: Core, view: View, onMap: boolean, free: boolean, keep?: Map<string, Pos>,
+                   auto: Record<string, Pos> = schematicLayout(view)) {
   if (onMap) return mapLayout(cy, view, keep)
   // Saved arrangement of this view first (every node kind), then the device positions saved the old way.
-  const arranged: Record<string, Pos> = { ...(view.layout ?? {}) }
-  if (view.level === 'device') {
+  const arranged: Record<string, Pos> = { ...(free ? view.free_layout ?? {} : view.layout ?? {}) }
+  if (view.level === 'device' && !free) {
     for (const n of view.nodes) {
       if (n.kind === 'device' && n.x != null && n.y != null && !arranged[n.id]) arranged[n.id] = { x: n.x, y: n.y }
     }
   }
-  const auto = view.level === 'area' ? areaLayout(view) : isGroupLevel(view.level) ? groupLayout(view) : layeredLayout(view, 120)
   cy.nodes().not('[kind="band"]').layout({
     name: 'preset',
     padding: isGroupLevel(view.level) ? 50 : 30,
@@ -759,6 +784,11 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   const cityMode = !!view && usesElk(view.level, onMap)
   const onMapRef = useRef(onMap)
   onMapRef.current = onMap
+  // Susunan bebas: the schematic levels (not the map, not the ELK city / neighbours) arranged freely, no overlaps.
+  const [freeChoice, setFreeChoice] = useState(() => stored<string>('nadien.topology.free', '1') === '1')
+  const free = freeChoice && !onMap && !!view && !isElkLevel(view.level)
+  const freeRef = useRef(free)
+  freeRef.current = free
   const [loading, setLoading] = useState(false)
   // City / neighbours keep only the id of the tapped link: the panel reads its details from the current view.
   const [selected, setSelected] = useState<{ node?: NodeData; edge?: EdgeData; linkId?: number } | null>(null)
@@ -976,6 +1006,13 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
     if (onMap && !basemap.length) loadBasemap().then(setBasemap).catch(() => setMessage({ text: 'Peta dasar gagal dimuat', error: true }))
   }, [onMap, basemap.length])
 
+  function toggleFree(on: boolean) {
+    if (!confirmDiscard(dirty)) return
+    setMoved(0)
+    setFreeChoice(on)
+    remember('nadien.topology.free', on ? '1' : '0')
+  }
+
   function toggleMap(on: boolean) {
     if (!confirmDiscard(dirty)) return
     setMoved(0)
@@ -1005,7 +1042,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
     const cy = cytoscape({
       container: container.current,
       // ELK elements are added once the worker has laid them out; added earlier they would flash at (0,0).
-      elements: elk ? [] : buildElements(view, { bands: usesBands(view.level, onMap), ...drawRef.current }),
+      elements: elk ? [] : buildElements(view, { bands: usesBands(view.level, onMap, free), ...drawRef.current }),
       style: elk ? CITY_STYLE : STYLE,
       wheelSensitivity: 0.25,
       minZoom: 0.05,
@@ -1116,17 +1153,35 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
           if (!disposed) setArranging(false)
         })
     } else {
-      runLayout(cy, view, onMap, keep?.positions)
-      if (positionsEditable) {
+      const settle = () => {
         // After a live refresh the unsaved moves survive in `keep`: compare against the saved positions, not the kept ones.
         const before = keep ? savedPosRef.current : new Map<string, Pos>()
         savedPosRef.current = new Map(nodePositions(cy, onMap).map((d) => [d.id, before.get(d.id) ?? d.pos] as [string, Pos]))
         setMoved(countMoved(cy, savedPosRef.current, onMap))
-      } else {
-        savedPosRef.current = new Map()
-        setMoved(0)
+        finish()
       }
-      finish()
+      // The schematic is drawn at once; the free arrangement (a worker, up to a few seconds) replaces it when ready.
+      // A live refresh keeps every node where it was, so it never waits for the worker.
+      runLayout(cy, view, onMap, free, keep?.positions)
+      if (free && !keep) {
+        setArranging(true)
+        freeArrangement(cy, view)
+          .then((auto) => {
+            if (disposed) return
+            runLayout(cy, view, onMap, free, undefined, auto)
+            settle()
+          })
+          .catch((error: unknown) => {
+            if (disposed || error instanceof FreeLayoutSuperseded) return
+            settle()  // the schematic stays, which is still a usable drawing
+            setMessage({ text: `Susunan bebas gagal: ${error instanceof Error ? error.message : String(error)}`, error: true })
+          })
+          .finally(() => {
+            if (!disposed) setArranging(false)
+          })
+      } else {
+        settle()
+      }
     }
     return () => {
       disposed = true
@@ -1134,7 +1189,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
       setArranging(false)
       cy.destroy()
     }
-  }, [drawRevision, go, focus, onMap, elkLabelMode, markLive])
+  }, [drawRevision, go, focus, onMap, free, elkLabelMode, markLive])
 
   useEffect(() => {
     const cy = cyRef.current
@@ -1216,6 +1271,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
     const layoutKey = shown?.layout_key
     if (!cy || !shown || !layoutKey || saving) return
     const mapped = onMapRef.current
+    const freely = freeRef.current
     const current = nodePositions(cy, mapped)
     // Schematic: every node is stored, so the whole drawing reopens exactly as it is now. Map: only the devices that
     // were dragged, as lat/lon, so the others keep following their real site coordinates.
@@ -1224,8 +1280,16 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
       : Object.fromEntries(current.map((d) => [d.id, { x: Math.round(d.pos.x), y: Math.round(d.pos.y) }]))
     setSaving(true)
     try {
-      await api.put('/topology/layouts', { view_key: mapped ? mapViewKey(layoutKey) : layoutKey, positions })
+      const viewKey = mapped ? mapViewKey(layoutKey) : freely ? freeViewKey(layoutKey) : layoutKey
+      await api.put('/topology/layouts', { view_key: viewKey, positions })
       savedPosRef.current = new Map(current.map((d) => [d.id, d.pos] as [string, Pos]))
+      if (freely) {
+        // A later rebuild (live refresh, toggle) must start from what was just saved, not lay the view out again.
+        const free_layout = positions as Record<string, Pos>
+        const sameView = (v: View | null) => !!v && v.layout_key === layoutKey
+        if (sameView(drawnRef.current)) drawnRef.current = { ...drawnRef.current!, free_layout }
+        setView((current) => (sameView(current) ? { ...current!, free_layout } : current))
+      }
       if (mapped) {
         // No redraw: the devices already stand where they were saved; a later rebuild must start from the new overrides.
         // Merged into the views current at completion: a live refresh during the PUT must keep its newer statuses.
@@ -1247,9 +1311,11 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
     const layoutKey = view?.layout_key
     const question = onMap
       ? 'Kembalikan perangkat ke koordinat aslinya di peta? Posisi yang tersimpan di peta untuk tampilan ini dihapus.'
-      : 'Kembalikan tampilan ini ke tata letak otomatis? Susunan yang tersimpan dihapus.'
+      : free
+        ? 'Susun ulang tampilan ini secara otomatis? Susunan bebas yang tersimpan dihapus.'
+        : 'Kembalikan tampilan ini ke tata letak otomatis? Susunan yang tersimpan dihapus.'
     if (!layoutKey || !window.confirm(question)) return
-    const viewKey = onMap ? mapViewKey(layoutKey) : layoutKey
+    const viewKey = onMap ? mapViewKey(layoutKey) : free ? freeViewKey(layoutKey) : layoutKey
     try {
       await api.del(`/topology/layouts?view_key=${encodeURIComponent(viewKey)}`)
       setMessage({ text: onMap ? 'Perangkat dan POP dikembalikan ke posisi aslinya.' : 'Tata letak dikembalikan ke susunan otomatis.' })
@@ -1424,7 +1490,12 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
             Atur ulang tata letak
           </button>
         )}
-        {!onMap && view && !isElkLevel(view.level) && (Object.keys(view.layout ?? {}).length > 0 || view.nodes.some((n) => n.kind === 'device' && n.x != null)) && (
+        {free && view && Object.keys(view.free_layout ?? {}).length > 0 && (
+          <button onClick={resetLayout} title="Hapus susunan bebas yang tersimpan untuk tampilan ini dan susun ulang otomatis">
+            Atur ulang tata letak
+          </button>
+        )}
+        {!onMap && !free && view && !isElkLevel(view.level) && (Object.keys(view.layout ?? {}).length > 0 || view.nodes.some((n) => n.kind === 'device' && n.x != null)) && (
           <button onClick={resetLayout} title="Hapus susunan yang tersimpan untuk tampilan ini dan kembali ke tata letak otomatis">
             Atur ulang tata letak
           </button>
@@ -1480,6 +1551,11 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
         {mapAvailable && (
           <label className="check" title="Tampilkan di atas peta sesuai koordinat (POP, atau site perangkat bila ada)">
             <input type="checkbox" checked={mapOn} onChange={(e) => toggleMap(e.target.checked)} /> Peta
+          </label>
+        )}
+        {!onMap && !isElkLevel(level) && (
+          <label className="check" title="Susun bebas, lepas dari peta dan baris role: perangkat tidak saling tumpang tindih dan jalur tidak menembus perangkat lain">
+            <input type="checkbox" checked={freeChoice} onChange={(e) => toggleFree(e.target.checked)} /> Susunan bebas
           </label>
         )}
         {view && (hiddenLinks > 0 || includeHidden) && (
