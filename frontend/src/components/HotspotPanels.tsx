@@ -53,7 +53,9 @@ export function LinkHotspotsPanel() {
         <table>
           <thead>
             <tr><th>Perangkat A</th><th>Interface A</th><th>Perangkat B</th><th>Interface B</th><th>Tipe</th>
-              <th className="num">Kapasitas</th><th className="num">Trafik</th><th>Utilisasi</th></tr>
+              <th className="num">Kapasitas</th>
+              <th className="num" title="Persentil 95 trafik kemarin (jam sibuk), dasar utilisasi dan forecast">Trafik p95</th>
+              <th className="num" title="Rate saat Full sync terakhir dari Observium, sisi port yang sama">Live</th><th>Utilisasi</th></tr>
           </thead>
           <tbody>
             {paged.pageRows.map((r) => (
@@ -66,11 +68,12 @@ export function LinkHotspotsPanel() {
                   {r.status === 'down' && <> <span className="pill pill-bad">down</span></>}</td>
                 <td className="num">{fmtG(r.capacity_gbps)}</td>
                 <td className="num">{fmtG(r.current_gbps)}</td>
+                <td className="num muted">{r.live_gbps != null ? fmtG(r.live_gbps) : '–'}</td>
                 <td><Pct value={r.utilization_pct} level={r.level} /></td>
               </tr>
             ))}
-            {data && !rows.length && <tr><td colSpan={8} className="empty">Tidak ada link di atas threshold untuk filter ini</td></tr>}
-            {!data && !error && <tr><td colSpan={8} className="empty">Memuat…</td></tr>}
+            {data && !rows.length && <tr><td colSpan={9} className="empty">Tidak ada link di atas threshold untuk filter ini</td></tr>}
+            {!data && !error && <tr><td colSpan={9} className="empty">Memuat…</td></tr>}
           </tbody>
         </table>
       </div>

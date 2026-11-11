@@ -5,8 +5,10 @@ the series instead of a PNG: bits/s, In positive and Out mirrored negative. rrdt
 for the whole range from the finest archive covering it (2 h for 90 days, 5 min for 7 days) and
 each value is the average over that step, so long ranges under-read short peaks. The last
 FINE_DAYS are therefore fetched a second time at 5-minute resolution and replace those days.
+A day's value is its 95th percentile (busy_level), not its maximum, so a polling glitch does not set it.
 """
 
+import math
 from collections import defaultdict
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -68,8 +70,19 @@ def daily_peaks(points: list[Point]) -> tuple[dict[int, DailyPeak], int]:
             continue
         seen_data = True
         peaks[day] = (datetime.fromtimestamp(day * DAY, tz=timezone.utc),
-                      max(ins, default=0.0) / 1e9, max(outs, default=0.0) / 1e9)
+                      busy_level(ins) / 1e9, busy_level(outs) / 1e9)
     return peaks, empty
+
+
+def busy_level(values: list[float]) -> float:
+    """The day's NADIEN_UTIL_DAILY_PERCENTILE (nearest rank) rather than its maximum. Observium's 5-minute series
+    carry polling glitches, single points far above line rate (18.6 G on a 10 G port whose 95th is 5.2 G); the 95th
+    is what Observium itself shows next to Max. With twelve 2-hour averages a day it is simply the largest."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    rank = math.ceil(len(ordered) * settings.util_daily_percentile / 100)
+    return ordered[min(max(rank, 1), len(ordered)) - 1]
 
 
 class GraphApiSource:

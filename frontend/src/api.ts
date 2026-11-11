@@ -90,6 +90,8 @@ export interface Hotspots {
       status: string
       capacity_gbps: number
       current_gbps: number
+      /** Rate at the last Full sync, on the end the history is read from; null when Observium had none. */
+      live_gbps: number | null
       utilization_pct: number
       level: HotspotLevel
       months_to_threshold: number | null

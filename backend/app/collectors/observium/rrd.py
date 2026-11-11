@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from ... import models as m
 from ...config import settings
-from ...services.capacity import SPIKE_WINDOW_DAYS, peak_series, planning_current
+from ...services.capacity import SPIKE_WINDOW_DAYS, peak_series, planning_current, read_narrow_end
 
 CHUNK = 250  # RRD files per remote execution
 # Observium creates port RRDs with DS max 12,500,000,000 bytes/s (100 Gbps); RRD stores anything
@@ -221,12 +221,28 @@ def _targets(db: Session, source: RrdSource, server: str = "main") -> tuple[list
     all_refs = list(db.scalars(select(m.ObserviumPort)))
     refs = {r.interface_id: r for r in all_refs if r.source == server}
     main_ports = {r.interface_id for r in all_refs if r.source == "main"}
+    ports = {row.id: row for row in db.execute(
+        select(m.Interface.id, m.Interface.speed_gbps, m.Interface.in_gbps, m.Interface.out_gbps).where(
+            m.Interface.id.in_(select(m.Link.a_interface_id).union(select(m.Link.b_interface_id)))))}
+
+    def speed(iface_id: int | None) -> float | None:
+        return ports[iface_id].speed_gbps if iface_id in ports else None
+
+    def busiest(iface_id: int | None) -> float | None:
+        port = ports.get(iface_id)
+        return None if port is None else max(port.in_gbps or 0.0, port.out_gbps or 0.0)
+
     targets, unmapped = [], 0
     for link in db.scalars(select(m.Link)):
         ends = (link.a_interface_id, link.b_interface_id)
         if server != "main" and (not any(i in refs for i in ends) or any(i in main_ports for i in ends)):
             continue
-        for iface_id, swapped in ((ends[0], False), (ends[1], True)):
+        order = ((ends[0], False), (ends[1], True))
+        if read_narrow_end(speed(ends[1]), speed(ends[0]), busiest(ends[1]), busiest(ends[0])):
+            # A bundle whose members lead to several boxes (smartgroup1 200G to two 100G switches) carries more than
+            # this link: the narrower end only carries what goes over it, as in the live Full sync.
+            order = order[::-1]
+        for iface_id, swapped in order:
             ref = refs.get(iface_id or -1)
             if ref is not None and source.usable(ref):
                 targets.append(Target(link, ref, swapped))

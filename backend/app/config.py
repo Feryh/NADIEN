@@ -1,7 +1,7 @@
 from typing import Literal
 
 from cryptography.fernet import Fernet
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -96,6 +96,9 @@ class Settings(BaseSettings):
     # spike_ratio × the median peak of the surrounding days and higher than it by spike_min_rise_pct of the capacity.
     spike_ratio: float = 2.0
     spike_min_rise_pct: float = 25.0
+    # A day's utilization from Observium's 5-minute graph: this percentile of the day's points, not the maximum,
+    # which polling glitches set (single points above line rate). 95 matches Observium's own "95th" column.
+    util_daily_percentile: float = Field(95.0, gt=0, le=100)
     # ONTs one GPON port takes at its split ratio (1:64): a PON port's occupancy is its online ONTs against this.
     pon_max_onts: int = 64
 

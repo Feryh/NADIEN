@@ -49,13 +49,19 @@ def graph_transport(series: dict[str, Series], calls: list[dict]) -> httpx.MockT
     return httpx.MockTransport(handler)
 
 
-def growing_with_daily_spike(t: int, step: int) -> tuple[float, float]:
-    """Average 100 G + 1 G/day; at 5-minute resolution a +5 G spike at noon shows up."""
+def growing_with_daily_busy_hour(t: int, step: int) -> tuple[float, float]:
+    """Average 100 G + 1 G/day; at 5-minute resolution a +5 G busy hour and a half from noon shows up."""
     day = (t - 1) // DAY  # a value covers the step that ends at t
     gbps = 100 + (day - (TODAY - 90))
-    if step == 300 and (t - 1) % DAY // step == 12 * 3600 // step:
+    if step == 300 and 12 * 3600 <= (t - 1) % DAY < 13 * 3600 + 1800:
         gbps += 5
     return gbps * 1e9, gbps * 0.5e9
+
+
+def flat_with_polling_glitch(t: int, step: int) -> tuple[float, float]:
+    """5 G all day on a 10 G port, except one 5-minute point a poll glitch reads as 18.6 G (seen on MND-AMD-OLT1)."""
+    gbps = 18.6 if (t - 1) % DAY // step == 15 * 3600 // step else 5.0
+    return gbps * 1e9, gbps * 0.1e9
 
 
 @pytest.fixture
@@ -92,11 +98,11 @@ def test_should_drop_partial_first_day_and_count_empty_days_when_building_daily_
 
 def test_should_use_5_minute_peaks_for_last_7_days_and_2_hour_peaks_before(synced):
     calls: list[dict] = []
-    report = sync_rrd(synced, api_source({"1001": growing_with_daily_spike}, calls), days=90)
+    report = sync_rrd(synced, api_source({"1001": growing_with_daily_busy_hour}, calls), days=90)
     core, by_day = core_samples(synced)
 
-    assert by_day[TODAY - 10].in_gbps == 180  # 2-hour averages: no spike visible
-    assert by_day[TODAY - 3].in_gbps == 192  # 187 average + 5 G spike from the 5-minute pass
+    assert by_day[TODAY - 10].in_gbps == 180  # 2-hour averages: no busy hour visible
+    assert by_day[TODAY - 3].in_gbps == 192  # 187 average + 5 G busy hour from the 5-minute pass
     assert by_day[TODAY - 3].out_gbps == 96  # Out came mirrored negative; half of In
     assert core.current_gbps == 194  # yesterday's peak, not today's partial day
     assert report["source"] == "api" and report["links_with_history"] == 1
@@ -141,6 +147,13 @@ def test_should_keep_samples_outside_the_window(synced):
     old = datetime.now(timezone.utc) - timedelta(days=200)
     synced.add(m.UtilizationSample(link_id=core.id, ts=old, in_gbps=1, out_gbps=1))
     synced.commit()
-    sync_rrd(synced, api_source({"1001": growing_with_daily_spike}, []), days=30)
+    sync_rrd(synced, api_source({"1001": growing_with_daily_busy_hour}, []), days=30)
     _, by_day = core_samples(synced)
     assert int(old.timestamp()) // DAY in by_day
+
+
+def test_should_ignore_a_single_polling_glitch_when_taking_a_days_level():
+    step = 300
+    points = [(t, *flat_with_polling_glitch(t, step)) for t in range(10 * DAY + step, 12 * DAY + 1, step)]
+    peaks, _ = daily_peaks(points)
+    assert peaks[10][1] == 5.0  # not the 18.6 G point
