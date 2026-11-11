@@ -541,3 +541,8 @@ button.link-button:hover:not(:disabled) { text-decoration: underline; }
 .scope-filter { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
 .scope-filter .scope-select { display: flex; flex-direction: column; gap: 2px; }
 .scope-filter select { min-width: 160px; max-width: 260px; }
+.bulk-bar { border: 1px solid var(--accent); border-radius: 8px; padding: 8px 12px; margin: 8px 0; background: #0ea5e911; }
+.bulk-bar-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin: 4px 0; }
+.bulk-bar-row label { display: flex; flex-direction: column; gap: 2px; }
+.bulk-bar-row select { min-width: 200px; max-width: 300px; }
+tbody tr.selected td { background: #0ea5e914; }
