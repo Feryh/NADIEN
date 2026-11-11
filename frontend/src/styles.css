@@ -532,3 +532,8 @@ a.button.primary { background: var(--accent-strong); border-color: var(--accent-
 .bundle-table th, .bundle-table td { padding: 3px 6px; white-space: nowrap; }
 .bundle-table tr.clicked td { background: #0ea5e922; font-weight: 600; }
 .city-filters .segment-chip { --seg: var(--accent); }
+button.link-button { background: none; border: 0; padding: 2px 0; color: var(--accent); }
+button.link-button:hover:not(:disabled) { text-decoration: underline; }
+.peer-picker { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.peer-picker input { min-width: 200px; }
+.peer-picker select { max-width: 280px; }

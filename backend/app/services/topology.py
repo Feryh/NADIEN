@@ -120,6 +120,7 @@ class _Discovery:
         self.lldp_refused: set[int] = set()
         self.created_ids: set[int] = set()
         self._ports_by_device: dict[int, list[Interface]] | None = None
+        self._by_stem: dict[str, list[Device]] | None = None
 
     def _add_site_keys(self) -> None:
         """Cell-site neighbours are often written without the role/vendor suffix
@@ -259,10 +260,13 @@ class _Discovery:
 
     def from_approvals(self) -> None:
         """Pairs an engineer confirmed by hand (LinkApproval), unless LLDP or the config already linked either port:
-        once the box in between is in the inventory, what LLDP sees wins and the approval is no longer used."""
+        once the box in between is in the inventory, what LLDP sees wins and the approval is no longer used.
+        Approved pairs may share a port: a hub's trunk often reaches several sites over a carrier, one sub-interface
+        each (MKS-BSW-BNG2-M8 Eth-Trunk40.100 to KDR, .400 to GTO)."""
+        taken = set(self.covered)
         for approval in self.db.scalars(select(LinkApproval)):
             a, b = self.ifaces.get(approval.a_interface_id), self.ifaces.get(approval.b_interface_id)
-            if a is not None and b is not None and a.id not in self.covered and b.id not in self.covered:
+            if a is not None and b is not None and a.id not in taken and b.id not in taken:
                 self.add(a, b, "approved")
 
     def one_sided(self, pair: frozenset[int], sides: dict[int, list[Interface]]) -> None:
@@ -281,6 +285,20 @@ class _Discovery:
                 self.contradicted.add(frozenset((a.id, b.id)))
                 continue
             self.add(a, b, "config")
+
+    def replacement_for(self, hostname: str) -> Device | None:
+        """The one inventory device whose name differs from `hostname` only in its last part, the model suffix
+        (MKS-BSW-BNG2-M4 -> MKS-BSW-BNG2-M8 after a hardware swap). None when no or several devices qualify."""
+        parts = host_key(hostname).split("-")
+        if len(parts) < 3:
+            return None
+        if self._by_stem is None:
+            self._by_stem = {}
+            for device in self.devices.values():
+                stem = "-".join(host_key(device.hostname).split("-")[:-1])
+                self._by_stem.setdefault(stem, []).append(device)
+        found = self._by_stem.get("-".join(parts[:-1]), [])
+        return found[0] if len(found) == 1 else None
 
     def lldp_allows(self, port: Interface, peer_device_id: int) -> bool:
         """LLDP does not rule out `peer_device_id` behind `port`: the neighbour is no unknown named system, and a
@@ -490,7 +508,9 @@ def unknown_lldp_peers(db: Session) -> list[dict[str, Any]]:
     (a carrier's box). One row per port that would carry the link (the bundle, else the port), with the peer port the
     description names and any approval (LinkApproval) an engineer gave it."""
     run = _Discovery(db)
-    approvals = {frozenset((x.a_interface_id, x.b_interface_id)): x for x in db.scalars(select(LinkApproval))}
+    approvals: dict[int, LinkApproval] = {}
+    for approval in db.scalars(select(LinkApproval)):
+        approvals[approval.a_interface_id] = approvals[approval.b_interface_id] = approval
     rows: dict[int, dict[str, Any]] = {}
     for n in db.scalars(select(LldpNeighbor)):
         local = run.devices.get(n.device_id)
@@ -518,13 +538,23 @@ def unknown_lldp_peers(db: Session) -> list[dict[str, Any]]:
             continue  # the described peer itself, announcing only its MAC (cell sites do)
         row = rows.get(target.id)
         if row is None:
-            peer = run.named_port(named.id, described.description) if named else None
-            approval = approvals.get(frozenset((target.id, peer.id))) if peer else None
+            suggested = run.replacement_for(token) if named is None and token else None
+            candidate = named or suggested
+            peer = run.named_port(candidate.id, described.description) if candidate else None
+            approval = approvals.get(target.id)
+            if approval is not None:  # the pair an approver chose, which may differ from the description
+                peer = run.ifaces.get(approval.b_interface_id if approval.a_interface_id == target.id
+                                      else approval.a_interface_id)
+            peer_device = run.devices.get(peer.device_id) if peer else candidate
             row = rows[target.id] = {
                 "device_id": local.id, "device": local.hostname, "interface_id": target.id, "port": target.name,
                 "is_bundle": bundle is not None, "lldp": [], "description": described.description,
                 "described_device_id": named.id if named else None,
                 "described_device": named.hostname if named else token,
+                # A box the description names under an old name (MKS-BSW-BNG2-M4 for its replacement -M8).
+                "suggested_device": suggested.hostname if suggested and not named else None,
+                "peer_device_id": peer_device.id if peer_device else None,
+                "peer_device": peer_device.hostname if peer_device else None,
                 "peer_interface_id": peer.id if peer else None, "peer_port": peer.name if peer else None,
                 "approval": None if approval is None else {
                     "id": approval.id, "approved_by": approval.approved_by, "approved_at": approval.approved_at},
@@ -555,10 +585,17 @@ def approve_link(db: Session, interface_id: int, peer_interface_id: int, usernam
     if a.device_id == b.device_id:
         raise ApprovalError("Kedua port ada di perangkat yang sama", 422)
     link = _link_on(db, a.id, b.id)
-    busy = db.scalar(select(Link).where(Link.status == "up", Link.id != (link.id if link else -1),
+    # Approved links may share a port (a hub trunk to several sites); a port LLDP or the config links is taken.
+    busy = db.scalar(select(Link).where(Link.status == "up", Link.discovery_source != "approved",
+                                        Link.id != (link.id if link else -1),
                                         Link.a_interface_id.in_((a.id, b.id)) | Link.b_interface_id.in_((a.id, b.id))))
     if busy is not None:
         raise ApprovalError(f"Port sudah dipakai link lain: {busy.name}", 409)
+    other = db.scalar(select(LinkApproval).where(
+        (LinkApproval.a_interface_id == a.id) | (LinkApproval.b_interface_id == a.id))
+        .where(~((LinkApproval.a_interface_id == min(a.id, b.id)) & (LinkApproval.b_interface_id == max(a.id, b.id)))))
+    if other is not None:
+        raise ApprovalError("Port ini sudah disetujui ke port lain; cabut persetujuan itu dulu", 409)
     low, high = sorted((a.id, b.id))
     if db.scalar(select(LinkApproval).where(LinkApproval.a_interface_id == low,
                                             LinkApproval.b_interface_id == high)) is None:
