@@ -37,6 +37,9 @@ const MAX_ROUNDS = 20
 // A node pushed off a link goes a bit further than just clear of it, so the next push to part two nodes does not
 // put it straight back.
 const AVOID_OVERSHOOT = 1.6
+// Spots a node still on a link tries in the last pass: this many directions on each of this many rings.
+const REPAIR_DIRECTIONS = 24
+const REPAIR_RINGS = 8
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5))
 // A group this small with this many links per node is drawn on a circle (see circleDenseGroups).
 const DENSE_MAX_NODES = 40
@@ -101,7 +104,77 @@ export function freeLayout(nodes: FreeNode[], edges: FreeEdge[], start: Record<s
     if (!avoidLinks(g)) break
   }
   separate(g)
+  repair(g, spacing)
   return Object.fromEntries(nodes.map((node, i) => [node.id, { x: g.x[i], y: g.y[i] }]))
+}
+
+/**
+ * The two pushes can keep undoing each other around a busy hub. Last resort, node by node: a node a link runs through,
+ * or whose own link runs through another node, moves to the nearest clear spot around it (moveToClearSpot).
+ */
+function repair(g: Graph, spacing: number) {
+  const linksOf: number[][] = Array.from({ length: g.n }, () => [])
+  for (let e = 0; e < g.from.length; e++) {
+    linksOf[g.from[e]].push(e)
+    linksOf[g.to[e]].push(e)
+  }
+  // Either move the node a link runs through, or an end of that link (a leaf behind a busy hub, say).
+  const troubled = (i: number) => onSomeLink(g, i) || linksCrossNodes(g, i, linksOf[i])
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < g.n; i++) {
+      if (!g.pinned[i] && troubled(i)) moveToClearSpot(g, i, spacing, linksOf[i])
+    }
+  }
+}
+
+/**
+ * Spots on rings of growing radius around node `i`; it takes the first where it overlaps no node, lies on no link and
+ * its own `links` pass through no node, else it stays where it was.
+ */
+function moveToClearSpot(g: Graph, i: number, spacing: number, links: number[]) {
+  const home = { x: g.x[i], y: g.y[i] }
+  for (let ring = 1; ring <= REPAIR_RINGS; ring++) {
+    const radius = (spacing / 2) * ring
+    for (let step = 0; step < REPAIR_DIRECTIONS; step++) {
+      const angle = (2 * Math.PI * step) / REPAIR_DIRECTIONS
+      g.x[i] = home.x + Math.cos(angle) * radius
+      g.y[i] = home.y + Math.sin(angle) * radius
+      if (!overlapsAny(g, i) && !onSomeLink(g, i) && !linksCrossNodes(g, i, links)) return
+    }
+  }
+  g.x[i] = home.x
+  g.y[i] = home.y
+}
+
+function overlapsAny(g: Graph, i: number): boolean {
+  for (let j = 0; j < g.n; j++) {
+    if (j !== i && Math.abs(g.x[i] - g.x[j]) < g.hw[i] + g.hw[j] && Math.abs(g.y[i] - g.y[j]) < g.hh[i] + g.hh[j]) return true
+  }
+  return false
+}
+
+/** Some link of other nodes runs through node `i`. */
+function onSomeLink(g: Graph, i: number): boolean {
+  for (let e = 0; e < g.from.length; e++) {
+    const a = g.from[e]
+    const b = g.to[e]
+    if (a === i || b === i) continue
+    if (crossing({ x: g.x[a], y: g.y[a] }, { x: g.x[b], y: g.y[b] }, { x: g.x[i], y: g.y[i] }, g.hw[i], g.hh[i])) return true
+  }
+  return false
+}
+
+/** One of node `i`'s own links runs through another node. */
+function linksCrossNodes(g: Graph, i: number, links: number[]): boolean {
+  for (const e of links) {
+    const a = g.from[e]
+    const b = g.to[e]
+    for (let j = 0; j < g.n; j++) {
+      if (j === a || j === b) continue
+      if (crossing({ x: g.x[a], y: g.y[a] }, { x: g.x[b], y: g.y[b] }, { x: g.x[j], y: g.y[j] }, g.hw[j], g.hh[j])) return true
+    }
+  }
+  return false
 }
 
 /**
