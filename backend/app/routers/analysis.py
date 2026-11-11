@@ -65,6 +65,7 @@ from ..services.topology_readmodel import (
     topology_links as _topology_links,
 )
 from ..services.topology_city import city_view as _city_view, neighbors_view as _neighbors_view
+from ..services.topology_devices import devices_view as _devices_view, scopes as _scopes
 from ..services.geo import KmlError, Placemark, match_devices, match_pops, read_placemarks
 
 router = APIRouter(tags=["Analysis"])
@@ -477,7 +478,7 @@ def apply_pop_location_mapping(db: Session = Depends(get_db)):
 
 @router.get("/topology/view")
 def topology_view(
-    level: str = Query("area", pattern="^(area|province|regency|city|pop|device|neighbors)$"),
+    level: str = Query("area", pattern="^(area|province|regency|city|pop|device|neighbors|devices)$"),
     area: str | None = None,
     province: str | None = None,
     regency: str | None = None,
@@ -492,7 +493,9 @@ def topology_view(
     `province` and `regency` to narrow it): POPs + the neighbouring groups they link to ·
     device (needs `pop`): devices of one POP + links out to other POPs ·
     city (needs `area`, `province`, `regency`): every device of one city with one entry per link ·
-    neighbors (needs `device_id`): one device and everything within `depth` hops.
+    neighbors (needs `device_id`): one device and everything within `depth` hops ·
+    devices (any of `area`, `province`, `regency`, `pop` as filters): only the devices in that scope and their links,
+    a link leaving it ending on the far device (`outside`); no area / province / POP boxes.
     A province or regency level with a single group inside answers with the next level down
     (the response's `level` says which), so no click opens a view of one box.
     Config-sourced links between two Kab/Kota without traffic are left out unless `include_hidden`;
@@ -500,6 +503,12 @@ def topology_view(
     key = ("topology", level, area, province, regency, (pop or "").upper(), device_id, depth, include_hidden)
     return cache.cached(key, lambda: _with_layout(db, _topology_view(db, level, area, province, regency, pop,
                                                                      device_id, depth, include_hidden)))
+
+
+@router.get("/topology/scopes")
+def topology_scopes(db: Session = Depends(get_db)):
+    """Every POP with devices and its area / province / regency: the choices of the device topology's filters."""
+    return cache.cached(("topology", "scopes"), lambda: _scopes(_context(db)))
 
 
 def layout_key(view: dict) -> str:
@@ -510,6 +519,8 @@ def layout_key(view: dict) -> str:
         return "area"
     if level == "device":
         return f"device:{view['pop']}"
+    if level == "devices":
+        return "devices:" + "|".join(view.get(k) or "" for k in ("area", "province", "regency", "pop"))
     if level == "neighbors":
         return f"neighbors:{view['device_id']}:{view['depth']}"
     if level == "city":
@@ -542,6 +553,8 @@ def _topology_view(db: Session, level: str, area: str | None, province: str | No
             raise HTTPException(422, "device_id is required for level=neighbors")
         return _neighbors_view(db, ctx, device_id, depth, include_hidden)
     links = _topology_links(db, ctx, include_hidden)
+    if level == "devices":
+        return _devices_view(ctx, links, area or None, province or None, regency or None, pop or None)
     if level == "area":
         return _area_level(ctx, links)
     if level in ("province", "regency", "pop"):
