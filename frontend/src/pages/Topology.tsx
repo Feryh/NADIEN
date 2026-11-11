@@ -36,7 +36,7 @@ const isGroup = (kind: string) => GROUP_KINDS.includes(kind)
 const isGroupLevel = (level: Level) => level === 'area' || level === 'province' || level === 'regency'
 /** Levels drawn from per-link entries with an ELK layout (positions are computed, never dragged or saved there). */
 const isElkLevel = (level: Level) => level === 'city' || level === 'neighbors'
-const usesElk = (level: Level, onMap: boolean) => isElkLevel(level) && !onMap
+const usesElk = (level: Level, onMap: boolean, free: boolean) => isElkLevel(level) && !onMap && !free
 
 export type Segment = 'backbone' | 'distribution' | 'last_mile'
 export const SEGMENTS: Segment[] = ['backbone', 'distribution', 'last_mile']
@@ -780,15 +780,16 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   const devicesLocated = view?.nodes.filter((n) => n.kind === 'device' && n.located).length ?? 0
   const mapAvailable = isGroupLevel(level) || level === 'pop' || devicesLocated > 0
   const onMap = mapOn && mapAvailable && view?.level === level
-  // City / neighbours drawn by ELK: the only drawing that has the filters, problem highlight and the per-link panel.
-  const cityMode = !!view && usesElk(view.level, onMap)
   const onMapRef = useRef(onMap)
   onMapRef.current = onMap
-  // Susunan bebas: the schematic levels (not the map, not the ELK city / neighbours) arranged freely, no overlaps.
+  // Susunan bebas: every level off the map arranged freely, no overlaps — the city and neighbourhood too, where a
+  // kabupaten/kota can hold 500 devices. Unticked, those two get their ELK schematic back.
   const [freeChoice, setFreeChoice] = useState(() => stored<string>('nadien.topology.free', '1') === '1')
-  const free = freeChoice && !onMap && !!view && !isElkLevel(view.level)
+  const free = freeChoice && !onMap && !!view
   const freeRef = useRef(free)
   freeRef.current = free
+  // City / neighbours drawn by ELK: the only drawing that has the filters, problem highlight and the per-link panel.
+  const cityMode = !!view && usesElk(view.level, onMap, free)
   const [loading, setLoading] = useState(false)
   // City / neighbours keep only the id of the tapped link: the panel reads its details from the current view.
   const [selected, setSelected] = useState<{ node?: NodeData; edge?: EdgeData; linkId?: number } | null>(null)
@@ -1030,12 +1031,12 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   const hiddenLinks = view?.hidden_links ?? 0
 
   // Label mode sets the ELK node widths, so on the city / neighbours levels a change of it means a new layout.
-  const elkLabelMode = view && usesElk(view.level, onMap) ? labelMode : null
+  const elkLabelMode = view && usesElk(view.level, onMap, free) ? labelMode : null
 
   useEffect(() => {
     const view = drawnRef.current
     if (!view || !container.current) return
-    const elk = usesElk(view.level, onMap)
+    const elk = usesElk(view.level, onMap, free)
     const keep = keepRef.current
     keepRef.current = null
     elkReadyRef.current = false
@@ -1553,7 +1554,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
             <input type="checkbox" checked={mapOn} onChange={(e) => toggleMap(e.target.checked)} /> Peta
           </label>
         )}
-        {!onMap && !isElkLevel(level) && (
+        {!onMap && (
           <label className="check" title="Susun bebas, lepas dari peta dan baris role: perangkat tidak saling tumpang tindih dan jalur tidak menembus perangkat lain">
             <input type="checkbox" checked={freeChoice} onChange={(e) => toggleFree(e.target.checked)} /> Susunan bebas
           </label>
@@ -1615,7 +1616,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
           <div className="graph-status small muted">
             {stats.groups} jalur · {stats.links} link
             {stats.red ? ` · ${stats.red} merah` : ''}
-            {view && usesElk(view.level, onMap) && layoutMs != null && !arranging ? ` · tata letak ${layoutMs} ms` : ''}
+            {view && usesElk(view.level, onMap, free) && layoutMs != null && !arranging ? ` · tata letak ${layoutMs} ms` : ''}
             {onMap && level === 'pop' && view ? ` · ${view.nodes.filter((n) => n.estimated).length} POP tanpa koordinat (posisi perkiraan, garis putus-putus)` : ''}
             {onMap && (level === 'device' || level === 'neighbors') && view
               ? ` · ${devicesLocated} perangkat dengan koordinat site, ${view.nodes.filter((n) => n.kind === 'device' && !n.located).length} di sekitar POP (garis putus-putus)`
