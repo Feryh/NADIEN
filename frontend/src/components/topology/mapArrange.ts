@@ -24,6 +24,8 @@ export function storedMapOn(elkLevel: boolean, read: (key: string) => string | n
 
 /** Saved map positions live beside the schematic ones, under their own view key (map:device:JKT). */
 export const mapViewKey = (layoutKey: string): string => `map:${layoutKey}`
+/** Where the free arrangement (Susunan bebas) of a view is saved, apart from its schematic and its map. */
+export const freeViewKey = (layoutKey: string): string => `free:${layoutKey}`
 
 /** Arranged on the map: devices and the other POPs / cities they link to. Group boxes follow coordinates. */
 export const MAP_DRAGGABLE = '[kind="device"], [kind="external_pop"]'

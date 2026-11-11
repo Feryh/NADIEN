@@ -66,6 +66,15 @@ def test_should_return_map_layout_when_saved_for_view(client, network):
     assert view["layout"] == {"pop:BDG": {"x": 300.0, "y": 0.0}}
 
 
+def test_should_keep_free_arrangement_apart_from_the_schematic_when_both_are_saved(client, network):
+    client.put("/api/topology/layouts", json={"view_key": "device:JKT", "positions": {"pop:BDG": {"x": 300, "y": 0}}})
+    response = client.put("/api/topology/layouts", json={"view_key": "free:device:JKT",
+                                                          "positions": {"pop:BDG": {"x": -40, "y": 220}}})
+    assert response.status_code == 204
+    view = client.get("/api/topology/view", params={"level": "device", "pop": "JKT"}).json()
+    assert (view["free_layout"], view["layout"]) == ({"pop:BDG": {"x": -40.0, "y": 220.0}}, {"pop:BDG": {"x": 300.0, "y": 0.0}})
+
+
 def test_should_keep_device_coordinates_when_map_layout_saved(client, network, db):
     jkt = db.scalars(select(m.Pop).where(m.Pop.code == "JKT")).one()
     jkt.latitude, jkt.longitude = -6.1, 106.7

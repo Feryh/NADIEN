@@ -524,6 +524,9 @@ def _with_layout(db: Session, view: dict) -> dict:
     # Devices dragged on the map are kept apart from the schematic: lat/lon overrides, never the site coordinates.
     map_row = db.get(m.TopologyLayout, f"map:{view['layout_key']}")
     view["map_layout"] = map_row.positions if map_row else {}
+    # The free arrangement (Susunan bebas) is a third drawing of the same view, saved on its own.
+    free_row = db.get(m.TopologyLayout, f"free:{view['layout_key']}")
+    view["free_layout"] = free_row.positions if free_row else {}
     return view
 
 
