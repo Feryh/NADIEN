@@ -40,8 +40,7 @@ const AVOID_OVERSHOOT = 1.6
 // Spots a node still on a link tries in the last pass: this many directions on each of this many rings.
 const REPAIR_DIRECTIONS = 24
 const REPAIR_RINGS = 8
-const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5))
-// A group this small with this many links per node is drawn on a circle (see circleDenseGroups).
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5))// A group this small with this many links per node is drawn on a circle (see circleDenseGroups).
 const DENSE_MAX_NODES = 40
 const DENSE_LINKS_PER_NODE = 1.5
 
@@ -267,6 +266,62 @@ function pack(g: Graph, group: Int32Array, spacing: number) {
   }
 }
 
+/** Nodes bucketed in square cells, so only pairs in the same or a touching cell are visited. */
+class Grid {
+  private cells = new Map<number, number[]>()
+
+  constructor(private readonly size: number) {}
+
+  private key(cx: number, cy: number): number {
+    return (cx + 32768) * 65536 + (cy + 32768)  // cell indexes stay far inside ±32768 for any drawing here
+  }
+
+  fill(x: Float64Array, y: Float64Array, n: number) {
+    this.cells.clear()
+    for (let i = 0; i < n; i++) {
+      const key = this.key(Math.floor(x[i] / this.size), Math.floor(y[i] / this.size))
+      const cell = this.cells.get(key)
+      if (cell) cell.push(i)
+      else this.cells.set(key, [i])
+    }
+  }
+
+  /** Every node in a cell the box left/top–right/bottom touches (as of the last fill). */
+  inBox(left: number, top: number, right: number, bottom: number, visit: (i: number) => void) {
+    const x0 = Math.floor(left / this.size)
+    const x1 = Math.floor(right / this.size)
+    const y0 = Math.floor(top / this.size)
+    const y1 = Math.floor(bottom / this.size)
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) > this.cells.size) {
+      for (const members of this.cells.values()) for (const i of members) visit(i)  // a box this wide: every node
+      return
+    }
+    for (let cx = x0; cx <= x1; cx++) {
+      for (let cy = y0; cy <= y1; cy++) {
+        const members = this.cells.get(this.key(cx, cy))
+        if (members) for (const i of members) visit(i)
+      }
+    }
+  }
+
+  /** Every pair of nodes in one cell or in two touching cells, each once. */
+  pairs(visit: (i: number, j: number) => void) {
+    for (const [key, members] of this.cells) {
+      const cx = Math.floor(key / 65536) - 32768
+      const cy = (key % 65536) - 32768
+      for (let a = 0; a < members.length; a++) for (let b = a + 1; b < members.length; b++) visit(members[a], members[b])
+      // Half of the 8 neighbours, so a pair of cells is visited from one side only.
+      for (const [dx, dy] of HALF_NEIGHBOURS) {
+        const other = this.cells.get(this.key(cx + dx, cy + dy))
+        if (!other) continue
+        for (const i of members) for (const j of other) visit(i, j)
+      }
+    }
+  }
+}
+
+const HALF_NEIGHBOURS: [number, number][] = [[1, 0], [1, 1], [0, 1], [-1, 1]]
+
 /** Force-directed layout; nodes only push nodes of their own group (`group`), and are pulled to its middle. */
 function forceDirected(g: Graph, k: number, group: Int32Array) {
   const { n, x, y, pinned, from, to } = g
@@ -298,23 +353,23 @@ function forceDirected(g: Graph, k: number, group: Int32Array) {
       sumY[group[i]] += y[i]
       count[group[i]] += 1
     }
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        if (group[i] !== group[j]) continue
-        let dx = x[i] - x[j]
-        let dy = y[i] - y[j]
-        if (dx === 0 && dy === 0) {
-          dx = (i - j) * 0.1  // two nodes on one spot: part them along a fixed direction, no randomness
-          dy = 0.1
-        }
-        const d2 = dx * dx + dy * dy
-        const f = k2 / d2  // (k² / d) / d: repulsion along the unit vector
-        sx[i] += dx * f
-        sy[i] += dy * f
-        sx[j] -= dx * f
-        sy[j] -= dy * f
+    const repel = (i: number, j: number) => {
+      if (group[i] !== group[j]) return
+      let dx = x[i] - x[j]
+      let dy = y[i] - y[j]
+      if (dx === 0 && dy === 0) {
+        dx = (i - j) * 0.1  // two nodes on one spot: part them along a fixed direction, no randomness
+        dy = 0.1
       }
+      const d2 = dx * dx + dy * dy
+      const f = k2 / d2  // (k² / d) / d: repulsion along the unit vector
+      sx[i] += dx * f
+      sy[i] += dy * f
+      sx[j] -= dx * f
+      sy[j] -= dy * f
     }
+    // Every pair, far ones included: without the long-range push big groups shrink into knots.
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) repel(i, j)
     for (let e = 0; e < from.length; e++) {
       const a = from[e]
       const b = to[e]
@@ -348,32 +403,36 @@ function forceDirected(g: Graph, k: number, group: Int32Array) {
  */
 function separate(g: Graph) {
   const { n, x, y, hw, hh, pinned } = g
+  // Two boxes can only overlap when their centres are closer than the two largest half sizes: a cell that size
+  // makes any overlapping pair share a cell or touch cells. The grid is rebuilt every pass, as nodes move.
+  let largest = 0
+  for (let i = 0; i < n; i++) largest = Math.max(largest, hw[i], hh[i])
+  const grid = new Grid(Math.max(largest * 2, 1))
   for (let pass = 0; pass < SEPARATE_PASSES; pass++) {
     let moved = false
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        const dx = x[j] - x[i]
-        const dy = y[j] - y[i]
-        const overlapX = hw[i] + hw[j] - Math.abs(dx)
-        if (overlapX <= 0) continue
-        const overlapY = hh[i] + hh[j] - Math.abs(dy)
-        if (overlapY <= 0 || (pinned[i] && pinned[j])) continue
-        const shareI = pinned[i] ? 0 : pinned[j] ? 1 : 0.5
-        const shareJ = 1 - shareI
-        if (overlapY <= overlapX) {
-          const push = overlapY + 0.5
-          const dir = dy === 0 ? (i % 2 ? 1 : -1) : Math.sign(dy)
-          y[i] -= dir * push * shareI
-          y[j] += dir * push * shareJ
-        } else {
-          const push = overlapX + 0.5
-          const dir = dx === 0 ? (j % 2 ? 1 : -1) : Math.sign(dx)
-          x[i] -= dir * push * shareI
-          x[j] += dir * push * shareJ
-        }
-        moved = true
+    grid.fill(x, y, n)
+    grid.pairs((i, j) => {
+      const dx = x[j] - x[i]
+      const dy = y[j] - y[i]
+      const overlapX = hw[i] + hw[j] - Math.abs(dx)
+      if (overlapX <= 0) return
+      const overlapY = hh[i] + hh[j] - Math.abs(dy)
+      if (overlapY <= 0 || (pinned[i] && pinned[j])) return
+      const shareI = pinned[i] ? 0 : pinned[j] ? 1 : 0.5
+      const shareJ = 1 - shareI
+      if (overlapY <= overlapX) {
+        const push = overlapY + 0.5
+        const dir = dy === 0 ? (i % 2 ? 1 : -1) : Math.sign(dy)
+        y[i] -= dir * push * shareI
+        y[j] += dir * push * shareJ
+      } else {
+        const push = overlapX + 0.5
+        const dir = dx === 0 ? (j % 2 ? 1 : -1) : Math.sign(dx)
+        x[i] -= dir * push * shareI
+        x[j] += dir * push * shareJ
       }
-    }
+      moved = true
+    })
     if (!moved) return
   }
 }
@@ -384,26 +443,29 @@ function separate(g: Graph) {
  */
 function avoidLinks(g: Graph): boolean {
   const { n, x, y, hw, hh, pinned, from, to } = g
+  let largest = 0
+  for (let i = 0; i < n; i++) largest = Math.max(largest, hw[i], hh[i])
+  // Nodes are looked up by grid cell inside each link's bounding box (grown by the largest box) instead of all n.
+  const grid = new Grid(Math.max(largest * 4, 1))
   let movedAny = false
   for (let pass = 0; pass < AVOID_PASSES; pass++) {
     let moved = false
+    grid.fill(x, y, n)
     for (let e = 0; e < from.length; e++) {
       const a = from[e]
       const b = to[e]
-      // The link's bounding box, grown by the largest box: nodes outside it cannot touch the link.
-      const left = Math.min(x[a], x[b])
-      const right = Math.max(x[a], x[b])
-      const top = Math.min(y[a], y[b])
-      const bottom = Math.max(y[a], y[b])
-      for (let i = 0; i < n; i++) {
-        if (i === a || i === b || pinned[i]) continue
-        if (x[i] + hw[i] < left || x[i] - hw[i] > right || y[i] + hh[i] < top || y[i] - hh[i] > bottom) continue
+      const left = Math.min(x[a], x[b]) - largest
+      const right = Math.max(x[a], x[b]) + largest
+      const top = Math.min(y[a], y[b]) - largest
+      const bottom = Math.max(y[a], y[b]) + largest
+      grid.inBox(left, top, right, bottom, (i) => {
+        if (i === a || i === b || pinned[i]) return
         const hit = crossing({ x: x[a], y: y[a] }, { x: x[b], y: y[b] }, { x: x[i], y: y[i] }, hw[i], hh[i])
-        if (!hit) continue
+        if (!hit) return
         x[i] += hit.x * AVOID_OVERSHOOT
         y[i] += hit.y * AVOID_OVERSHOOT
         moved = true
-      }
+      })
     }
     if (!moved) break
     movedAny = true

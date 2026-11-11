@@ -330,20 +330,25 @@ interface UnknownLldpPeer {
   peer_device: string | null
   peer_interface_id: number | null
   peer_port: string | null
+  /** Link LLDP or the config already has on the peer port (or on this one): approving the pair would be refused. */
+  taken_by: string | null
   approval: { id: number; approved_by: string; approved_at: string } | null
   /** Client side only: the far end was picked by hand in this session. */
   manual?: boolean
 }
 
-type PeerState = 'pending' | 'approved' | 'no_peer'
+type PeerState = 'pending' | 'approved' | 'taken' | 'no_peer'
 const PEER_STATE_LABEL: Record<PeerState, string> = {
-  pending: 'Bisa disetujui', approved: 'Disetujui', no_peer: 'Port lawan tidak dikenali',
+  pending: 'Bisa disetujui', approved: 'Disetujui', taken: 'Port lawan sudah dipakai', no_peer: 'Port lawan tidak dikenali',
 }
-const PEER_STATE_PILL: Record<PeerState, string> = { pending: 'pill-warn', approved: 'pill-ok', no_peer: 'pill-muted' }
+const PEER_STATE_PILL: Record<PeerState, string> = {
+  pending: 'pill-warn', approved: 'pill-ok', taken: 'pill-bad', no_peer: 'pill-muted',
+}
 
 function peerState(r: UnknownLldpPeer): PeerState {
   if (r.approval) return 'approved'
-  return r.peer_interface_id != null ? 'pending' : 'no_peer'
+  if (r.peer_interface_id == null) return 'no_peer'
+  return r.taken_by ? 'taken' : 'pending'
 }
 
 function pairLabel(r: UnknownLldpPeer): string {
@@ -430,13 +435,21 @@ export function UnknownLldpPeers() {
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [busy, setBusy] = useState(false)
   const [editing, setEditing] = useState<number | null>(null)
+  // Interface id -> why the last approval refused that row's pair.
+  const [refused, setRefused] = useState<Map<number, string>>(new Map())
 
   /** Use a hand-picked far end for one row and tick it, ready to approve with the others. */
   function applyPeer(interfaceId: number, choice: PeerChoice) {
     setRows((current) => current?.map((r) => r.interface_id !== interfaceId ? r : {
+      // Whether the chosen port is free is checked again on approval; the row reports it then.
       ...r, peer_device_id: choice.device_id, peer_device: choice.device, peer_interface_id: choice.interface_id,
-      peer_port: choice.port, manual: true,
+      peer_port: choice.port, manual: true, taken_by: null,
     }) ?? null)
+    setRefused((current) => {
+      const next = new Map(current)
+      next.delete(interfaceId)
+      return next
+    })
     setSelected((current) => new Set(current).add(interfaceId))
     setEditing(null)
   }
@@ -455,7 +468,8 @@ export function UnknownLldpPeers() {
   const picked = [...selected].map((id) => byId.get(id)).filter((r): r is UnknownLldpPeer => r != null)
   const toApprove = picked.filter((r) => peerState(r) === 'pending')
   const toRevoke = picked.filter((r) => r.approval != null)
-  const selectable = paged.pageRows.filter((r) => peerState(r) !== 'no_peer')
+  // A pair can be ticked to approve it (pending) or to revoke it (approved); the others need another peer port first.
+  const selectable = paged.pageRows.filter((r) => peerState(r) === 'pending' || peerState(r) === 'approved')
   const allOnPage = selectable.length > 0 && selectable.every((r) => selected.has(r.interface_id))
 
   function toggle(ids: number[], on: boolean) {
@@ -472,9 +486,15 @@ export function UnknownLldpPeers() {
     setError(null)
     try {
       const pairs = toApprove.map((r) => ({ interface_id: r.interface_id, peer_interface_id: r.peer_interface_id }))
-      const result = await api.post<{ approved: number }>('/topology/link-approvals', { pairs })
-      setNotice(`${result.approved} link disetujui dan digambar di topologi.`)
-      setSelected(new Set())
+      // Each pair is judged on its own: the refused ones come back with their reason, the rest are approved.
+      const result = await api.post<{ approved: number; rejected: { interface_id: number; reason: string }[] }>(
+        '/topology/link-approvals', { pairs })
+      const reasons = new Map(result.rejected.map((r) => [r.interface_id, r.reason]))
+      setRefused(reasons)
+      setNotice(result.rejected.length
+        ? `${result.approved} link disetujui dan digambar di topologi; ${result.rejected.length} ditolak — alasannya tertulis di barisnya dan baris itu tetap tercentang.`
+        : `${result.approved} link disetujui dan digambar di topologi.`)
+      setSelected(new Set(reasons.keys()))
       load()
     } catch (e) {
       setError(`Tidak ada yang disetujui: ${(e as Error).message}`)
@@ -548,7 +568,7 @@ export function UnknownLldpPeers() {
               return (
                 <tr key={r.interface_id}>
                   {mayApprove && (
-                    <td><input type="checkbox" aria-label={`Pilih ${pairLabel(r)}`} disabled={state === 'no_peer'}
+                    <td><input type="checkbox" aria-label={`Pilih ${pairLabel(r)}`} disabled={state === 'no_peer' || state === 'taken'}
                       checked={selected.has(r.interface_id)} onChange={(e) => toggle([r.interface_id], e.target.checked)} /></td>
                   )}
                   <td><RouterLink to={`/topology?level=neighbors&device_id=${r.device_id}`}>{r.device}</RouterLink></td>
@@ -579,9 +599,13 @@ export function UnknownLldpPeers() {
                       : <button className="link-button small" onClick={() => setEditing(r.interface_id)}>
                         {state === 'no_peer' ? 'Pilih port lawan' : 'Ubah'}</button>)}
                   </td>
-                  <td><span className={`pill ${PEER_STATE_PILL[state]}`}
-                    title={r.approval ? `oleh ${r.approval.approved_by}, ${new Date(r.approval.approved_at).toLocaleString('id-ID')}` : undefined}>
-                    {PEER_STATE_LABEL[state]}</span></td>
+                  <td>
+                    <span className={`pill ${PEER_STATE_PILL[state]}`}
+                      title={r.approval ? `oleh ${r.approval.approved_by}, ${new Date(r.approval.approved_at).toLocaleString('id-ID')}` : undefined}>
+                      {PEER_STATE_LABEL[state]}</span>
+                    {state === 'taken' && <div className="muted small">dipakai {r.taken_by}</div>}
+                    {refused.has(r.interface_id) && <div className="error-text small">Ditolak: {refused.get(r.interface_id)}</div>}
+                  </td>
                   <td className="small">{r.description}</td>
                 </tr>
               )

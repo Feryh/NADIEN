@@ -13,6 +13,8 @@ import { isCompound, isProblemLink, isProblemNode, linkVisible, NO_FILTER, nodeV
 import { CITY_STYLE } from '../components/topology/cityStyle'
 import { layoutCity, LayoutCancelled } from '../components/topology/elkLayout'
 import type { FreeNode } from '../components/topology/freeLayout'
+import DeviceScopeFilter from '../components/topology/DeviceScopeFilter'
+import { busiestArea, type Scope, type ScopeRow } from '../components/topology/scopes'
 import { FreeLayoutSuperseded, freeLayoutInWorker } from '../components/topology/freeLayoutClient'
 import { freeViewKey, type GeoPoint, MAP_DRAGGABLE, mapKeyFor, mapOverridePositions, mapViewKey, movedFrom, ringExternal, storedMapOn } from '../components/topology/mapArrange'
 import { edgeWidth, ROLE_COLOR, SEGMENT_COLOR, shortName } from '../components/topology/shared'
@@ -26,7 +28,8 @@ import type { CityLink, CityView } from '../components/topology/types'
 //   device    — devices of one POP in role rows (Core → PE/BNG → Metro → OLT/Access), other POPs on top
 //   city      — one kabupaten/kota: POP swimlanes, ring/mesh clusters and every link, laid out by ELK
 //   neighbors — one device and everything within 1–2 hops, laid out by ELK like the city
-type Level = 'area' | 'province' | 'regency' | 'city' | 'pop' | 'device' | 'neighbors'
+//   devices   — the default: devices and links only, area / province / regency / POP chosen in filters (no boxes)
+type Level = 'area' | 'province' | 'regency' | 'city' | 'pop' | 'device' | 'neighbors' | 'devices'
 type GroupKind = 'area' | 'province' | 'regency'
 type NodeKind = GroupKind | 'pop' | 'device' | 'external_area' | 'external_province' | 'external_regency' | 'external_pop'
   | 'summary' | 'pop_lane' | 'cluster' | 'city_box'
@@ -80,6 +83,8 @@ interface NodeData {
   pop?: string
   pops?: number
   devices?: number
+  /** Device-topology view: a far device outside the chosen filters, drawn dimmed, with no box for where it is. */
+  outside?: boolean
   sites?: number
   links?: number
   categories?: Record<string, number>
@@ -244,6 +249,8 @@ const STYLE = [
     },
   },
   { selector: 'node[?estimated]', style: { 'border-style': 'dashed', 'border-color': '#e2e8f0', 'border-width': 2 } },
+  // A device outside the chosen filters, reached by a link that leaves them: dimmed, its place told in the details.
+  { selector: 'node[?outside]', style: { opacity: 0.5, 'border-style': 'dashed', 'border-color': '#94a3b8', 'border-width': 2 } },
   { selector: 'node[?center]', style: { width: 40, height: 40, 'border-color': '#facc15', 'border-width': 4, 'font-weight': 'bold' } },
   { selector: 'node[status="maintenance"], node[status="decommissioned"]', style: { opacity: 0.5 } },
   {
@@ -533,6 +540,7 @@ const MAP_SCALE: Partial<Record<Level, { pxPerDegree: number; markerScale: numbe
   city: { pxPerDegree: 1500, markerScale: 1, minScreenGap: 4 },  // a whole kabupaten/kota: wider than one POP
   device: { pxPerDegree: 3000, markerScale: 1, minScreenGap: 4 },  // one city: ~30 px per km
   neighbors: { pxPerDegree: 1500, markerScale: 1, minScreenGap: 4 },
+  devices: { pxPerDegree: 600, markerScale: 1, minScreenGap: 4 },  // a filter can span a whole area
 }
 
 // Spacing never moves a node more than this many node heights from its place on the map.
@@ -699,6 +707,18 @@ function remember(key: string, value: string) {
   }
 }
 
+const SCOPE_KEY = 'nadien.topology.scope'
+
+/** The device topology's last filter choice, if any (and readable). */
+function storedScope(): Scope | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(SCOPE_KEY) ?? 'null') as Scope | null
+    return value && typeof value === 'object' ? value : null
+  } catch {
+    return null
+  }
+}
+
 /** The area overview shows the trunks between regions; drilled-in views show every function. */
 function defaultSegments(level: Level): Set<Segment> {
   return new Set(level === 'area' ? ['backbone', 'distribution'] : SEGMENTS)
@@ -744,7 +764,8 @@ export default function Topology() {
 
 function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }) {
   const [params, setParams] = useSearchParams()
-  const level = (params.get('level') as Level) || 'area'
+  // Without a level the page opens on the device topology, filtered (see openDevices).
+  const level = (params.get('level') as Level) || 'devices'
   const area = params.get('area') ?? undefined
   const province = params.get('province') ?? undefined
   const regency = params.get('regency') ?? undefined
@@ -841,6 +862,27 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
     [setParams],
   )
 
+  // The device topology's filter choices (every POP with its area / province / regency), loaded once.
+  const [scopeRows, setScopeRows] = useState<ScopeRow[] | null>(null)
+  useEffect(() => {
+    api.get<ScopeRow[]>('/topology/scopes').then(setScopeRows).catch(() => setScopeRows([]))
+  }, [])
+
+  /** Open the device topology on a filter choice, remembered for the next visit. */
+  const openDevices = useCallback((scope: Scope) => {
+    remember(SCOPE_KEY, JSON.stringify(scope))
+    go({ level: 'devices', ...scope })
+  }, [go])
+
+  // Opened without any filter: the last choice, else the busiest area — all of Indonesia is too many devices to draw.
+  const unfiltered = level === 'devices' && !area && !province && !regency && !pop
+  useEffect(() => {
+    if (!unfiltered || !scopeRows) return
+    const last = storedScope()
+    const start = last && Object.keys(last).length ? last : { area: busiestArea(scopeRows) }
+    go({ level: 'devices', ...start }, true)
+  }, [unfiltered, scopeRows, go])
+
   const viewPath = useMemo(() => {
     const q = new URLSearchParams({ level })
     if (area) q.set('area', area)
@@ -857,6 +899,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   // view already fetched is used for that new URL instead of being fetched again.
   const deeperRef = useRef<View | null>(null)
   const load = useCallback(async () => {
+    if (unfiltered && scopeRows?.length !== 0) return  // the first filter choice is on its way (effect above)
     setLoading(true)
     setSelected(null)
     setMoved(0)
@@ -880,7 +923,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
     } finally {
       setLoading(false)
     }
-  }, [viewPath, level, area, province, regency, go, show])
+  }, [viewPath, level, area, province, regency, go, show, unfiltered, scopeRows])
 
   useEffect(() => {
     load()
@@ -1413,6 +1456,15 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   return (
     <div className="topology">
       <div className="toolbar card">
+        {level === 'devices' ? (
+          <div className="crumbs">
+            <DeviceScopeFilter rows={scopeRows ?? []} scope={{ area, province, regency, pop }} onChange={openDevices} />
+            <a href="#" className="crumb-aside" title="Area › Provinsi › Kab/Kota › POP sebagai kotak di gambar, termasuk topologi kota (ELK)"
+              onClick={(e) => { e.preventDefault(); go({ level: 'area' }) }}>
+              Tampilan wilayah
+            </a>
+          </div>
+        ) : (
         <nav className="crumbs">
           <a href="#" onClick={(e) => { e.preventDefault(); go({ level: 'area' }) }} className={level === 'area' ? 'current' : ''}>
             Semua area
@@ -1468,7 +1520,12 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
               <span className="current">{view.device}</span>
             </>
           )}
+          <a href="#" className="crumb-aside" title="Hanya perangkat dan link; area, provinsi, kab/kota dan POP sebagai filter"
+            onClick={(e) => { e.preventDefault(); openDevices({ area: viewArea, province: viewProvince, regency: viewRegency, pop: viewPop }) }}>
+            Tampilan perangkat
+          </a>
         </nav>
+        )}
         <TopologySearchBox onPick={openHit} />
         {level === 'neighbors' && (
           <div className="segmented">
