@@ -41,7 +41,7 @@ export function HotspotsPanel({ onOpenLink }: { onOpenLink: (linkId: number) => 
         <label className="check">
           <input type="checkbox" checked={onlyHot} onChange={(e) => setOnlyHot(e.target.checked)} /> Hanya warning + critical
         </label>
-        <label className="check" title={`Utilisasi > ${suspect}%: kapasitas port dari SNMP kemungkinan salah`}>
+        <label className="check" title={`Utilisasi > ${suspect}% (kapasitas port dari SNMP kemungkinan salah), atau > 100% yang hanya terbaca di ujung bundle yang lebih lebar`}>
           <input type="checkbox" checked={showSuspect} onChange={(e) => setShowSuspect(e.target.checked)} /> Tampilkan data kapasitas
           mencurigakan ({data.links.counts.suspect})
         </label>

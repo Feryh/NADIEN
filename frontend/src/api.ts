@@ -60,7 +60,7 @@ export interface CapacityResult {
   trend_days: number
 }
 
-/** suspect: utilization far above 100 % — the link capacity data itself is wrong. */
+/** suspect: utilization far above 100 % (the link capacity data is wrong), or above 100 % read only on the wider end. */
 export type HotspotLevel = 'critical' | 'warning' | 'normal' | 'suspect'
 
 export interface NodeForecast extends CapacityResult {
@@ -174,6 +174,9 @@ export interface LinkCapacity extends CapacityResult {
   samples_days: number
   /** Timestamps of daily peaks left out of current and trend as one-off spikes (same format as history[].ts). */
   spike_days: string[]
+  /** Traffic read on the wider end (a bundle that may carry more) because the narrower end cannot be read. */
+  measured_on_wider_end: boolean
+  level: HotspotLevel
 }
 
 export interface LinkCapacityDetail extends LinkCapacity {

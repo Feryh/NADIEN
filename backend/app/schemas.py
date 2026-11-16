@@ -446,6 +446,9 @@ class LinkCapacity(CapacityResult):
     samples_days: int = 0
     # Samples left out of current and trend as one-off spikes (services/capacity.spike_indexes).
     spike_days: list[datetime] = []
+    # Traffic read on the wider end because the narrower one cannot be (services/capacity.read_on_wider_end).
+    measured_on_wider_end: bool = False
+    level: Literal["critical", "warning", "normal", "suspect"] = "normal"
 
 
 class LinkCapacityDetail(LinkCapacity):

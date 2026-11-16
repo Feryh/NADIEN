@@ -136,6 +136,11 @@ function LinkTable({ selectedId, onOpen }: { selectedId: number | null; onOpen: 
                   <td>
                     {l.a_device} ↔ {l.b_device}
                     {l.status === 'down' && <span className="pill pill-bad">down</span>}
+                    {l.level === 'suspect' && (
+                      <span className="pill pill-muted" title={l.measured_on_wider_end
+                        ? 'Trafik dibaca di ujung yang lebih lebar (bundle yang juga membawa trafik lain), karena ujung yang lebih kecil tidak dimonitor Observium atau counternya nol'
+                        : 'Utilisasi jauh di atas 100%: kapasitas port dari SNMP kemungkinan salah'}>cek data</span>
+                    )}
                     <div className="muted small">{l.link_type}</div>
                   </td>
                   <td>{l.a_pop === l.b_pop ? l.a_pop : `${l.a_pop}–${l.b_pop}`}</td>

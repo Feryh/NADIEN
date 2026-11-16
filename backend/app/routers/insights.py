@@ -17,7 +17,6 @@ from ..config import settings
 from ..database import get_db
 from ..services import cache
 from ..services.areas import AREA_ORDER, UNMAPPED_AREA, area_for_pop, area_position
-from ..services.capacity import hotspot_level
 from .capacity import _Node, _context, _daily_peaks, _link_rows, all_link_capacity
 from .validation import _all as validation_rows
 
@@ -138,7 +137,7 @@ def _data_health(db: Session) -> dict[str, Any]:
         _check("links_without_capacity", "Link tanpa kapasitas", sum(1 for l in links if l.capacity_gbps <= 0),
                len(links), "warn", "Kapasitas 0 membuat utilisasi dan forecast tidak bisa dihitung."),
         _check("links_suspect", "Link dengan data utilisasi janggal",
-               sum(1 for l in links if l.capacity_gbps > 0 and hotspot_level(l.utilization_pct) == "suspect"),
+               sum(1 for l in links if l.capacity_gbps > 0 and l.level == "suspect"),
                len(links), "warn", "Utilisasi di atas batas wajar: kapasitas atau counter kemungkinan salah."),
         _check("link_ports_without_mtu", "Port link tanpa data MTU", no_mtu or 0, len(link_ifaces), "info",
                "Validasi MTU jalur butuh data ini (sync config RANCID)."),
@@ -190,7 +189,7 @@ def _areas(db: Session) -> dict[str, Any]:
     for link in all_link_capacity(db):
         if link.capacity_gbps <= 0:
             continue
-        level = hotspot_level(link.utilization_pct)
+        level = link.level
         ends = [pop_of_host[h] for h in (link.a_device, link.b_device) if h in pop_of_host]
         for pop_id in set(ends):
             worst = pop_level.get(pop_id, ("normal", 0.0))

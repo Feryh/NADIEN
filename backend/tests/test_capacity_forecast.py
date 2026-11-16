@@ -8,7 +8,8 @@ from fastapi.testclient import TestClient
 from app import models as m
 from app.database import get_db
 from app.main import app
-from app.services.capacity import calculate, committed_pct, fit_trend, hotspot_level, utilization_pct
+from app.services.capacity import (calculate, committed_pct, fit_trend, hotspot_level, read_on_wider_end,
+                                   utilization_pct)
 
 
 @pytest.fixture
@@ -150,3 +151,41 @@ def test_should_leave_one_day_glitch_out_of_trend_and_list_it_when_showing_link_
     detail = client.get(f"/api/capacity/links/{link.id}").json()
     assert [d[:10] for d in detail["spike_days"]] == [detail["history"][15]["ts"][:10]]
     assert abs(detail["growth_trends"]["30"]) < 0.01  # flat without the glitch
+
+
+def _bundle_link(db, narrow_monitored: bool, narrow_rate: float = 31.0):
+    """A 100G port facing a 300G bundle; the link's daily peaks (130G) came from the bundle."""
+    link = _network(db, [130.0] * 3, capacity=100.0)
+    narrow = m.Interface(device_id=link.a_device_id, name="smartgroup99", speed_gbps=100.0, in_gbps=narrow_rate)
+    wide = m.Interface(device_id=link.b_device_id, name="Eth-Trunk2", speed_gbps=300.0, in_gbps=131.0)
+    db.add_all([narrow, wide])
+    db.flush()
+    link.a_interface_id, link.b_interface_id = narrow.id, wide.id
+    db.add(m.ObserviumPort(interface_id=wide.id, observium_port_id=2, observium_hostname="me", source="main"))
+    if narrow_monitored:
+        db.add(m.ObserviumPort(interface_id=narrow.id, observium_port_id=1, observium_hostname="bng", source="main"))
+    db.commit()
+    return link
+
+
+def test_should_mark_link_suspect_when_traffic_above_capacity_is_read_only_on_the_wider_end(db, client):
+    _bundle_link(db, narrow_monitored=False)
+    row = client.get("/api/capacity/links").json()[0]
+    assert (row["measured_on_wider_end"], row["level"]) == (True, "suspect")
+
+
+def test_should_keep_link_critical_when_its_narrower_end_is_monitored(db, client):
+    _bundle_link(db, narrow_monitored=True)
+    assert client.get("/api/capacity/links").json()[0]["level"] == "critical"
+
+
+def test_should_read_on_wider_end_when_the_narrower_end_counts_nothing():
+    assert read_on_wider_end((100.0, 200.0), (0.0, 79.0), (True, True)) is True
+
+
+def test_should_not_read_on_wider_end_when_both_ends_have_the_same_speed():
+    assert read_on_wider_end((10.0, 10.0), (None, 5.0), (False, True)) is False
+
+
+def test_should_keep_a_wider_end_reading_below_100_percent_out_of_suspect():
+    assert hotspot_level(95.0, unverified=True) == "critical"

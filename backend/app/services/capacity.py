@@ -41,11 +41,12 @@ def utilization_pct(current_gbps: float, capacity_gbps: float | None) -> float:
     return current_gbps / capacity_gbps * 100 if capacity_gbps else 0.0
 
 
-def hotspot_level(pct: float) -> str:
+def hotspot_level(pct: float, unverified: bool = False) -> str:
     """Busiest links/ports: critical ≥ 90%, warning ≥ 70% (NADIEN_HOTSPOT_*_PCT), else normal.
     Far above 100% the capacity itself is wrong (e.g. a 10G uplink whose SNMP speed says 10M):
-    reported as `suspect` so bad data does not crowd out the real hotspots."""
-    if pct > settings.hotspot_suspect_pct:
+    reported as `suspect` so bad data does not crowd out the real hotspots. `unverified` (traffic read on the wider
+    end of the link, see `read_on_wider_end`) makes anything above 100% suspect: that end also carries other traffic."""
+    if pct > settings.hotspot_suspect_pct or (unverified and pct > 100):
         return "suspect"
     if pct >= settings.hotspot_critical_pct:
         return "critical"
@@ -260,3 +261,14 @@ def read_narrow_end(narrow_speed: float | None, wide_speed: float | None,
     if not is_narrower(narrow_speed, wide_speed):
         return False
     return not (not narrow_rate and wide_rate)
+
+
+def read_on_wider_end(speeds: tuple[float | None, float | None], rates: tuple[float | None, float | None],
+                      monitored: tuple[bool, bool]) -> bool:
+    """Whether a link's traffic can only come from its wider end: the narrower end (whose speed is the link's
+    capacity) is not monitored by Observium (gone, replaced, config-only) or counts nothing. The wider end — a
+    bundle — may carry more than this link, so its traffic above the capacity proves nothing."""
+    for narrow, wide in ((0, 1), (1, 0)):
+        if is_narrower(speeds[narrow], speeds[wide]):
+            return not (monitored[narrow] and read_narrow_end(speeds[narrow], speeds[wide], rates[narrow], rates[wide]))
+    return False
