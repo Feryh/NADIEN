@@ -363,11 +363,22 @@ def neighbour_skip_reason(row: dict[str, Any], include_cdp: bool = False) -> str
     return None
 
 
+_PORT_NOTE = re.compile(r"\s*\(.*\)\s*$")
+
+
+def advertised_port(text: str) -> str:
+    """The port a neighbour advertised, without the note some Huawei boxes append: 'GigabitEthernet0/2/0(xgei_1/19/1)'
+    is GigabitEthernet0/2/0 (the note is the far port's description)."""
+    port = text.strip()
+    bare = _PORT_NOTE.sub("", port)
+    return bare or port
+
+
 def parse_neighbour(row: dict[str, Any], include_cdp: bool = False) -> NeighbourRecord | None:
     if neighbour_skip_reason(row, include_cdp):
         return None
     remote_host = row["remote_hostname"].strip()[:255]
-    remote_port = row["remote_port"].strip()[:MAX_IFNAME]
+    remote_port = advertised_port(row["remote_port"])[:MAX_IFNAME]
     protocol = str(row.get("protocol")).lower()
     return NeighbourRecord(
         observium_device_id=str(row.get("device_id")),
