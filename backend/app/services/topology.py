@@ -204,7 +204,29 @@ class _Discovery:
                 self.stats["lldp_logical_ports"] += 1
                 continue
             self.add(self.iface(local, n.local_interface), self.iface(remote, n.remote_port_id), "lldp")
+        self.drop_minority_bundles()
         return unresolved
+
+    def drop_minority_bundles(self) -> None:
+        """A bundle has one LACP partner: towards one device it pairs with one bundle. When its members' LLDP points
+        to two bundles of the same box, the one most members agree on wins — the NMS sometimes files a neighbour
+        under the wrong local port (a ZTE M6K's cgei-0/1/0/2 neighbour shown on cgei-0/2/1/8, a member of a retired
+        smartgroup99), and the stray pairing would read the whole bundle's traffic on one 100G member's capacity."""
+        rivals: dict[tuple[int, int], list[frozenset[int]]] = {}
+        for key, adj in self.adjacencies.items():
+            if adj.link_type == "bundle" and adj.source == "lldp":
+                for mine, other in ((adj.a, adj.b), (adj.b, adj.a)):
+                    rivals.setdefault((mine.id, other.device_id), []).append(key)
+        for keys in rivals.values():
+            live = [k for k in keys if k in self.adjacencies]
+            if len(live) < 2:
+                continue
+            votes = sorted(live, key=lambda k: -len(self.adjacencies[k].member_pairs))
+            if len(self.adjacencies[votes[0]].member_pairs) == len(self.adjacencies[votes[1]].member_pairs):
+                continue  # no majority: keep both rather than guess
+            for key in votes[1:]:
+                del self.adjacencies[key]
+                self.stats["lldp_minority_bundles"] += 1
 
     def mentioned_device(self, description: str) -> Device | None:
         """Device whose hostname appears in a description, longest match wins (PE-1 vs PE-10).
