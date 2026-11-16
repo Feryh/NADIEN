@@ -52,8 +52,9 @@ PAGE_SIZE = 5000
 WRITE_BATCH = 20000
 SOURCE_NAME = "Observium"
 CSR_SOURCE_NAME = "Observium CSR"
-# The CSR Observium only completes the cell-site routers: ports and traffic, no LLDP, so the topology stays as is.
-CSR_PARTS = frozenset({"inventory", "utilization"})
+# The CSR Observium completes the cell-site routers: ports, their LLDP neighbours (CSR rings and uplinks the main
+# Observium never sees from its side) and traffic.
+CSR_PARTS = frozenset({"inventory", "neighbours", "utilization"})
 UNASSIGNED = "UNASSIGNED"
 
 Progress = Callable[[str], None]
@@ -289,6 +290,8 @@ def sync_observium(
     db.flush()  # ids for the last batch of new interfaces
     rates = {iface_by_port[p].id: r for p, r in rates_by_port.items()}
     report.counts["ports_seen"] = len(iface_by_port)
+    # Before the port map is rebuilt: afterwards a device on both servers counts as this server's.
+    main_owned = _main_monitored(db, device_by_obs) if source == "csr" else set()
     _write_rrd_map(db, iface_by_port, rrd_ref, source)
 
     if write_inventory:
@@ -303,7 +306,10 @@ def sync_observium(
 
     if "neighbours" in parts:
         step("neighbours")
-        _write_neighbours(db, client, device_by_obs, iface_by_port, report)
+        # A CSR's uplink peer (ME, BNG, OLT) lives in the main Observium: its management IP names it too.
+        by_ip = {d.mgmt_ip: d for d in writer.devices.values() if d.mgmt_ip} if source == "csr" else None
+        _write_neighbours(db, client, {k: d for k, d in device_by_obs.items() if d.id not in main_owned},
+                          iface_by_port, report, by_ip)
         db.commit()
 
     if parts & {"inventory", "neighbours"}:
@@ -333,6 +339,14 @@ def _prepare_csr(rec: DeviceRecord, writer: "_Writer") -> bool:
     return True
 
 
+def _main_monitored(db: Session, device_by_obs: dict[str, m.Device]) -> set[int]:
+    """Devices of this sync the main Observium also monitors: their neighbour table stays the main server's."""
+    ids = [d.id for d in device_by_obs.values()]
+    return set(db.scalars(select(m.Interface.device_id).distinct()
+                          .join(m.ObserviumPort, m.ObserviumPort.interface_id == m.Interface.id)
+                          .where(m.ObserviumPort.source == "main", m.Interface.device_id.in_(ids))))
+
+
 def _write_rrd_map(db: Session, iface_by_port: dict[str, m.Interface],
                    rrd_ref: dict[str, tuple[int | None, str]], source: str = "main") -> None:
     """Remember where each interface's RRD lives (rebuilt every sync — ifIndex can change on reboot). Only this
@@ -354,7 +368,9 @@ def _write_rrd_map(db: Session, iface_by_port: dict[str, m.Interface],
     db.commit()
 
 
-def _write_neighbours(db, client, device_by_obs, iface_by_port, report: SyncReport) -> None:
+def _write_neighbours(db: Session, client: ObserviumClient, device_by_obs: dict[str, m.Device],
+                      iface_by_port: dict[str, m.Interface], report: SyncReport,
+                      devices_by_ip: dict[str, m.Device] | None = None) -> None:
     """Store neighbour tables with the far end resolved as precisely as possible:
 
     1. Observium's remote_port_id -> our interface for that port: exact device + canonical port
@@ -366,7 +382,8 @@ def _write_neighbours(db, client, device_by_obs, iface_by_port, report: SyncRepo
     """
     tables: dict[int, list[tuple[int, m.LldpNeighbor]]] = {d.id: [] for d in device_by_obs.values()}
     devices_by_id = {d.id: d for d in device_by_obs.values()}
-    devices_by_ip = {d.mgmt_ip: d for d in device_by_obs.values() if d.mgmt_ip}
+    if devices_by_ip is None:
+        devices_by_ip = {d.mgmt_ip: d for d in device_by_obs.values() if d.mgmt_ip}
     protocols: Counter = Counter()
     skipped: Counter = Counter()
     resolved: Counter = Counter()

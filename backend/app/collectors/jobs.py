@@ -107,12 +107,15 @@ def run_observium(
 
 
 def run_observium_csr(db: Session, client: ObserviumClient | None = None, progress: Progress = _noop) -> dict:
-    """The CSR Observium: cell-site routers, their ports and traffic (backup first; no LLDP, no link discovery)."""
+    """The CSR Observium: cell-site routers, their ports, LLDP neighbours and traffic (backup first), then link
+    discovery so the new neighbours become links. No phantom-port cleanup: that needs the main server's port list."""
     with _opened(client, _csr_client) as opened:
         progress("backup")
         backup = backup_before(db, "observium-csr")
-        report = sync_observium(db, opened, CSR_PARTS, False, progress, source="csr").as_dict()
-    return {"backup": backup, **report}
+        report = sync_observium(db, opened, CSR_PARTS, False, progress, source="csr")
+    progress("discovery")
+    report.discovery = discover_links(db).model_dump()
+    return {"backup": backup, **report.as_dict()}
 
 
 def run_rrd(db: Session, days: int = 90, source: "RrdSource | None" = None, progress: Progress = _noop) -> dict:
