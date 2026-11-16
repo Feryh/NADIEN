@@ -67,6 +67,9 @@ interface DeviceCapacity {
     used: number
     onts_online: number
     max_onts: number
+    /** ONTs the PON ports can take (max_onts each) and online ONTs against that: how full the OLT's GPON is. */
+    capacity_onts: number
+    utilization_pct: number | null
     busiest_onts: number
     busiest_pct: number | null
     hot_ports: number
@@ -204,9 +207,9 @@ export default function DeviceDetail() {
           <Kpi label="Terpakai" value={n(totals.used)} sub={totals.total ? `${(totals.used / totals.total * 100).toFixed(1)}%` : undefined} />
           <Kpi label="Idle" value={n(totals.idle)} sub="siap dipakai" />
           <Kpi label="Link" value={n(links.length)} sub={`${hotLinks} ≥ ${data.thresholds.warning_pct}% utilisasi`} />
-          {pon && (pon.busiest_pct != null && pon.level
-            ? <Kpi label="Port GPON terpadat" value={<span className={`pill ${LEVEL_CLASS[pon.level]}`}>{pon.busiest_pct.toFixed(1)}%</span>}
-              sub={`${n(pon.busiest_onts)}/${n(pon.max_onts)} ONT · ${n(pon.hot_ports)} dari ${n(pon.total)} PON ≥ ${data.thresholds.warning_pct}% · ${n(pon.onts_online)} ONT online`} />
+          {pon && (pon.utilization_pct != null && pon.level
+            ? <Kpi label="Utilisasi GPON" value={<span className={`pill ${LEVEL_CLASS[pon.level]}`}>{pon.utilization_pct.toFixed(1)}%</span>}
+              sub={`${n(pon.onts_online)} dari ${n(pon.capacity_onts)} ONT (${n(pon.max_onts)} per port PON) · terpadat ${n(pon.busiest_onts)}/${n(pon.max_onts)} ONT · ${n(pon.hot_ports)} PON ≥ ${data.thresholds.warning_pct}%`} />
             : <Kpi label="Port GPON" value={n(pon.total)} sub="OLT ini tidak melaporkan jumlah ONT" />)}
         </div>
       </div>

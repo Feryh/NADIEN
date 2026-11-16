@@ -16,6 +16,9 @@ from ..config import settings
 from .capacity import hotspot_level, occupancy_pct
 
 _PON_NAME = re.compile(r"^slot(\d+)/port(\d+)$", re.IGNORECASE)
+# FiberHome rows without a slot number ('Slot/Port1', 'Slot/Port') add up the ONTs of several PON ports (229 online on
+# one 'port'): a summary of the card, not a port.
+_PON_SUMMARY = re.compile(r"^slot/port\d*$", re.IGNORECASE)
 _DASAN_PORT = re.compile(r"^port(\d+)-fx-1000$", re.IGNORECASE)
 _GPON_GBPS = 2.5  # GPON downstream 2.488G; SNMP reports 2.488 or 2.5
 # Management and logical ports on an OLT front panel (Dasan `br1`/`default` are bridge interfaces).
@@ -31,6 +34,8 @@ def _is_gpon_speed(speed_gbps: float | None) -> bool:
 
 def is_pon_port(name: str, description: str | None, speed_gbps: float | None = None) -> bool:
     name = name.strip()
+    if _PON_SUMMARY.match(name):
+        return False
     if _PON_NAME.match(name) or (description and _ONLINE.search(description)):
         return True
     return bool(_DASAN_PORT.match(name)) and _is_gpon_speed(speed_gbps)
@@ -113,3 +118,13 @@ class PonUsage:
     def busiest_pct(self) -> float | None:
         """None when no PON port reports ONT counters: occupancy is unknown, not 0 %."""
         return pon_port_occupancy(self.busiest_onts) if self.counted else None
+
+    @property
+    def capacity_onts(self) -> int:
+        """ONTs the PON ports that report counters can take: NADIEN_PON_MAX_ONTS each."""
+        return self.counted * settings.pon_max_onts
+
+    @property
+    def utilization_pct(self) -> float | None:
+        """How full the OLT's GPON is: online ONTs over what its PON ports can take. None without ONT counters."""
+        return occupancy_pct(self.onts, self.capacity_onts) if self.counted else None
