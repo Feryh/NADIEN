@@ -11,6 +11,7 @@ from sqlalchemy import select
 from app import models as m
 from app.config import settings
 from app.routers import collectors as collectors_router
+from app.collectors import jobs
 from app.collectors.configs.gitweb import _Sync
 from app.collectors.observium.client import ObserviumClient
 from app.collectors.observium.rrd import _targets, sync_rrd
@@ -21,8 +22,8 @@ from app.main import app
 CSR = "sum-la-gns-0006-me1-zte"
 
 
-def _client(devices: dict, ports: dict) -> ObserviumClient:
-    rows = {"devices": devices, "ports": ports}
+def _client(devices: dict, ports: dict, neighbours: dict | None = None) -> ObserviumClient:
+    rows = {"devices": devices, "ports": ports, "neighbours": neighbours or {}}
 
     def handler(request: httpx.Request) -> httpx.Response:
         entity = request.url.path.removeprefix("/api/v0/").strip("/")
@@ -48,6 +49,56 @@ def _csr_sync(db) -> None:
                "2": {"device_id": "2", "sysName": "tng-bsd-bm-compute-09", "hostname": "bm9", "os": "linux", "type": "network"}}
     ports = {"5": _port("5", "1", "xgei-1/1/0/1"), "6": _port("6", "2", "eth0")}
     sync_observium(db, _client(devices, ports), CSR_PARTS, False, source="csr")
+
+
+CSR_DEVICES = {"1": {"device_id": "1", "sysName": CSR, "hostname": CSR, "os": "zxr10"}}
+CSR_PORTS = {"5": _port("5", "1", "xgei-1/1/0/1")}
+
+
+def _lldp(remote: str, remote_port: str, address: str = "") -> dict:
+    return {"1": {"neighbour_id": "1", "device_id": "1", "port_id": "5", "protocol": "lldp", "active": "1",
+                  "remote_hostname": remote, "remote_port": remote_port, "remote_address": address}}
+
+
+def _uplink_peer(db, name: str = "LPG-MTB-ME1-6120HS", ip: str | None = None) -> m.Interface:
+    pop = db.scalar(select(m.Pop)) or m.Pop(code="LPG", name="LPG")
+    peer = m.Device(hostname=name, role="agg", pop=pop, mgmt_ip=ip)
+    port = m.Interface(device=peer, name="xgei-1/1/0/10", speed_gbps=10)
+    db.add_all([peer, port])
+    db.commit()
+    return port
+
+
+def _csr_neighbours(db) -> list[tuple[str, str, str]]:
+    return [(n.local_interface, n.remote_system_name, n.remote_port_id) for n in db.scalars(select(m.LldpNeighbor))]
+
+
+def test_should_store_lldp_neighbours_of_a_csr_from_the_csr_observium(db):
+    client = _client(CSR_DEVICES, CSR_PORTS, _lldp("sum-la-gns-0007-me1-zte", "xgei-1/1/0/2"))
+    sync_observium(db, client, CSR_PARTS, False, source="csr")
+    assert _csr_neighbours(db) == [("xgei-1/1/0/1", "sum-la-gns-0007-me1-zte", "xgei-1/1/0/2")]
+
+
+def test_should_name_a_csr_uplink_peer_of_the_main_observium_by_its_management_ip(db):
+    _uplink_peer(db, ip="10.0.0.9")
+    client = _client(CSR_DEVICES, CSR_PORTS, _lldp("lpg-mtb-me1", "xgei-1/1/0/10", address="10.0.0.9"))
+    sync_observium(db, client, CSR_PARTS, False, source="csr")
+    assert _csr_neighbours(db)[0][1] == "LPG-MTB-ME1-6120HS"
+
+
+def test_should_keep_the_main_observium_neighbours_of_a_device_both_servers_monitor(db):
+    sync_observium(db, _client(CSR_DEVICES, CSR_PORTS, _lldp("main-peer", "Gi0/1")), {"inventory", "neighbours"}, False)
+    sync_observium(db, _client(CSR_DEVICES, CSR_PORTS, _lldp("csr-peer", "Gi0/2")), CSR_PARTS, False, source="csr")
+    assert [n[1] for n in _csr_neighbours(db)] == ["main-peer"]
+
+
+def test_should_turn_csr_lldp_into_a_link_when_the_csr_observium_syncs_alone(db):
+    _uplink_peer(db)
+    client = _client(CSR_DEVICES, CSR_PORTS, _lldp("LPG-MTB-ME1-6120HS", "xgei-1/1/0/10"))
+    jobs.run_observium_csr(db, client=client)
+    hostname = dict(db.execute(select(m.Device.id, m.Device.hostname)).tuples().all())
+    ends = [{hostname[link.a_device_id], hostname[link.b_device_id]} for link in db.scalars(select(m.Link))]
+    assert ends == [{CSR.upper(), "LPG-MTB-ME1-6120HS"}]
 
 
 def test_should_take_only_cell_site_routers_from_the_csr_observium(db):

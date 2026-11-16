@@ -221,7 +221,7 @@ export default function Collectors() {
         </p>
         {status?.observium_csr.url && (
           <p className="hint">
-            CSR: {status.observium_csr.url} · perangkat CSR, port, dan rate port (tanpa LLDP).
+            CSR: {status.observium_csr.url} · perangkat CSR, port, LLDP neighbour, dan rate port.
             {status.observium_csr.last_sync_at
               ? ` Terakhir: ${new Date(status.observium_csr.last_sync_at).toLocaleString()} — ${status.observium_csr.last_status}`
               : ' Belum pernah di-sync.'}
