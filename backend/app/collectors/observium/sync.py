@@ -375,13 +375,15 @@ def _write_neighbours(db: Session, client: ObserviumClient, device_by_obs: dict[
 
     1. Observium's remote_port_id -> our interface for that port: exact device + canonical port
        name ("GigabitEthernet0/0/1", not the "Gi0/0/1" LLDP advertised). Avoids duplicate ports
-       and links paired to the wrong port.
+       and links paired to the wrong port. When that device also has the port the neighbour advertised and it
+       is another one, the advertised port wins: Observium's guess is sometimes wrong.
     2. remote_address = a device's management IP -> that device's hostname (port name as advertised).
     3. Otherwise the advertised system name/port, matched by hostname during discovery.
     LLDP wins over CDP when both report the same local port.
     """
     tables: dict[int, list[tuple[int, m.LldpNeighbor]]] = {d.id: [] for d in device_by_obs.values()}
     devices_by_id = {d.id: d for d in device_by_obs.values()}
+    iface_by_name = {(i.device_id, norm_if(i.name)): i for i in iface_by_port.values()}
     if devices_by_ip is None:
         devices_by_ip = {d.mgmt_ip: d for d in device_by_obs.values() if d.mgmt_ip}
     protocols: Counter = Counter()
@@ -413,8 +415,16 @@ def _write_neighbours(db: Session, client: ObserviumClient, device_by_obs: dict[
         remote_name, remote_port = rec.remote_system_name, rec.remote_port_id
         remote_iface = iface_by_port.get(rec.remote_observium_port_id or "")
         if remote_iface is not None and remote_iface.device_id in devices_by_id:
+            # Observium guesses the far port and sometimes lands on another one (a 10M console port for a
+            # 'GigabitEthernet0/2/0(xgei_1/19/1)' it could not read): the port the far end itself advertised wins
+            # whenever that device has it.
+            advertised = iface_by_name.get((remote_iface.device_id, norm_if(rec.remote_port_id)))
+            if advertised is not None and advertised.id != remote_iface.id:
+                remote_iface = advertised
+                resolved["by_advertised_port_over_observium"] += 1
+            else:
+                resolved["by_observium_port_id"] += 1
             remote_name, remote_port = devices_by_id[remote_iface.device_id].hostname, remote_iface.name
-            resolved["by_observium_port_id"] += 1
         elif rec.remote_address in devices_by_ip:
             remote_name = devices_by_ip[rec.remote_address].hostname
             resolved["by_management_ip"] += 1
