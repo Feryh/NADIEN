@@ -63,12 +63,15 @@ def _forecast_inputs(manual_growth: float | None, fit: TrendFit | None) -> tuple
 
 
 def _link_capacity(link, samples, devices, pops) -> s.LinkCapacity:
-    samples = sorted(samples, key=lambda x: x.ts)  # same order as peak_series, so indexes line up
+    # A down link carries nothing now. Its history usually belongs to the link that replaced it (the same port,
+    # re-paired to the right far end) and would otherwise rank a dead 10M pairing as the busiest link.
+    carries = link.status != "down"
+    samples = sorted(samples, key=lambda x: x.ts) if carries else []  # same order as peak_series: indexes line up
     spikes = spike_indexes(peak_series(samples), link.capacity_gbps)
     series = peak_series([x for k, x in enumerate(samples) if k not in spikes])
     fits = _trend_fits(series)
     growth, source, trend = _forecast_inputs(link.growth_gbps_per_month, fits[settings.trend_window_days])
-    result = calculate(link.capacity_gbps, link.current_gbps, link.reserved_gbps, growth_abs=growth,
+    result = calculate(link.capacity_gbps, link.current_gbps if carries else 0.0, link.reserved_gbps, growth_abs=growth,
                        growth_source=source, trend=trend)
     a, b = devices.get(link.a_device_id), devices.get(link.b_device_id)
     return s.LinkCapacity(

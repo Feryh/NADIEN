@@ -93,6 +93,14 @@ def test_should_mark_capacity_suspect_when_utilization_is_far_above_100_percent(
     assert row["level"] == "suspect"
 
 
+def test_should_count_no_traffic_on_a_down_link_when_listing_link_capacity(db, client):
+    link = _network(db, [4.7] * 30, capacity=0.01)  # an old 10M pairing replaced by the right port
+    link.status = "down"
+    db.commit()
+    row = client.get("/api/capacity/links").json()[0]
+    assert (row["current_gbps"], row["utilization_pct"], row["growth_trends"]["7"]) == (0.0, 0.0, None)
+
+
 def test_should_rank_devices_by_port_occupancy_when_listing_hotspots(db, client):
     link = _network(db, [10.0])
     ports = [m.Interface(device_id=link.a_device_id, name=f"ge-{i}", oper_status="up" if i else "down") for i in range(4)]
