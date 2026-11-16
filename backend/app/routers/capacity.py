@@ -23,6 +23,7 @@ from ..services.capacity import (
     peak_series,
     port_utilization_pct,
     read_narrow_end,
+    read_on_wider_end,
     spike_indexes,
 )
 from ..services.olt import PonUsage, is_pon_port, olt_layout, onts_online, pon_level, pon_port_occupancy
@@ -62,13 +63,16 @@ def _forecast_inputs(manual_growth: float | None, fit: TrendFit | None) -> tuple
     return (fit.growth_per_month if fit else None), "trend", trend
 
 
-def _link_capacity(link, samples, devices, pops) -> s.LinkCapacity:
-    samples = sorted(samples, key=lambda x: x.ts)  # same order as peak_series, so indexes line up
+def _link_capacity(link, samples, devices, pops, on_wider_end: bool = False) -> s.LinkCapacity:
+    # A down link carries nothing now. Its history usually belongs to the link that replaced it (the same port,
+    # re-paired to the right far end) and would otherwise rank a dead 10M pairing as the busiest link.
+    carries = link.status != "down"
+    samples = sorted(samples, key=lambda x: x.ts) if carries else []  # same order as peak_series: indexes line up
     spikes = spike_indexes(peak_series(samples), link.capacity_gbps)
     series = peak_series([x for k, x in enumerate(samples) if k not in spikes])
     fits = _trend_fits(series)
     growth, source, trend = _forecast_inputs(link.growth_gbps_per_month, fits[settings.trend_window_days])
-    result = calculate(link.capacity_gbps, link.current_gbps, link.reserved_gbps, growth_abs=growth,
+    result = calculate(link.capacity_gbps, link.current_gbps if carries else 0.0, link.reserved_gbps, growth_abs=growth,
                        growth_source=source, trend=trend)
     a, b = devices.get(link.a_device_id), devices.get(link.b_device_id)
     return s.LinkCapacity(
@@ -84,7 +88,32 @@ def _link_capacity(link, samples, devices, pops) -> s.LinkCapacity:
         growth_trends=_growth_per_window(fits),
         samples_days=round(series[-1][0] - series[0][0]) if len(series) >= 2 else 0,
         spike_days=[samples[k].ts for k in sorted(spikes)],
+        measured_on_wider_end=on_wider_end,
+        level=hotspot_level(result.utilization_pct, on_wider_end),
     )
+
+
+def _wider_end_links(db: Session, link_ids: set[int] | None = None) -> set[int]:
+    """Links whose traffic can only be read on their wider end (services/capacity.read_on_wider_end)."""
+    stmt = select(m.Link.id, m.Link.a_interface_id, m.Link.b_interface_id)
+    if link_ids is not None:
+        stmt = stmt.where(m.Link.id.in_(link_ids))
+    links = db.execute(stmt).all()
+    iface_ids = {i for row in links for i in row[1:] if i}
+    ports = {row.id: row for row in db.execute(select(
+        m.Interface.id, m.Interface.speed_gbps, m.Interface.in_gbps, m.Interface.out_gbps).where(
+        m.Interface.id.in_(iface_ids)))}
+    monitored = set(db.scalars(select(m.ObserviumPort.interface_id).where(m.ObserviumPort.interface_id.in_(iface_ids))))
+
+    def speed(i: int | None) -> float | None:
+        return ports[i].speed_gbps if i in ports else None
+
+    def rate(i: int | None) -> float | None:
+        return max(ports[i].in_gbps or 0.0, ports[i].out_gbps or 0.0) if i in ports else None
+
+    return {l.id for l in links if read_on_wider_end((speed(l.a_interface_id), speed(l.b_interface_id)),
+                                                     (rate(l.a_interface_id), rate(l.b_interface_id)),
+                                                     (l.a_interface_id in monitored, l.b_interface_id in monitored))}
 
 
 def _context(db: Session):
@@ -120,7 +149,8 @@ def all_link_capacity(db: Session) -> list[s.LinkCapacity]:
     def compute() -> list[s.LinkCapacity]:
         devices, pops = _context(db)
         samples = _samples_by_link(db)
-        return [_link_capacity(l, samples.get(l.id, []), devices, pops) for l in _link_rows(db)]
+        wider = _wider_end_links(db)
+        return [_link_capacity(l, samples.get(l.id, []), devices, pops, l.id in wider) for l in _link_rows(db)]
 
     return cache.cached(("capacity", "links"), compute)
 
@@ -155,7 +185,7 @@ def link_capacity_detail(link_id: int, months: int = Query(24, ge=1, le=120), db
         raise HTTPException(404, "Link not found")
     devices, pops = _context(db)
     samples = _samples_by_link(db, link_id).get(link_id, [])
-    result = _link_capacity(link, samples, devices, pops)
+    result = _link_capacity(link, samples, devices, pops, link_id in _wider_end_links(db, {link_id}))
     return s.LinkCapacityDetail(
         **result.model_dump(),
         history=[s.SampleIn(link_id=x.link_id, ts=x.ts, in_gbps=x.in_gbps, out_gbps=x.out_gbps) for x in samples],
@@ -357,7 +387,8 @@ def _hotspots(db: Session, limit: int) -> dict[str, Any]:
     link_rows = [{"link_id": l.link_id, **ends.get(l.link_id, _NO_ENDS), "a_device": l.a_device, "b_device": l.b_device,
                   "a_pop": l.a_pop, "b_pop": l.b_pop, "status": l.status, "capacity_gbps": l.capacity_gbps,
                   "current_gbps": l.current_gbps, "utilization_pct": l.utilization_pct,
-                  "level": hotspot_level(l.utilization_pct), "months_to_threshold": l.months_to_threshold}
+                  "level": l.level, "months_to_threshold": l.months_to_threshold,
+                  "measured_on_wider_end": l.measured_on_wider_end}
                  for l in links if l.capacity_gbps > 0 and l.status != "down"]  # a down link carries nothing
     devices = sorted(device_port_usage(db), key=lambda d: (-d["used_pct"], -d["used"]))
     device_rows = [{**d, "level": hotspot_level(d["used_pct"])} for d in devices if d["total"] > 0]
@@ -461,7 +492,7 @@ def _device_links(db: Session, device_id: int, own_ports: dict[int, str]) -> lis
             "capacity_gbps": c.capacity_gbps if c else None, "current_gbps": c.current_gbps if c else None,
             "reserved_gbps": c.reserved_gbps if c else None, "utilization_pct": c.utilization_pct if c else None,
             "committed_pct": c.committed_pct if c else None, "color": c.color if c else None,
-            "level": hotspot_level(c.utilization_pct) if c and c.capacity_gbps > 0 else None,
+            "level": c.level if c and c.capacity_gbps > 0 else None,
         })
     return sorted(rows, key=lambda r: -(r["utilization_pct"] or 0))
 

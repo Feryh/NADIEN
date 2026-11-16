@@ -17,7 +17,6 @@ from sqlalchemy.orm import Session
 from ... import models as m
 from ...config import settings
 from ..areas import AREA_ORDER, area_for_pop
-from ..capacity import hotspot_level
 from ..validation import design_for_service, validate
 
 TOPICS: dict[str, re.Pattern[str]] = {
@@ -131,7 +130,7 @@ def _device(db: Session, device: m.Device) -> str:
     for l in links[:8]:
         peer = l.b_device if l.a_device == device.hostname else l.a_device
         lines.append(f"- ke {peer}: {l.capacity_gbps:g}G, trafik {l.current_gbps:.1f}G, utilisasi {l.utilization_pct}% "
-                     f"({hotspot_level(l.utilization_pct)}), status {l.status}"
+                     f"({l.level}), status {l.status}"
                      + (f", ke ambang {l.months_to_threshold:.1f} bln" if l.months_to_threshold is not None else ""))
     return "\n".join(lines)
 
@@ -176,7 +175,7 @@ def _hotspots(db: Session, areas: list[str]) -> str:
     from ...routers.capacity import all_link_capacity
 
     links = [l for l in all_link_capacity(db) if l.capacity_gbps > 0
-             and hotspot_level(l.utilization_pct) in ("critical", "warning")]
+             and l.level in ("critical", "warning")]
     if areas:
         area_of = {p.code: area_for_pop(p.code, p.region, p.name)
                    for p in db.execute(select(m.Pop.code, m.Pop.region, m.Pop.name))}
@@ -184,7 +183,7 @@ def _hotspots(db: Session, areas: list[str]) -> str:
     links.sort(key=lambda l: -l.utilization_pct)
     lines = [f"{len(links)} link warning/critical. Teratas:"]
     lines += [f"- {l.a_device} ↔ {l.b_device} ({l.a_pop or '-'}–{l.b_pop or '-'}): {l.capacity_gbps:g}G, "
-              f"utilisasi {l.utilization_pct}% ({hotspot_level(l.utilization_pct)})" for l in links[:12]]
+              f"utilisasi {l.utilization_pct}% ({l.level})" for l in links[:12]]
     return "\n".join(lines)
 
 
