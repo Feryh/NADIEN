@@ -395,8 +395,10 @@ class _Discovery:
     def capacity(self, adj: _Adjacency) -> float | None:
         speeds = []
         for pair in adj.member_pairs:
-            ends = [self.ifaces[i].speed_gbps for i in pair]
-            if any(s is None for s in ends):
+            # A far port the NMS does not report (a box only known from config or LLDP) has no speed: the end that
+            # does report one bounds the pair, rather than a 0G link reading its traffic as an overload.
+            ends = [s for s in (self.ifaces[i].speed_gbps for i in pair) if s]
+            if not ends:
                 speeds = []
                 break
             speeds.append(min(ends))

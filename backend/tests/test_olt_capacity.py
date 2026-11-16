@@ -69,7 +69,29 @@ def test_should_list_olt_when_a_gpon_port_reaches_threshold(db, client, monkeypa
     monkeypatch.setattr(settings, "pon_max_onts", 64)
     _olt(db, pon_online=[10, 50, 8, 0], uplink_gbps=2.0)  # 50 ONTs on a 1:64 port = 78.1 %
     row = client.get("/api/capacity/olts").json()["rows"][0]
-    assert (row["busiest_pon_pct"], row["pon_hot_ports"], row["pon_level"], row["onts_online"]) == (78.1, 1, "warning", 68)
+    assert (row["busiest_pon_pct"], row["pon_hot_ports"], row["onts_online"]) == (78.1, 1, 68)
+
+
+def test_should_measure_olt_gpon_as_online_onts_over_what_its_pon_ports_take(db, client, monkeypatch):
+    monkeypatch.setattr(settings, "pon_max_onts", 64)
+    _olt(db, pon_online=[10, 50, 8, 0], uplink_gbps=2.0)  # 68 ONTs on 4 ports of 64 = 26.6 %
+    row = client.get("/api/capacity/olts").json()["rows"][0]
+    assert (row["pon_capacity_onts"], row["pon_utilization_pct"], row["pon_level"]) == (256, 26.6, "normal")
+
+
+def test_should_leave_a_fiberhome_card_summary_out_of_the_pon_ports():
+    assert not is_pon_port("Slot/Port1", "FoCut:10 online:168 DyingGasp:34 Deactivated:166 total:378")
+    assert not is_pon_port("Slot/Port", "online:229")
+
+
+def test_should_read_uplink_on_olt_ports_when_no_link_reaches_the_olt(db, client):
+    olt = _olt(db, pon_online=[10], uplink_gbps=0.0)
+    db.execute(m.Link.__table__.delete())
+    db.add(m.Interface(device_id=olt.id, name="XFP 20/1", speed_gbps=10, admin_status="up", oper_status="up",
+                       in_gbps=7.6, out_gbps=0.3))
+    db.commit()
+    row = client.get("/api/capacity/olts?only_hotspots=false").json()["rows"][0]
+    assert (row["uplink_source"], row["uplinks"], row["uplink_capacity_gbps"], row["uplink_utilization_pct"]) == ("port", 1, 10, 76.0)
 
 
 def test_should_list_olt_when_uplink_utilization_reaches_threshold(db, client):

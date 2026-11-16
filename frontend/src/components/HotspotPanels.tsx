@@ -97,34 +97,40 @@ export function OltHotspotsPanel() {
       <div className="toolbar">
         <h2>OLT perlu perhatian</h2>
         <span className="muted small">
-          Port GPON terisi ≥ {data?.thresholds.warning_pct ?? 70}% dari {data?.thresholds.pon_max_onts ?? 64} ONT,
-          atau uplink ≥ {data?.thresholds.warning_pct ?? 70}%{data ? ` · ${data.total} OLT` : ''}
+          Utilisasi GPON (ONT online dari {data?.thresholds.pon_max_onts ?? 64} ONT per port PON) atau uplink
+          ≥ {data?.thresholds.warning_pct ?? 70}%, atau ada port PON ≥ {data?.thresholds.warning_pct ?? 70}%{data ? ` · ${data.total} OLT` : ''}
         </span>
       </div>
       {error && <div className="error">{error}</div>}
       <div className="table-wrap">
         <table>
           <thead>
-            <tr><th>OLT</th><th>POP</th><th>Port GPON terpadat</th><th className="num">Port GPON ≥ threshold</th>
-              <th className="num">ONT online</th><th className="num">Uplink</th><th>Utilisasi uplink</th></tr>
+            <tr><th>OLT</th><th>POP</th>
+              <th title="Total ONT online dibagi kapasitas seluruh port PON (port × maks ONT per port)">Utilisasi GPON</th>
+              <th className="num" title="Port PON yang terisi ≥ threshold, dan port terpadat">Port PON ≥ threshold</th>
+              <th className="num">Uplink</th><th>Utilisasi uplink</th></tr>
           </thead>
           <tbody>
             {paged.pageRows.map((r) => (
               <tr key={r.device_id}>
                 <td><Link to={`/devices/${r.device_id}`}>{r.hostname}</Link> <span className="muted small">{r.vendor ?? ''}</span></td>
                 <td className="muted">{r.pop ?? '–'}</td>
-                <td>{r.busiest_pon_pct != null && r.pon_level
-                  ? <><Pct value={r.busiest_pon_pct} level={r.pon_level} /> <span className="muted small">{r.busiest_pon_onts} ONT</span></>
+                <td>{r.pon_utilization_pct != null && r.pon_level
+                  ? <><Pct value={r.pon_utilization_pct} level={r.pon_level} />{' '}
+                    <span className="muted small">{r.onts_online.toLocaleString('id-ID')} / {r.pon_capacity_onts.toLocaleString('id-ID')} ONT</span></>
                   : <span className="muted small" title="OLT tidak melaporkan jumlah ONT">tanpa data ONT</span>}</td>
-                <td className="num">{r.pon_hot_ports} <span className="muted small">/ {r.pon_total}</span></td>
-                <td className="num">{r.onts_online.toLocaleString('id-ID')}</td>
-                <td className="num">{r.uplinks ? `${r.uplinks} × · ${fmtG(r.uplink_capacity_gbps)}` : '–'}
+                <td className="num">{r.pon_hot_ports} <span className="muted small">/ {r.pon_total}</span>
+                  {r.busiest_pon_pct != null && <div className="muted small">terpadat {r.busiest_pon_onts}/{data?.thresholds.pon_max_onts ?? 64} ONT</div>}</td>
+                <td className="num">{r.uplinks ? `${r.uplinks} ${r.uplink_source === 'port' ? 'port' : 'link'} · ${fmtG(r.uplink_capacity_gbps)}` : '–'}
                   {r.uplinks_down > 0 && <> <span className="pill pill-bad">{r.uplinks_down} down</span></>}</td>
-                <td>{r.uplinks ? <><Pct value={r.uplink_utilization_pct} level={r.uplink_level} /> <span className="muted small">{fmtG(r.uplink_current_gbps)}</span></> : <span className="muted">tanpa link</span>}</td>
+                <td>{r.uplinks
+                  ? <><Pct value={r.uplink_utilization_pct} level={r.uplink_level} /> <span className="muted small">{fmtG(r.uplink_current_gbps)}</span>
+                    {r.uplink_source === 'port' && <div className="muted small" title="Perangkat lawan tidak ada di inventory/LLDP: dibaca dari port uplink OLT (rate live)">dari port, tanpa link</div>}</>
+                  : <span className="muted">tanpa uplink</span>}</td>
               </tr>
             ))}
-            {data && !rows.length && <tr><td colSpan={7} className="empty">Tidak ada OLT di atas threshold</td></tr>}
-            {!data && !error && <tr><td colSpan={7} className="empty">Memuat…</td></tr>}
+            {data && !rows.length && <tr><td colSpan={6} className="empty">Tidak ada OLT di atas threshold</td></tr>}
+            {!data && !error && <tr><td colSpan={6} className="empty">Memuat…</td></tr>}
           </tbody>
         </table>
       </div>

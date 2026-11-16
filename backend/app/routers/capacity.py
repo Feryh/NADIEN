@@ -22,11 +22,13 @@ from ..services.capacity import (
     hotspot_level,
     peak_series,
     port_utilization_pct,
+    utilization_pct,
     read_narrow_end,
     read_on_wider_end,
     spike_indexes,
 )
-from ..services.olt import PonUsage, is_pon_port, olt_layout, onts_online, pon_level, pon_port_occupancy
+from ..services.olt import (PonUsage, is_management_port, is_pon_port, olt_layout, onts_online, pon_level,
+                            pon_port_occupancy)
 
 router = APIRouter(prefix="/capacity", tags=["Capacity Planning"])
 
@@ -415,13 +417,16 @@ def _olt_rows(db: Session) -> list[dict[str, Any]]:
     vendors = dict(db.execute(select(m.Device.id, m.Vendor.name).join(m.Vendor, m.Vendor.id == m.Device.vendor_id)
                               .where(m.Device.role == "olt")).tuples().all())
     pon: dict[int, PonUsage] = defaultdict(PonUsage)
-    for device_id, name, admin, oper, description, speed in db.execute(
+    uplink_ports: dict[int, list[Any]] = defaultdict(list)
+    for port in db.execute(
             select(m.Interface.device_id, m.Interface.name, m.Interface.admin_status, m.Interface.oper_status,
-                   m.Interface.description, m.Interface.speed_gbps)
+                   m.Interface.description, m.Interface.speed_gbps, m.Interface.in_gbps, m.Interface.out_gbps)
             .join(m.Device, m.Device.id == m.Interface.device_id)
             .where(m.Device.role == "olt", m.Interface.if_type == "physical")):
-        if is_pon_port(name, description, speed):
-            pon[device_id].add(admin, oper, description)
+        if is_pon_port(port.name, port.description, port.speed_gbps):
+            pon[port.device_id].add(port.admin_status, port.oper_status, port.description)
+        elif _carries_uplink(port):
+            uplink_ports[port.device_id].append(port)
     capacity = {c.link_id: c for c in all_link_capacity(db)}
     uplinks: dict[int, list[s.LinkCapacity]] = defaultdict(list)
     for link in _link_rows(db):
@@ -431,35 +436,61 @@ def _olt_rows(db: Session) -> list[dict[str, Any]]:
                 uplinks[mine].append(capacity[link.id])
     rows = []
     for device_id, d in olts.items():
-        usage, ups = pon.get(device_id, PonUsage()), uplinks.get(device_id, [])
-        total = calculate(sum(u.capacity_gbps for u in ups), sum(u.current_gbps for u in ups),
-                          sum(u.reserved_gbps for u in ups))
-        uplink_pct = total.utilization_pct if total.capacity_gbps > 0 else 0.0
+        usage = pon.get(device_id, PonUsage())
         rows.append({
             "device_id": device_id, "hostname": d.hostname, "pop": pops.get(d.pop_id), "vendor": vendors.get(device_id),
             "pon_total": usage.total, "pon_used": usage.used, "onts_online": usage.onts,
+            "pon_capacity_onts": usage.capacity_onts, "pon_utilization_pct": usage.utilization_pct,
+            "pon_level": pon_level(usage.utilization_pct) if usage.utilization_pct is not None else None,
             "busiest_pon_onts": usage.busiest_onts, "busiest_pon_pct": usage.busiest_pct, "pon_hot_ports": usage.hot_ports,
-            "pon_level": pon_level(usage.busiest_pct) if usage.busiest_pct is not None else None,
-            "uplinks": len(ups), "uplink_capacity_gbps": total.capacity_gbps, "uplink_current_gbps": total.current_gbps,
-            "uplink_utilization_pct": uplink_pct, "uplink_level": hotspot_level(uplink_pct),
-            "uplinks_down": sum(1 for u in ups if u.status == "down"),
+            **_olt_uplink(uplinks.get(device_id, []), uplink_ports.get(device_id, [])),
         })
     return rows
 
 
+def _carries_uplink(port: Any) -> bool:
+    """A non-PON OLT port in service with traffic: an uplink (or a cascade) whether or not a link was discovered."""
+    if is_management_port(port.name) or (port.oper_status or "").lower() != "up" or not port.speed_gbps:
+        return False
+    return bool((port.in_gbps or 0) > 0 or (port.out_gbps or 0) > 0)
+
+
+def _olt_uplink(links: list[s.LinkCapacity], ports: list[Any]) -> dict[str, Any]:
+    """Uplink capacity and traffic of an OLT: its links; without any live link (the far box is not in the inventory,
+    no LLDP) its own uplink ports in service, as the device page's uplink card shows them."""
+    live = [u for u in links if u.status != "down"]
+    if live:
+        capacity_gbps = sum(u.capacity_gbps for u in live)
+        current_gbps = sum(u.current_gbps for u in live)
+        source = "link"
+    elif ports:
+        capacity_gbps = sum(p.speed_gbps for p in ports)
+        current_gbps = sum(max(p.in_gbps or 0.0, p.out_gbps or 0.0) for p in ports)
+        source = "port"
+    else:
+        capacity_gbps = current_gbps = 0.0
+        source = None
+    pct = utilization_pct(current_gbps, capacity_gbps) if capacity_gbps > 0 else 0.0
+    return {"uplinks": len(live) if source == "link" else len(ports) if source == "port" else 0,
+            "uplink_source": source, "uplink_capacity_gbps": round(capacity_gbps, 3),
+            "uplink_current_gbps": round(current_gbps, 3), "uplink_utilization_pct": round(pct, 1),
+            "uplink_level": hotspot_level(pct), "uplinks_down": sum(1 for u in links if u.status == "down")}
+
+
 @router.get("/olts")
 def olt_capacity(only_hotspots: bool = True, limit: int = Query(200, ge=1, le=5000), db: Session = Depends(get_db)):
-    """Per OLT: GPON port occupancy (online ONTs of its fullest PON port / NADIEN_PON_MAX_ONTS, and how many PON
-    ports are past the threshold) and uplink utilization. `only_hotspots`: OLTs where either reaches the warning
+    """Per OLT: GPON utilization (online ONTs over NADIEN_PON_MAX_ONTS per PON port, the fullest port and how many
+    PON ports are past the threshold) and uplink utilization. `only_hotspots`: OLTs where either reaches the warning
     threshold (NADIEN_HOTSPOT_WARNING_PCT); uplinks with suspect capacity data do not count."""
     rows = cache.cached(("capacity", "olts"), lambda: _olt_rows(db))
     hot = ("warning", "critical")
     if only_hotspots:
-        rows = [r for r in rows if r["pon_level"] in hot or r["uplink_level"] in hot]
+        # The whole GPON filling up, the uplink, or a single PON port past the threshold (move ONTs or split it).
+        rows = [r for r in rows if r["pon_level"] in hot or r["uplink_level"] in hot or r["pon_hot_ports"]]
 
     def urgency(r: dict[str, Any]) -> float:
         uplink = r["uplink_utilization_pct"] if r["uplink_level"] in hot else 0.0
-        return max(min(r["busiest_pon_pct"] or 0.0, 100.0), uplink)
+        return max(min(r["pon_utilization_pct"] or 0.0, 100.0), uplink)
 
     rows = sorted(rows, key=lambda r: (-urgency(r), -r["pon_hot_ports"]))
     return {"thresholds": {"warning_pct": settings.hotspot_warning_pct, "critical_pct": settings.hotspot_critical_pct,
@@ -529,8 +560,11 @@ def device_capacity(device_id: int, db: Session = Depends(get_db)):
         "speeds": [{"speed": b, "total": sum(c.values()), "used": c["used"], "idle": c["idle"], "disabled": c["disabled"]}
                    for b, c in sorted(usage.items(), key=lambda kv: bucket_sort_key(kv[0]))],
         "pon": {"total": pon.total, "used": pon.used, "onts_online": pon.onts, "max_onts": settings.pon_max_onts,
+                "capacity_onts": pon.capacity_onts, "utilization_pct": pon.utilization_pct,
                 "busiest_onts": pon.busiest_onts, "busiest_pct": pon.busiest_pct, "hot_ports": pon.hot_ports,
-                "level": pon_level(pon.busiest_pct) if pon.busiest_pct is not None else None} if device.role == "olt" else None,
+                "level": pon_level(pon.utilization_pct) if pon.utilization_pct is not None else None,
+                "busiest_level": pon_level(pon.busiest_pct) if pon.busiest_pct is not None else None}
+        if device.role == "olt" else None,
         "olt_layout": olt_layout(ports) if device.role == "olt" else None,
         "links": links,
         "ports": ports,
