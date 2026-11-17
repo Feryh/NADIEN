@@ -73,3 +73,69 @@ def neighbours(text: str, dialect: str | None) -> list[dict]:
             ids[ip].add(vc)
     return [{"ip": ip, "pw_ids": sorted(ids[ip]), "count": count[ip]}
             for ip in sorted(count, key=lambda ip: (-count[ip], ipaddress.IPv4Address(ip)))]
+
+
+_XR_GROUP = re.compile(r"^ bridge group (\S+)\s*$")
+_XR_DOMAIN = re.compile(r"^  bridge-domain (\S+)\s*$")
+_XR_DOMAIN_ITEM = re.compile(r"^   (interface|vfi) (\S+)\s*$")
+_XR_NEIGHBOR = re.compile(r"^\s+neighbor (?:ipv4 )?(\S+) pw-id (\d+)\s*$")
+_XR_PW_CLASS = re.compile(r"^\s+pw-class (\S+)\s*$")
+_SUB_VLAN = re.compile(r"\.(\d{1,4})$")
+
+
+def vpls_key(group: str, bridge_domain: str, vfi: str | None) -> str:
+    """Stable id of a VPLS instance in a request: "group|bridge-domain|vfi" (vfi empty when the PWs sit on the BD)."""
+    return f"{group}|{bridge_domain}|{vfi or ''}"
+
+
+def vpls_instances(text: str, dialect: str | None) -> list[dict]:
+    """VPLS instances already on a PE that a new pseudowire can join, read from its running config.
+
+    IOS-XR only for now: `l2vpn / bridge group / bridge-domain / vfi` with `neighbor IP pw-id N` (as on the
+    ASR9K metro). One row per VFI, or per bridge-domain whose neighbours sit directly on it (H-VPLS spoke)."""
+    if dialect != "iosxr":
+        return []
+    rows: list[dict] = []
+    group = domain = None
+    current: dict | None = None  # the VFI or bridge-domain the next neighbour lines belong to
+    interfaces: list[str] = []
+    in_l2vpn = False
+    for line in text.splitlines():
+        if line and not line[0].isspace():
+            in_l2vpn = line.startswith("l2vpn")
+            group = domain = current = None
+            continue
+        if not in_l2vpn:
+            continue
+        if match := _XR_GROUP.match(line):
+            group, domain, current = match.group(1), None, None
+        elif group and (match := _XR_DOMAIN.match(line)):
+            domain, current, interfaces = match.group(1), None, []
+        elif domain and (match := _XR_DOMAIN_ITEM.match(line)):
+            if match.group(1) == "interface":
+                interfaces.append(match.group(2))
+                current = None
+            else:
+                current = _vpls_row(rows, group, domain, match.group(2), interfaces)
+        elif domain and (match := _XR_NEIGHBOR.match(line)):
+            if current is None or (len(line) - len(line.lstrip()) == 3 and current["vfi"]):
+                current = _vpls_row(rows, group, domain, None, interfaces)
+            current["neighbours"].append({"ip": match.group(1), "pw_id": int(match.group(2)), "pw_class": None})
+        elif current and current["neighbours"] and (match := _XR_PW_CLASS.match(line)):
+            current["neighbours"][-1]["pw_class"] = match.group(1)
+    for row in rows:
+        row["vlans"] = sorted({int(m.group(1)) for name in row["interfaces"] if (m := _SUB_VLAN.search(name))})
+        row["pw_ids"] = sorted({n["pw_id"] for n in row["neighbours"]})
+    return rows
+
+
+def _vpls_row(rows: list[dict], group: str, domain: str, vfi: str | None, interfaces: list[str]) -> dict:
+    key = vpls_key(group, domain, vfi)
+    for row in rows:
+        if row["key"] == key:
+            return row
+    # Interfaces listed after the VFI still belong to the bridge-domain: share the list, not a copy.
+    row = {"key": key, "bridge_group": group, "bridge_domain": domain, "vfi": vfi, "interfaces": interfaces,
+           "neighbours": []}
+    rows.append(row)
+    return row

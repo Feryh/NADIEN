@@ -1,6 +1,6 @@
 """Second Observium for cell-site routers: only CSRs come in, and the two servers do not overwrite each other."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from urllib.parse import parse_qs
 
@@ -154,7 +154,7 @@ def test_should_store_csr_daily_peaks_on_the_link_through_the_csr_port(db):
     port = db.scalar(select(m.Interface))
     link = _link_between(db, port, None)
     db.commit()
-    day = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    day = (datetime.now(timezone.utc) - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     source = SimpleNamespace(name="api", chunk_size=10, usable=lambda ref: True,
                              fetch=lambda chunk, days: {str(link.id): [(day, 0.5, 0.2)]})
     report = sync_rrd(db, source, 90, server="csr")

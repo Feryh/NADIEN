@@ -12,7 +12,7 @@ from ..services import running_config
 from ..services.access_ports import access_ports
 from ..services.configgen import (AddressError, Addressing, as_text, check_vc_ids, dialect_of, generate, parse_cidr,
                                   parse_peer, parse_vc_ids, parse_vlans)
-from ..services.l2vpn_peers import neighbours
+from ..services.l2vpn_peers import neighbours, vpls_instances
 from ..services.network_change_gen import NetworkChangeError, NetworkChangeIn, generate_network_change, network_change_hints
 
 router = APIRouter(prefix="/configs", tags=["Config Generator"])
@@ -46,6 +46,7 @@ def addressing_params(
     vc_ids: str | None = Query(None, max_length=1200, description="VC id per VLAN bila bentrok, mis. 1480:9001,1481:9002"),
     a_peer: str | None = Query(None, max_length=15, description="L2VPN: neighbour di site A (loopback PE B), default dari inventory"),
     b_peer: str | None = Query(None, max_length=15, description="L2VPN: neighbour di site B (loopback PE A), default dari inventory"),
+    b_vpls: str | None = Query(None, max_length=200, description="L2VPN: site B gabung ke VPLS existing (key dari /l2vpn/vpls), tanpa port akses"),
 ) -> Addressing:
     """Shared by the config generator and the MoP routes; bad addresses are a 422 before anything is built."""
     try:
@@ -57,7 +58,8 @@ def addressing_params(
         peers = [parse_peer(a_peer), parse_peer(b_peer)]
     except AddressError as exc:
         raise HTTPException(422, str(exc)) from exc
-    return Addressing(a_ip or None, b_ip or None, vc_id, bgp_asn, policer, vlan_list, vc_id_map, *peers)
+    return Addressing(a_ip or None, b_ip or None, vc_id, bgp_asn, policer, vlan_list, vc_id_map, *peers,
+                      b_vpls=(b_vpls or "").strip() or None)
 
 
 def _service(db: Session, service_id: int) -> m.Service:
@@ -107,6 +109,27 @@ def l2vpn_neighbours(device_id: int, db: Session = Depends(get_db)):
         out["error"] = str(exc)
         return out
     out["neighbours"] = [{**row, "hostname": by_loopback.get(row["ip"])} for row in neighbours(text, dialect)]
+    return out
+
+
+@router.get("/l2vpn/vpls")
+def l2vpn_vpls(device_id: int, db: Session = Depends(get_db)):
+    """VPLS instances already on the PE (RANCID running config) that site B can join with one more neighbour
+    instead of a new access port. IOS-XR only for now; `supported` is false for other dialects."""
+    device = db.get(m.Device, device_id)
+    if device is None:
+        raise HTTPException(404, "Device not found")
+    dialect = dialect_of(db, device_id)
+    out = {"device_id": device.id, "hostname": device.hostname, "dialect": dialect, "supported": dialect == "iosxr",
+           "instances": [], "error": None}
+    if not out["supported"]:
+        return out
+    try:
+        text = running_config.fetch(db, device_id)
+    except running_config.RunningConfigError as exc:
+        out["error"] = str(exc)
+        return out
+    out["instances"] = vpls_instances(text, dialect)
     return out
 
 

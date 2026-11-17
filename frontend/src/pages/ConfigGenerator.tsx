@@ -441,6 +441,73 @@ function PortPicker({ label, deviceId, value, onChange }: {
   )
 }
 
+interface VplsInstance {
+  key: string
+  bridge_group: string
+  bridge_domain: string
+  vfi: string | null
+  interfaces: string[]
+  neighbours: { ip: string; pw_id: number; pw_class: string | null }[]
+  vlans: number[]
+  pw_ids: number[]
+}
+interface VplsList { hostname: string; dialect: string | null; supported: boolean; instances: VplsInstance[]; error: string | null }
+
+function vplsLabel(v: VplsInstance): string {
+  const name = v.vfi && v.vfi !== v.bridge_domain ? `${v.bridge_domain} / vfi ${v.vfi}` : v.bridge_domain
+  const pw = v.pw_ids.length ? ` · pw-id ${v.pw_ids.slice(0, 3).join(', ')}${v.pw_ids.length > 3 ? ', …' : ''}` : ''
+  return `${name} (${v.bridge_group}) · ${v.interfaces.length} interface · ${v.neighbours.length} neighbour${pw}`
+}
+
+/** VPLS already on PE B (RANCID config) that site B joins with one neighbour; ones carrying the VLAN first. */
+function VplsPicker({ deviceId, vlan, value, onChange }: {
+  deviceId: number
+  vlan: number | null
+  value: string
+  onChange: (key: string) => void
+}) {
+  const [list, setList] = useState<VplsList | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    setList(null)
+    setError(null)
+    let alive = true
+    api.get<VplsList>(`/configs/l2vpn/vpls?device_id=${deviceId}`)
+      .then((l) => alive && setList(l))
+      .catch((e: Error) => alive && setError(e.message))
+    return () => { alive = false }
+  }, [deviceId])
+  const instances = list?.instances ?? []
+  const matching = vlan == null ? [] : instances.filter((v) => v.vlans.includes(vlan) || v.pw_ids.includes(vlan))
+  const other = instances.filter((v) => !matching.includes(v))
+  const chosen = instances.find((v) => v.key === value)
+  return (
+    <label className="span-2">
+      <span>VPLS existing di PE B</span>
+      <select value={value} disabled={!list?.supported} onChange={(e) => onChange(e.target.value)}>
+        <option value="">{!list && !error ? 'Membaca VPLS dari config RANCID…' : list && !list.supported ? 'Belum tersedia untuk vendor ini' : 'Pilih VPLS'}</option>
+        {matching.length > 0 && (
+          <optgroup label={`Memuat VLAN / pw-id ${vlan} (${matching.length})`}>
+            {matching.map((v) => <option key={v.key} value={v.key}>{vplsLabel(v)}</option>)}
+          </optgroup>
+        )}
+        {other.length > 0 && (
+          <optgroup label={`VPLS lain (${other.length})`}>
+            {other.map((v) => <option key={v.key} value={v.key}>{vplsLabel(v)}</option>)}
+          </optgroup>
+        )}
+      </select>
+      <small className="muted">
+        {error ? `Daftar VPLS tidak terbaca: ${error}`
+          : list?.error ? `Daftar VPLS tidak terbaca: ${list.error}`
+          : list && !list.supported ? 'Gabung ke VPLS existing baru untuk Cisco IOS-XR; pakai port akses untuk vendor lain.'
+          : chosen ? `Interface: ${chosen.interfaces.join(', ') || '-'} · neighbour: ${chosen.neighbours.map((n) => `${n.ip} (${n.pw_id})`).slice(0, 6).join(', ') || '-'}`
+          : list ? `${instances.length} VPLS di config ${list.hostname}; hanya ditambah neighbour loopback PE A dengan PW-id yang sama.` : ''}
+      </small>
+    </label>
+  )
+}
+
 interface PeerChoice { choice: string; manual: string }  // choice: '' = inventory loopback, an IP, or MANUAL
 
 function peerValue(p: PeerChoice): string {
@@ -527,6 +594,8 @@ function L2vpnHostnameForm({ devices, baseQuery, standardPw, vlanMode, vcIds, on
   const [bText, setBText] = useState('')
   const [aPort, setAPort] = useState('')
   const [bPort, setBPort] = useState('')
+  const [bMode, setBMode] = useState<'port' | 'vpls'>('port')
+  const [bVpls, setBVpls] = useState('')
   const [name, setName] = useState('')
   const [bandwidth, setBandwidth] = useState('100')
   const [aPeer, setAPeer] = useState<PeerChoice>({ choice: '', manual: '' })
@@ -538,7 +607,9 @@ function L2vpnHostnameForm({ devices, baseQuery, standardPw, vlanMode, vcIds, on
   const b = find(bText)
   const aNeighbours = useNeighbours(a?.id ?? null)
   const bNeighbours = useNeighbours(b?.id ?? null)
-  const hasVlan = new URLSearchParams(baseQuery).has('vlans')
+  const vlanParam = new URLSearchParams(baseQuery).get('vlans')
+  const hasVlan = vlanParam != null
+  const singleVlan = vlanParam && /^\d+$/.test(vlanParam) ? Number(vlanParam) : null
 
   const query = useMemo(() => {
     if (!a || !aPort.trim() || !hasVlan) return null
@@ -546,13 +617,14 @@ function L2vpnHostnameForm({ devices, baseQuery, standardPw, vlanMode, vcIds, on
     q.set('a_device_id', String(a.id))
     q.set('a_port', aPort.trim())
     if (b) q.set('b_device_id', String(b.id))
-    if (b && bPort.trim()) q.set('b_port', bPort.trim())
+    if (b && bMode === 'port' && bPort.trim()) q.set('b_port', bPort.trim())
+    if (b && bMode === 'vpls' && bVpls) q.set('b_vpls', bVpls)
     if (name.trim()) q.set('name', name.trim())
     if (Number(bandwidth) > 0) q.set('bandwidth_mbps', String(Math.round(Number(bandwidth))))
     if (peerValue(aPeer)) q.set('a_peer', peerValue(aPeer))
     if (b && peerValue(bPeer)) q.set('b_peer', peerValue(bPeer))
     return q.toString()
-  }, [a, b, aPort, bPort, name, bandwidth, aPeer, bPeer, baseQuery, hasVlan])
+  }, [a, b, aPort, bPort, bMode, bVpls, name, bandwidth, aPeer, bPeer, baseQuery, hasVlan])
 
   useEffect(() => {
     setResult(null)
@@ -576,8 +648,19 @@ function L2vpnHostnameForm({ devices, baseQuery, standardPw, vlanMode, vcIds, on
           onText={(t) => { setAText(t); setAPort(''); setBPeer({ choice: '', manual: '' }) }} />
         <PortPicker label="Port akses PE A" deviceId={a?.id ?? null} value={aPort} onChange={setAPort} />
         <DeviceField label="PE site B (tujuan)" devices={devices} text={bText} optional
-          onText={(t) => { setBText(t); setBPort(''); setAPeer({ choice: '', manual: '' }) }} />
-        <PortPicker label="Port akses PE B" deviceId={b?.id ?? null} value={bPort} onChange={setBPort} />
+          onText={(t) => { setBText(t); setBPort(''); setBVpls(''); setAPeer({ choice: '', manual: '' }) }} />
+        {b && (
+          <label>
+            <span>Site B</span>
+            <select value={bMode} onChange={(e) => setBMode(e.target.value as 'port' | 'vpls')}>
+              <option value="port">Port akses baru</option>
+              <option value="vpls">Gabung ke VPLS existing (tanpa port)</option>
+            </select>
+          </label>
+        )}
+        {b && bMode === 'vpls'
+          ? <VplsPicker deviceId={b.id} vlan={singleVlan} value={bVpls} onChange={setBVpls} />
+          : <PortPicker label="Port akses PE B" deviceId={b?.id ?? null} value={bPort} onChange={setBPort} />}
         <label>
           <span>Nama instance / pelanggan</span>
           <input value={name} placeholder="L2VPN → L2VPN_<VLAN>" maxLength={40} onChange={(e) => setName(e.target.value)} />
