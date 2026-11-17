@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session
 
 from .. import models as m
 from . import running_config
-from .l2vpn_peers import pw_usage
+from .l2vpn_peers import pw_usage, vpls_instances
 from .vendors import DIALECT_LABELS, dialect_for
 
 VC_ID_BASE = 100000  # services without a VLAN: 100000 + service id
@@ -56,6 +56,8 @@ class Addressing:
     # neighbour picked from the running config, or a new destination typed in.
     a_peer: str | None = None
     b_peer: str | None = None
+    # Site B joins a VPLS already on its PE instead of getting an access port: vpls_key() of the instance.
+    b_vpls: str | None = None
 
 
 @dataclass
@@ -230,7 +232,7 @@ def _endpoint(db: Session, service: m.Service, customer: m.Customer | None, labe
     out: dict[str, Any] = {"label": label, "device_id": device_id, "device": device.hostname if device else None,
                            "dialect": None, "dialect_label": "Vendor tidak dikenali", "config": [], "rollback": [],
                            "commit": [], "warnings": [], "notes": []}
-    if device is None or not port:
+    if device is None:
         out["warnings"].append(f"Site {label} belum punya perangkat dan port akses.")
         return out
     dialect = _dialect(db, device_id)
@@ -239,6 +241,13 @@ def _endpoint(db: Session, service: m.Service, customer: m.Customer | None, labe
         out["warnings"].append("Vendor/OS perangkat tidak didukung generator (VRP, ZTE, IOS-XR, FiberHome); tulis manual.")
         return out
     out["dialect_label"] = DIALECT_LABELS[dialect]
+    join = addressing.b_vpls if label == "B" and _kind(service.service_type) == "l2vpn" else None
+    if join:
+        _join_vpls(db, service, device, dialect, join, peer_id, peer_ip, addressing, vlans, config_source, out)
+        return out
+    if not port:
+        out["warnings"].append(f"Site {label} belum punya port akses: pilih port, atau gabungkan ke VPLS yang sudah ada.")
+        return out
     kind = _kind(service.service_type)
     template = TEMPLATES[dialect].get(kind)
     if template is None:
@@ -269,6 +278,71 @@ def _endpoint(db: Session, service: m.Service, customer: m.Customer | None, labe
         out["vc_ids"] = [{"vlan": ctx.vlan, "vc_id": ctx.vc_id, "pw": ctx.pw, "conflicts": ctx.vc_conflicts}
                          for ctx in contexts]
     return out
+
+
+DEFAULT_XR_PW_CLASS = "MPLS-CONTROL-WORD"
+
+
+def _join_vpls(db: Session, service: m.Service, device: m.Device, dialect: str, key: str, peer_id: int | None,
+               peer_ip: str | None, addressing: Addressing, vlans: list[int], config_source: ConfigSource,
+               out: dict[str, Any]) -> None:
+    """Site B adds one neighbour (PE A's loopback, A's PW id) to a VPLS already on its PE; no access port."""
+    warnings: list[str] = out["warnings"]
+    if dialect != "iosxr":
+        warnings.append(f"Gabung ke VPLS existing baru tersedia untuk Cisco IOS-XR, belum untuk {DIALECT_LABELS[dialect]}.")
+        return
+    if len(vlans) > 1:
+        warnings.append("Gabung ke VPLS existing hanya untuk satu VLAN: satu VPLS menerima satu pseudowire dari site A.")
+        return
+    try:
+        text = config_source(device.id)
+    except running_config.RunningConfigError as exc:
+        warnings.append(f"VPLS existing tidak bisa dibaca: {exc}")
+        return
+    instance = next((row for row in vpls_instances(text, dialect) if row["key"] == key), None)
+    if instance is None:
+        warnings.append("VPLS yang dipilih tidak ada di config RANCID perangkat ini: pilih ulang.")
+        return
+    peer = db.get(m.Device, peer_id) if peer_id else None
+    peer_loopback = peer_ip or (peer.loopback_ipv4 if peer else None)
+    vlan = vlans[0] if vlans else None
+    vc_id = vc_id_for(service, addressing, vlan)
+    conflicts: list[str] = []
+    if not peer_loopback:
+        warnings.append("Loopback PE A belum diketahui: pilih neighbour atau isi <loopback-peer> secara manual.")
+    elif any(n["ip"] == peer_loopback for n in instance["neighbours"]):
+        conflicts.append(f"neighbour {peer_loopback} sudah ada di VPLS ini")
+        warnings.append(f"Neighbour {peer_loopback} sudah ada di VPLS ini: tidak perlu ditambah lagi.")
+    elif (peer_loopback, vc_id) in set(pw_usage(text, dialect)):
+        conflicts.append(f"sudah ada di config RANCID (neighbour {peer_loopback})")
+        warnings.append(f"pw-id {vc_id} ke neighbour {peer_loopback} sudah dipakai di config perangkat: isi VC id lain.")
+    others = [pw for pw in instance["pw_ids"] if pw != vc_id]
+    if others:
+        warnings.append(f"Neighbour lain di VPLS ini memakai pw-id {', '.join(map(str, others[:6]))}: pastikan site A "
+                        f"memakai pw-id {vc_id} yang sama dengan neighbour ini.")
+    classes = [n["pw_class"] for n in instance["neighbours"] if n["pw_class"]]
+    pw_class = max(set(classes), key=classes.count) if classes else DEFAULT_XR_PW_CLASS
+    out.update(_xr_join_vpls(instance, peer_loopback or "<loopback-peer>", vc_id, pw_class))
+    out["commit"] = COMMIT[dialect]
+    out["vpls"] = {name: instance[name] for name in ("key", "bridge_group", "bridge_domain", "vfi", "interfaces", "pw_ids")}
+    out["vc_ids"] = [{"vlan": vlan, "vc_id": vc_id, "pw": None, "conflicts": conflicts}]
+    where = f"bridge-domain {instance['bridge_domain']}" + (f" vfi {instance['vfi']}" if instance["vfi"] else "")
+    out["notes"].append(f"Site B tanpa port akses: hanya menambah neighbour {peer_loopback or '<loopback-peer>'} "
+                        f"pw-id {vc_id} ke {where} ({len(instance['neighbours'])} neighbour, interface "
+                        f"{', '.join(instance['interfaces'][:4]) or '-'}).")
+    warnings.append(SYNTAX_WARNING)
+
+
+def _xr_join_vpls(instance: dict, peer: str, vc_id: int, pw_class: str) -> dict[str, list[str]]:
+    """Same form as the ASR9K's own VFI neighbours: `neighbor IP pw-id N` + its pw-class, no `ipv4` keyword."""
+    path = ["l2vpn", f" bridge group {instance['bridge_group']}", f"  bridge-domain {instance['bridge_domain']}"]
+    indent = "   "
+    if instance["vfi"]:
+        path.append(f"   vfi {instance['vfi']}")
+        indent = "    "
+    config = ["configure", *path, f"{indent}neighbor {peer} pw-id {vc_id}", f"{indent} pw-class {pw_class}", "root"]
+    rollback = ["configure", *path, f"{indent}no neighbor {peer} pw-id {vc_id}", "root"]
+    return {"config": config, "rollback": rollback}
 
 
 _ZTE_PW = re.compile(r"^pw (\S+)\s*$", re.M)
