@@ -275,16 +275,33 @@ class _Discovery:
                 self.one_sided(pair, sides)
                 continue
             (_, ours), (_, theirs) = sides.items()
-            remaining = list(theirs)
-            for a in ours:
-                if not remaining:
-                    break
-                # Prefer the peer whose description names our port (or ours names theirs).
-                b = next((p for p in remaining if norm_if(a.name) in norm_if(p.description or "")), None) or next(
-                    (p for p in remaining if norm_if(p.name) in norm_if(a.description or "")), remaining[0]
-                )
-                remaining.remove(b)
+            for a, b in self.best_config_pairs(ours, theirs):
                 self.add(a, b, "config")
+
+    @staticmethod
+    def best_config_pairs(ours: list[Interface], theirs: list[Interface]) -> list[tuple[Interface, Interface]]:
+        """Ports of two devices that describe each other, paired best match first, each port used once.
+
+        Descriptions alone rarely say which port is which; a stale one survives on a port taken out of service
+        (BKS-LBJ-ME1-M8 GigabitEthernet0/8/0, 10G down, still "to BKS-NBK-ME1-6120HS"). Matching in port order paired
+        the live 200G smartgroup4 with it. Ranked instead: a description naming the other port, then bundle with
+        bundle, both up, then the same speed; ties keep port order."""
+        def score(a: Interface, b: Interface) -> tuple[bool, bool, bool, bool]:
+            named = (_names_port(norm_if(b.description or ""), norm_if(a.name))
+                     or _names_port(norm_if(a.description or ""), norm_if(b.name)))
+            same_kind = (a.if_type == "bundle") == (b.if_type == "bundle")
+            both_up = a.oper_status == b.oper_status == "up"
+            same_speed = bool(a.speed_gbps) and a.speed_gbps == b.speed_gbps
+            return named, same_kind, both_up, same_speed
+
+        candidates = sorted(((a, b) for a in ours for b in theirs), key=lambda pair: score(*pair), reverse=True)
+        used: set[int] = set()
+        pairs = []
+        for a, b in candidates:
+            if a.id not in used and b.id not in used:
+                used.update((a.id, b.id))
+                pairs.append((a, b))
+        return pairs
 
     def from_approvals(self) -> None:
         """Pairs an engineer confirmed by hand (LinkApproval), unless LLDP or the config already linked either port:
@@ -439,6 +456,12 @@ class _EventLog:
             TopologyEvent.at < self.now - timedelta(days=EVENT_RETENTION_DAYS)))
 
 
+def _with_parents(run: _Discovery, port_ids: frozenset[int]) -> set[int]:
+    ports = set(port_ids)
+    ports.update(run.ifaces[i].parent_id for i in port_ids if i in run.ifaces and run.ifaces[i].parent_id)
+    return ports
+
+
 def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> DiscoveryResult:
     """Rebuild links. `valid_iface_ids` (ports confirmed by the NMS this run) enables cleanup of
     phantom ports left by earlier runs; without it nothing is treated as phantom."""
@@ -510,6 +533,9 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
             or bool(key & phantom)
             or (link.discovery_source == "config"
                 and (key in run.contradicted or bool(key & (run.lldp_seen | run.lldp_refused))))
+            # a config-described link whose port, or that port's bundle, a current link now uses: an earlier
+            # pairing of the same descriptions, not a second link (else every re-pairing leaves one down behind)
+            or (link.discovery_source == "config" and bool(_with_parents(run, key) & run.covered))
             or link.discovery_source == "approved"  # approval revoked, or LLDP now sees the ports directly
             or any(run.ifaces[i].if_type == "virtual" for i in key if i in run.ifaces)  # a VLAN/management interface
         )
