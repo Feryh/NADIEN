@@ -4,6 +4,8 @@ import { api } from '../api'
 import { useAuth } from '../auth'
 import { StatusBadge } from '../components/ValidationReport'
 import { fmtG } from '../components/ui'
+import { ConfigBlock } from '../components/ConfigBlock'
+import TransportConfigForm, { TransportTech } from './TransportConfigForm'
 
 // Phase 7 — Config Generator: service configuration and rollback per endpoint, in each device's own dialect.
 
@@ -67,7 +69,8 @@ interface ConfigResult {
   endpoints: Record<string, Endpoint>
 }
 
-type Mode = 'l2vpn' | 'l3vpn' | 'igp' | 'bgp' | 'parameters'
+type Mode = 'l2vpn' | 'l3vpn' | 'igp' | 'bgp' | 'parameters' | TransportTech
+const TRANSPORT: Mode[] = ['sr-mpls', 'srv6', 'vxlan', 'evpn']
 interface DeviceOption { id: number; hostname: string; role: string; loopback_ipv4?: string | null }
 type L2Source = 'hostname' | 'service'
 interface ChangeResult {
@@ -92,6 +95,8 @@ const MODES: { key: Mode; label: string }[] = [
   { key: 'l2vpn', label: 'L2VPN' }, { key: 'l3vpn', label: 'L3VPN' },
   { key: 'igp', label: 'Migrasi IGP (OSPF → IS-IS)' }, { key: 'bgp', label: 'BGP Configuration' },
   { key: 'parameters', label: 'Parameter Changes' },
+  { key: 'sr-mpls', label: 'SR-MPLS' }, { key: 'srv6', label: 'SRv6' }, { key: 'vxlan', label: 'VXLAN' },
+  { key: 'evpn', label: 'EVPN' },
 ]
 
 const INPUTS = [
@@ -261,7 +266,9 @@ export default function ConfigGenerator() {
               </>
             : <p className="hint">Parameter di atas diterapkan ke konfigurasi layanan yang dipilih di bawah. Untuk L2VPN, Standard menambah 1 VLAN (kosong = VLAN layanan, VC id bisa diisi); Multi VLAN menambah daftar/rentang VLAN sekaligus dengan VC id = VLAN masing-masing.</p>}
         </div>}
-        {mode === 'igp' || mode === 'bgp' || mode === 'parameters'
+        {TRANSPORT.includes(mode)
+          ? <TransportConfigForm key={mode} tech={mode as TransportTech} devices={devices} />
+          : mode === 'igp' || mode === 'bgp' || mode === 'parameters'
           ? <NetworkChangeForm key={mode} mode={mode} devices={devices} />
           : byHostname ? null : <>
         <div className="table-wrap mop-services">
@@ -701,7 +708,7 @@ function L2vpnHostnameForm({ devices, baseQuery, standardPw, vlanMode, vcIds, on
   )
 }
 
-function NetworkChangeForm({ mode, devices }: { mode: Exclude<Mode, 'l2vpn' | 'l3vpn'>; devices: DeviceOption[] }) {
+function NetworkChangeForm({ mode, devices }: { mode: 'igp' | 'bgp' | 'parameters'; devices: DeviceOption[] }) {
   const [values, setValues] = useState<Record<string, string>>({ device_id: '', interfaces: '' })
   const [result, setResult] = useState<ChangeResult | null>(null)
   const [hints, setHints] = useState<ChangeHints | null>(null)
@@ -839,27 +846,6 @@ function EndpointConfig({ ep, textUrl }: { ep: Endpoint; textUrl: (part: 'config
           <ConfigBlock title="Rollback" lines={[...ep.rollback, ...ep.commit]} href={textUrl('rollback')} />
         </div>
       )}
-    </div>
-  )
-}
-
-function ConfigBlock({ title, lines, href }: { title: string; lines: string[]; href?: string }) {
-  const [copied, setCopied] = useState(false)
-  const copy = () => {
-    navigator.clipboard?.writeText(lines.join('\n')).then(() => {
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1500)
-    })
-  }
-  return (
-    <div className="mop-step">
-      <div className="toolbar">
-        <span className="mop-step-title">{title}</span>
-        <div className="spacer" />
-        <button onClick={copy}>{copied ? 'Tersalin' : 'Salin'}</button>
-        {href && <a className="button" href={href}>.txt</a>}
-      </div>
-      <pre>{lines.join('\n')}</pre>
     </div>
   )
 }

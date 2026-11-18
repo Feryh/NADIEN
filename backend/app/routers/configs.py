@@ -14,6 +14,7 @@ from ..services.configgen import (AddressError, Addressing, as_text, check_vc_id
                                   parse_peer, parse_vc_ids, parse_vlans)
 from ..services.l2vpn_peers import neighbours, vpls_instances
 from ..services.network_change_gen import NetworkChangeError, NetworkChangeIn, generate_network_change, network_change_hints
+from ..services.transport_gen import TransportError, TransportIn, generate_transport
 
 router = APIRouter(prefix="/configs", tags=["Config Generator"])
 
@@ -33,6 +34,15 @@ def network_change_config_hints(device_id: int, operation: Literal["igp", "bgp",
     try:
         return network_change_hints(db, device_id, operation)
     except NetworkChangeError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/transport")
+def transport_config(payload: TransportIn, db: Session = Depends(get_db)):
+    """End-to-end SR-MPLS, SRv6 or VXLAN config and rollback for PE A, the transit P nodes and PE B."""
+    try:
+        return generate_transport(db, payload)
+    except TransportError as exc:
         raise HTTPException(422, str(exc)) from exc
 
 
