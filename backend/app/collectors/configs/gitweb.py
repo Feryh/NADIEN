@@ -66,7 +66,8 @@ class GitwebClient:
         base_url = base_url or settings.gitweb_url
         if not base_url:
             raise GitwebError("gitweb not configured: set NADIEN_GITWEB_URL (e.g. http://172.17.12.232/gitweb/)")
-        user, password = user or settings.gitweb_user, password or settings.gitweb_password
+        user = settings.gitweb_user if user is None else user
+        password = settings.gitweb_password if password is None else password
         self.base_url = base_url if base_url.endswith("/") else base_url + "/"
         self._http = httpx.Client(auth=(user, password) if user and password else None,
                                   verify=settings.gitweb_verify_tls, timeout=60, transport=transport)

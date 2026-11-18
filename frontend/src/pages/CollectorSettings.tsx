@@ -79,7 +79,9 @@ export default function CollectorSettings() {
     setTesting(target)
     setMessage(null)
     try {
-      const r = await api.post<{ ok: boolean; detail: string }>(`/collectors/settings/test?target=${target}`)
+      // Unsaved form values are tested as typed; nothing is saved until Simpan.
+      const values = Object.fromEntries(changed.map((k) => [k, draft[k]]))
+      const r = await api.post<{ ok: boolean; detail: string }>(`/collectors/settings/test?target=${target}`, { values })
       setMessage({ text: `${r.ok ? '✓' : '✗'} ${r.detail}`, error: !r.ok })
     } catch (err) {
       setMessage({ text: (err as Error).message, error: true })
@@ -129,12 +131,12 @@ export default function CollectorSettings() {
           <div className="toolbar">
             <h2>{group.title}</h2>
             <div className="spacer" />
-            <button type="button" onClick={() => test(group.test)} disabled={!!testing || changed.length > 0}
-                    title={changed.length ? 'Simpan dulu perubahan, lalu tes' : 'Tes dengan pengaturan yang tersimpan'}>
+            <button type="button" onClick={() => test(group.test)} disabled={!!testing}
+                    title={changed.length ? 'Tes dengan nilai di form (belum disimpan). URL baru: isi ulang password/token-nya.' : 'Tes dengan pengaturan yang tersimpan'}>
               {testing === group.test ? 'Mengetes…' : 'Tes koneksi'}
             </button>
             {group.extraTest && (
-              <button type="button" onClick={() => test(group.extraTest!.target)} disabled={!!testing || changed.length > 0}>
+              <button type="button" onClick={() => test(group.extraTest!.target)} disabled={!!testing}>
                 {testing === group.extraTest.target ? 'Mengetes…' : group.extraTest.label}
               </button>
             )}

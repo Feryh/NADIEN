@@ -187,7 +187,7 @@ def test_should_test_the_csr_observium_address_when_asked(monkeypatch):
     calls = []
 
     class Fake:
-        def __init__(self, base_url=None):
+        def __init__(self, base_url=None, **_credentials):
             calls.append(base_url)
 
         def __enter__(self):

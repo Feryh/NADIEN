@@ -107,21 +107,35 @@ def put_settings(payload: SettingsIn, db: Session = Depends(get_db)):
     return collector_settings.describe(db)
 
 
+class SettingsTestIn(BaseModel):
+    values: dict[str, Any] = Field(default_factory=dict, description="Unsaved form values to test with; '' on a secret = the stored one")
+
+
 @router.post("/settings/test")
-def test_connection(target: str = Query(..., pattern="^(observium|observium_csr|gitweb)$")):
-    """Try the saved settings: one Observium API call / the gitweb repository list. Read-only."""
+def test_connection(target: str = Query(..., pattern="^(observium|observium_csr|gitweb)$"),
+                    payload: SettingsTestIn | None = None):
+    """Try the settings, with any unsaved form values on top: one Observium API call / the gitweb repository list.
+    Read-only, nothing is saved. A changed URL is only tried with credentials typed for it."""
+    try:
+        cfg = collector_settings.preview(payload.values if payload else {})
+    except collector_settings.SettingsError as exc:
+        return {"ok": False, "detail": str(exc)}
     try:
         if target in ("observium", "observium_csr"):
-            url = settings.observium_csr_url if target == "observium_csr" else settings.observium_url
-            with ObserviumClient(base_url=url) as client:
+            url = cfg["observium_csr_url"] if target == "observium_csr" else cfg["observium_url"]
+            if not url:
+                return {"ok": False, "detail": "URL belum diisi"}
+            with ObserviumClient(base_url=url, token=cfg["observium_token"] or "", user=cfg["observium_user"] or "",
+                                 password=cfg["observium_password"] or "", verify=cfg["observium_verify_tls"]) as client:
                 data = client._get("/devices/", {"pagesize": 1, "pageno": 1})
             return {"ok": True, "detail": f"Terhubung ke {url}: {data.get('count', '?')} perangkat"}
-        client = GitwebClient()
+        client = GitwebClient(base_url=cfg["gitweb_url"], user=cfg["gitweb_user"] or "",
+                              password=cfg["gitweb_password"] or "")
         try:
             repos = client.repos()
         finally:
             client.close()
-        return {"ok": True, "detail": f"Terhubung ke {settings.gitweb_url}: {len(repos)} repo RANCID"}
+        return {"ok": True, "detail": f"Terhubung ke {cfg['gitweb_url']}: {len(repos)} repo RANCID"}
     except (ObserviumError, GitwebError) as exc:
         return {"ok": False, "detail": str(exc)}
 
