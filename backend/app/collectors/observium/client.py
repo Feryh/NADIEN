@@ -27,9 +27,9 @@ class ObserviumClient:
         transport: httpx.BaseTransport | None = None,  # injected by tests
     ):
         base_url = (base_url or settings.observium_url).rstrip("/").removesuffix("/api/v0")
-        token = token or settings.observium_token
-        user = user or settings.observium_user
-        password = password or settings.observium_password
+        token = settings.observium_token if token is None else token
+        user = settings.observium_user if user is None else user
+        password = settings.observium_password if password is None else password
         if not token and not (user and password):
             raise ObserviumError(
                 "Observium credentials missing: set NADIEN_OBSERVIUM_TOKEN "
@@ -70,7 +70,7 @@ class ObserviumClient:
             raise ObserviumError("Observium throttled this client after failed logins (429); wait and retry")
         if resp.status_code >= 400:
             raise ObserviumError(f"Observium {path} returned HTTP {resp.status_code}: {resp.text[:200]}")
-        data = resp.json()
+        data = _api_json(resp, path)
         if data.get("status") not in (None, "ok"):
             raise ObserviumError(f"Observium {path}: {data.get('message') or data.get('status')}")
         return data
@@ -116,6 +116,25 @@ class ObserviumClient:
 
     def _remember(self, entity: str, data: dict[str, Any], rows: list[dict[str, Any]]) -> None:
         self.meta[entity] = {"response_keys": sorted(data.keys()), "count": data.get("count"), "rows": len(rows)}
+
+
+def _api_json(resp: httpx.Response, path: str) -> dict[str, Any]:
+    """The API answer, or a readable error when something else answered: an SSO/login portal in front of Observium
+    (F5 APM redirects every call to its login page and the API never sees NADIEN's credentials), or a URL that is
+    the web UI rather than the server root."""
+    location = resp.headers.get("location", "")
+    if resp.is_redirect:
+        raise ObserviumError(f"Observium {path} dialihkan (HTTP {resp.status_code}) ke {location[:120]}: URL ini di "
+                             "belakang portal login/SSO; pakai alamat Observium langsung (tanpa portal) untuk API")
+    try:
+        data = resp.json()
+    except ValueError:
+        kind = resp.headers.get("content-type", "?").split(";")[0]
+        raise ObserviumError(f"Observium {path} membalas {kind}, bukan JSON API: URL bukan Observium API atau "
+                             "tertutup portal login/SSO; pakai alamat Observium langsung") from None
+    if not isinstance(data, dict):
+        raise ObserviumError(f"Observium {path} membalas format yang tidak dikenal")
+    return data
 
 
 _META_KEYS = {"status", "count", "countpage", "pagesize", "pageno", "message", "debug"}

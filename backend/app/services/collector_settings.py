@@ -271,7 +271,29 @@ def update(db: Session, changes: dict[str, Any], clear: list[str]) -> None:
     apply(db)
 
 
-def _require_credentials_with_url(db: Session, changes: dict[str, Any], clear: list[str]) -> None:
+def preview(changes: dict[str, Any]) -> dict[str, Any]:
+    """The settings as they would be with unsaved form `changes` ('' on a secret = the stored one), for a
+    connection test before saving. Same checks as saving: a changed URL needs its credentials typed again."""
+    unknown = set(changes) - set(FIELD_BY_KEY)
+    if unknown:
+        raise SettingsError(f"Field tidak dikenal: {', '.join(sorted(unknown))}")
+    changes = {k: v for k, v in changes.items() if not (FIELD_BY_KEY[k].kind == "secret" and v in ("", None))}
+    _require_credentials_with_url(None, changes, [], action="tes")
+    effective = {spec.key: getattr(settings, spec.key) for spec in FIELDS}
+    for url_key, credential_keys in CREDENTIALS_FOR_URL.items():
+        if url_key in changes and str(changes[url_key]).strip().rstrip("/") != str(effective[url_key] or "").rstrip("/"):
+            # Only what was typed for the new server goes there: a stored token never rides along with a new password.
+            for key in credential_keys:
+                if FIELD_BY_KEY[key].kind == "secret" and key not in changes:
+                    effective[key] = ""
+    for key, raw in changes.items():
+        value = _parse(FIELD_BY_KEY[key], raw)
+        effective[key] = value if value is not None else _ENV[key]
+    return effective
+
+
+def _require_credentials_with_url(db: Session | None, changes: dict[str, Any], clear: list[str],
+                                  action: str = "simpan") -> None:
     current = {spec.key: getattr(settings, spec.key) for spec in FIELDS}
     for url_key, credential_keys in CREDENTIALS_FOR_URL.items():
         new_url = changes.get(url_key)
@@ -282,5 +304,5 @@ def _require_credentials_with_url(db: Session, changes: dict[str, Any], clear: l
         cleared = all(k in clear for k in credential_keys if FIELD_BY_KEY[k].kind == "secret")
         if has_stored_secret and not resent and not cleared:
             raise SettingsError(
-                f"{FIELD_BY_KEY[url_key].label} berubah: isi ulang token/password-nya juga, supaya kredensial "
-                "yang tersimpan tidak terkirim ke server lain")
+                f"{FIELD_BY_KEY[url_key].label} berubah: isi ulang token/password-nya juga sebelum {action}, supaya "
+                "kredensial yang tersimpan tidak terkirim ke server lain")

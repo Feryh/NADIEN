@@ -79,3 +79,73 @@ def test_should_report_failure_without_raising_when_connection_test_fails(client
     client.put("/api/collectors/settings", json={"values": {"gitweb_url": "http://127.0.0.1:9/gitweb/"}})
     body = client.post("/api/collectors/settings/test?target=gitweb").json()
     assert body["ok"] is False and "unreachable" in body["detail"]
+
+
+class _FakeObservium:
+    """Records what a connection test would send, instead of calling the network."""
+    calls: list[dict] = []
+
+    def __init__(self, **kwargs):
+        _FakeObservium.calls.append(kwargs)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def _get(self, path, params):
+        return {"count": 7}
+
+
+@pytest.fixture
+def fake_observium(monkeypatch):
+    from app.routers import collectors
+
+    _FakeObservium.calls = []
+    monkeypatch.setattr(collectors, "ObserviumClient", _FakeObservium)
+    return _FakeObservium.calls
+
+
+def test_should_test_the_unsaved_url_with_the_password_typed_in_the_form(client, fake_observium):
+    client.put("/api/collectors/settings", json={"values": {"observium_url": "http://o.lab", "observium_user": "u",
+                                                            "observium_password": "old"}})
+    body = client.post("/api/collectors/settings/test?target=observium",
+                       json={"values": {"observium_url": "https://o2.lab:44343/", "observium_password": "new"}}).json()
+    assert body["ok"] and "o2.lab" in body["detail"]
+    assert (fake_observium[0]["base_url"], fake_observium[0]["password"]) == ("https://o2.lab:44343/", "new")
+    assert settings.observium_url == "http://o.lab"  # testing saves nothing
+
+
+def test_should_refuse_to_test_a_new_url_with_the_stored_password(client, fake_observium):
+    client.put("/api/collectors/settings", json={"values": {"observium_url": "http://o.lab", "observium_user": "u",
+                                                            "observium_password": "old"}})
+    body = client.post("/api/collectors/settings/test?target=observium",
+                       json={"values": {"observium_url": "http://attacker.example"}}).json()
+    assert body["ok"] is False and "isi ulang" in body["detail"] and fake_observium == []
+
+
+def test_should_not_send_the_stored_token_along_with_a_new_password_to_a_new_url(client, fake_observium):
+    client.put("/api/collectors/settings", json={"values": {"observium_url": "http://o.lab", "observium_token": "t1"}})
+    client.post("/api/collectors/settings/test?target=observium",
+                json={"values": {"observium_url": "http://o2.lab", "observium_user": "u", "observium_password": "p"}})
+    assert fake_observium[0]["token"] == ""
+
+
+def test_should_test_saved_settings_when_the_form_is_unchanged(client, fake_observium):
+    client.put("/api/collectors/settings", json={"values": {"observium_url": "http://o.lab", "observium_token": "t1"}})
+    client.post("/api/collectors/settings/test?target=observium")
+    assert (fake_observium[0]["base_url"], fake_observium[0]["token"]) == ("http://o.lab", "t1")
+
+
+def test_should_report_a_non_api_answer_instead_of_failing_with_500(client, monkeypatch):
+    from app.routers import collectors
+
+    class HtmlObservium(_FakeObservium):
+        def _get(self, path, params):
+            raise collectors.ObserviumError("Observium /devices/ membalas text/html, bukan JSON API")
+
+    monkeypatch.setattr(collectors, "ObserviumClient", HtmlObservium)
+    client.put("/api/collectors/settings", json={"values": {"observium_url": "http://o.lab", "observium_token": "t1"}})
+    resp = client.post("/api/collectors/settings/test?target=observium")
+    assert resp.status_code == 200 and resp.json()["ok"] is False
