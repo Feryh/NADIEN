@@ -11,6 +11,8 @@
 import re
 from collections import Counter
 
+from ..collectors.configs.base import speed_from_name
+
 from .rancid_locations import LOCATION_BY_HOSTNAME
 
 UNMAPPED_AREA = "Belum dipetakan"
@@ -722,6 +724,20 @@ def speed_bucket(speed_gbps: float | None) -> str:
         if abs(speed_gbps - nominal) <= nominal * 0.02:
             return label
     return NON_STANDARD
+
+
+def port_bucket(name: str, speed_gbps: float | None) -> str:
+    """Port class of what the device has: the larger of the port type in its name (GigabitEthernet = 1G,
+    XGigabitEthernet = 10G…) and the speed Observium reports. A 1G port linked at 100M or a 10G port with a 1G
+    optic keeps its type; Huawei NE routers name 10G ports GigabitEthernet, so a higher reported speed wins.
+    A reported speed outside the standard ones (SNMP overflow) is ignored when the name gives the type."""
+    nominal = speed_from_name(name)
+    reported = speed_bucket(speed_gbps)
+    if nominal is None:
+        return reported
+    if reported in ("Unknown", NON_STANDARD) or speed_gbps is None or speed_gbps <= nominal:
+        return speed_bucket(nominal)
+    return reported
 
 
 def bucket_sort_key(bucket: str) -> float:

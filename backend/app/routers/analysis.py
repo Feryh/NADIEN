@@ -45,7 +45,7 @@ from ..services.areas import (
     bucket_sort_key,
     category_for,
     site_for,
-    speed_bucket,
+    port_bucket,
 )
 from ..services.capacity import occupancy_pct
 from ..services.topology_readmodel import (
@@ -971,17 +971,19 @@ class _Usage:
         return rows
 
 
-def _port_rows(db: Session):
-    """Physical ports Observium reports, grouped per device/speed/state in SQL. Only those count: their speed is
-    Observium's ifHighSpeed/ifSpeed. Logical interfaces are not physical, and ports known only from a config file
-    carry a speed guessed from the name."""
-    return db.execute(
-        select(m.Interface.device_id, m.Interface.speed_gbps, m.Interface.admin_status, m.Interface.oper_status,
-               func.count())
+def _port_rows(db: Session) -> list[tuple[int, str, str | None, str | None, int]]:
+    """Physical ports Observium reports as (device, port class, admin, oper, count). Only those count: ports known
+    only from a config file may not exist on the box. Logical interfaces are not physical. The class comes from
+    the port type in the name (port_bucket), falling back to Observium's ifHighSpeed/ifSpeed."""
+    counts: Counter = Counter()
+    for device_id, name, speed, admin, oper in db.execute(
+        select(m.Interface.device_id, m.Interface.name, m.Interface.speed_gbps, m.Interface.admin_status,
+               m.Interface.oper_status)
         .join(m.ObserviumPort, m.ObserviumPort.interface_id == m.Interface.id)
         .where(m.Interface.if_type == "physical")
-        .group_by(m.Interface.device_id, m.Interface.speed_gbps, m.Interface.admin_status, m.Interface.oper_status)
-    ).all()
+    ):
+        counts[(device_id, port_bucket(name, speed), admin, oper)] += 1
+    return [(*key, n) for key, n in counts.items()]
 
 
 def _config_only_ports(db: Session) -> dict[int, int]:
@@ -1027,10 +1029,10 @@ def _port_summary(db: Session, category, area, pop, vendor) -> dict:
     overall = _Usage()
     per_category: dict[str, _Usage] = defaultdict(_Usage)
     devices_per_category: dict[str, set[int]] = defaultdict(set)
-    for device_id, speed, admin, oper, n in _port_rows(db):
+    for device_id, bucket, admin, oper, n in _port_rows(db):
         if not _device_matches(ctx, device_id, category, area, pop, vendor):
             continue
-        bucket, state = speed_bucket(speed), _port_state(admin, oper)
+        state = _port_state(admin, oper)
         cat = category_for(ctx.devices[device_id].role)
         overall.add(bucket, state, n)
         per_category[cat].add(bucket, state, n)
@@ -1077,6 +1079,25 @@ def port_devices(
     return {"total_devices": len(rows), "devices": rows[:limit]}
 
 
+@router.get("/inventory/ports/devices/{device_id}/ports")
+def device_ports_in_class(device_id: int, speed: str = Query(..., max_length=16),
+                          state: str = Query(..., pattern="^(used|idle)$"), db: Session = Depends(get_db)):
+    """The ports behind one count of the device list: same port class and state rules, idle including shutdown."""
+    if db.get(m.Device, device_id) is None:
+        raise HTTPException(404, "Device not found")
+    rows = db.execute(
+        select(m.Interface.id, m.Interface.name, m.Interface.speed_gbps, m.Interface.admin_status,
+               m.Interface.oper_status, m.Interface.description)
+        .join(m.ObserviumPort, m.ObserviumPort.interface_id == m.Interface.id)
+        .where(m.Interface.device_id == device_id, m.Interface.if_type == "physical")
+        .order_by(m.Interface.name)
+    ).all()
+    wanted = {"used"} if state == "used" else {"idle", "disabled"}
+    return [{"id": r.id, "name": r.name, "speed_gbps": r.speed_gbps, "admin_status": r.admin_status,
+             "oper_status": r.oper_status, "description": r.description}
+            for r in rows if port_bucket(r.name, r.speed_gbps) == speed and _port_state(r.admin_status, r.oper_status) in wanted]
+
+
 def device_port_usage(db: Session, category: str | None = None, area: str | None = None, pop: str | None = None,
                       vendor: str | None = None, speed: str | None = None) -> list[dict[str, Any]]:
     """Port usage per device (physical ports; used = oper up). Cached: shared by the ports page and hotspots."""
@@ -1087,10 +1108,9 @@ def device_port_usage(db: Session, category: str | None = None, area: str | None
 def _device_port_usage(db: Session, category, area, pop, vendor, speed) -> list[dict[str, Any]]:
     ctx = _context(db)
     usage: dict[int, _Usage] = defaultdict(_Usage)
-    for device_id, spd, admin, oper, n in _port_rows(db):
+    for device_id, bucket, admin, oper, n in _port_rows(db):
         if not _device_matches(ctx, device_id, category, area, pop, vendor):
             continue
-        bucket = speed_bucket(spd)
         if speed and bucket != speed:
             continue
         usage[device_id].add(bucket, _port_state(admin, oper), n)
