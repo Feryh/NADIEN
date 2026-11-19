@@ -230,3 +230,144 @@ def test_should_name_the_link_that_already_uses_the_peer_port_when_listing_a_pai
     db.commit()
     (row,) = client.get("/api/topology/lldp-unknown-peers").json()
     assert row["taken_by"] == "PAD-PAU-BNG1-M4:Eth-Trunk74 <> PAD-PAU-OLT1-ZTE:xgei-1/10/1"
+
+
+def _nni_hub(db) -> tuple[int, int]:
+    """MKS-BSW-BNG2-M8 Eth-Trunk7 goes to a third-party NNI: LLDP links it to LSM-LSM-BNG1-M4 Eth-Trunk5, and KDR's
+    trunk (one VLAN of the same NNI) names it too. Returns (KDR Eth-Trunk1, hub Eth-Trunk7)."""
+    m8 = _replaced_box(db)
+    pop = db.scalar(select(m.Pop.id))
+    lsm = m.Device(hostname="LSM-LSM-BNG1-M4", pop_id=pop)
+    db.add(lsm)
+    db.flush()
+    hub = db.scalar(select(m.Interface).where(m.Interface.device_id == m8, m.Interface.name == "Eth-Trunk7"))
+    far = m.Interface(device_id=lsm.id, name="Eth-Trunk5", if_type="bundle", speed_gbps=100, oper_status="up")
+    db.add(far)
+    db.flush()
+    db.add_all([
+        m.Interface(device_id=m8, name="100GE1/1/1", speed_gbps=100, oper_status="up", parent_id=hub.id),
+        m.Interface(device_id=lsm.id, name="100GE0/1/0", speed_gbps=100, oper_status="up", parent_id=far.id),
+        m.LldpNeighbor(device_id=m8, local_interface="100GE1/1/1", remote_system_name="LSM-LSM-BNG1-M4",
+                       remote_port_id="100GE0/1/0"),
+    ])
+    db.commit()
+    discover_links(db)
+    kdr = db.scalar(select(m.Interface).where(m.Interface.name == "Eth-Trunk1"))
+    return kdr.id, hub.id
+
+
+def test_should_refuse_a_plain_approval_onto_a_port_lldp_already_links(db, client):
+    kdr, hub = _nni_hub(db)
+    response = client.post("/api/topology/link-approvals", json={"pairs": [{"interface_id": kdr, "peer_interface_id": hub}]})
+    assert response.status_code == 409 and "dipakai link lain" in response.json()["detail"]
+
+
+def test_should_draw_and_keep_a_shared_approval_beside_the_lldp_link_when_the_port_is_an_nni(db, client):
+    kdr, hub = _nni_hub(db)
+    pair = {"interface_id": kdr, "peer_interface_id": hub, "shared": True}
+    assert client.post("/api/topology/link-approvals", json={"pairs": [pair]}).status_code == 201
+    discover_links(db)
+    assert sorted(l.discovery_source for l in db.scalars(select(m.Link))) == ["approved", "lldp"]
+
+
+# --------------------------------------------------------------------------- point-to-point /30 match
+
+
+def _p2p_case(db) -> tuple[int, int]:
+    """BGL Eth-Trunk16 (172.16.17.214/30) reaches BTM 100GE1/1/1.536 (.213/30) over a carrier: LLDP on BGL sees the
+    carrier's box, and the description still names the replaced BTM-NIX-SPE1-M4. Returns (BGL trunk, BTM port)."""
+    pop = m.Pop(code="BTM", name="Batam")
+    db.add(pop)
+    db.flush()
+    bgl, btm = m.Device(hostname="BGL-GCP-BNG1-M4", pop_id=pop.id), m.Device(hostname="BTM-NIX-SPE1-X8", pop_id=pop.id)
+    db.add_all([bgl, btm])
+    db.flush()
+    trunk = m.Interface(device_id=bgl.id, name="Eth-Trunk16", if_type="bundle", speed_gbps=100, oper_status="up",
+                        ipv4_address="172.16.17.214/30", description="to BTM-NIX-SPE1-M4 100GE0/5/1.536 via LA Lintasarta")
+    nni = m.Interface(device_id=btm.id, name="100GE1/1/1", speed_gbps=100, oper_status="up")
+    db.add_all([trunk, nni])
+    db.flush()
+    db.add_all([
+        m.Interface(device_id=bgl.id, name="100GE0/1/0", speed_gbps=100, oper_status="up", parent_id=trunk.id),
+        m.Interface(device_id=btm.id, name="100GE1/1/1.536", if_type="subinterface", oper_status="up",
+                    ipv4_address="172.16.17.213/30"),
+        m.Interface(device_id=btm.id, name="100GE1/1/1.535", if_type="subinterface", oper_status="up",
+                    ipv4_address="172.16.17.209/30"),
+        m.LldpNeighbor(device_id=bgl.id, local_interface="100GE0/1/0", remote_system_name="LA-NNI-SW01",
+                       remote_port_id="Ten1/0/7"),
+    ])
+    db.commit()
+    return trunk.id, nni.id
+
+
+def test_should_pair_the_port_carrying_the_same_30_when_lldp_sees_a_carrier_box(db, client):
+    trunk, nni = _p2p_case(db)
+    (row,) = client.get("/api/topology/lldp-unknown-peers").json()
+    assert (row["interface_id"], row["peer_interface_id"], row["peer_device"]) == (trunk, nni, "BTM-NIX-SPE1-X8")
+    assert row["ip_match"]["subnet"] == "172.16.17.212/30" and row["ip_match"]["remote_port"] == "100GE1/1/1.536"
+
+
+def test_should_not_pair_by_address_when_the_subnet_is_wider_than_31(db, client):
+    _p2p_case(db)
+    for iface in db.scalars(select(m.Interface).where(m.Interface.ipv4_address.is_not(None))):
+        iface.ipv4_address = iface.ipv4_address.replace("/30", "/29")
+    db.commit()
+    (row,) = client.get("/api/topology/lldp-unknown-peers").json()
+    assert row["ip_match"] is None and row["suggested_device"] == "BTM-NIX-SPE1-X8"  # the description guess only
+
+
+def test_should_draw_the_link_of_a_shared_30_when_discovery_runs(db):
+    trunk, nni = _p2p_case(db)
+    result = discover_links(db)
+    links = [(l.a_interface_id, l.b_interface_id, l.discovery_source) for l in db.scalars(select(m.Link))]
+    assert result.ip_links == 1 and [(set(l[:2]), l[2]) for l in links] == [({trunk, nni}, "ip")]
+
+
+def test_should_leave_the_30_alone_when_lldp_links_its_port_to_another_inventory_device(db):
+    trunk, _ = _p2p_case(db)
+    member = db.scalar(select(m.Interface).where(m.Interface.parent_id == trunk))
+    other = m.Device(hostname="BGL-GCP-ME1-M8", pop_id=db.scalar(select(m.Pop.id)))
+    db.add(other)
+    db.flush()
+    db.add(m.Interface(device_id=other.id, name="100GE0/2/0", speed_gbps=100, oper_status="up"))
+    lldp = db.scalar(select(m.LldpNeighbor).where(m.LldpNeighbor.local_interface == member.name))
+    lldp.remote_system_name, lldp.remote_port_id = "BGL-GCP-ME1-M8", "100GE0/2/0"
+    db.commit()
+    discover_links(db)
+    assert [l.discovery_source for l in db.scalars(select(m.Link))] == ["lldp"]
+
+
+def test_should_drop_the_address_pair_link_when_one_end_loses_its_address(db):
+    _p2p_case(db)
+    discover_links(db)
+    db.scalar(select(m.Interface).where(m.Interface.name == "100GE1/1/1.536")).ipv4_address = None
+    db.commit()
+    assert discover_links(db).superseded == 1 and db.scalars(select(m.Link)).all() == []
+
+
+def test_should_drop_the_row_from_the_unknown_lldp_list_once_discovery_draws_its_30(db, client):
+    _p2p_case(db)
+    discover_links(db)
+    assert client.get("/api/topology/lldp-unknown-peers").json() == []
+
+
+def test_should_keep_the_described_switch_links_when_a_30_crosses_that_l2_switch(db):
+    """PEIN Eth-Trunk30 and PE1 Eth-Trunk10 both describe the DS1 switch between them; their /30 is an L3 hop
+    across it, not a cable, so the two described links stay and no address-pair link is drawn."""
+    pop = m.Pop(code="SBY", name="Surabaya")
+    db.add(pop)
+    db.flush()
+    pein, pe, ds = (m.Device(hostname=h, pop_id=pop.id) for h in ("PEIN1-H-SBY-NIX", "PE1-ATN910-SBY-NIX", "DS1-S6730-SBY-NIX"))
+    db.add_all([pein, pe, ds])
+    db.flush()
+    db.add_all([
+        m.Interface(device_id=pein.id, name="Eth-Trunk30", if_type="bundle", oper_status="up", ipv4_address="10.9.0.1/30",
+                    description="to DS1-S6730-SBY-NIX Eth-Trunk30"),
+        m.Interface(device_id=pe.id, name="Eth-Trunk10", if_type="bundle", oper_status="up", ipv4_address="10.9.0.2/30",
+                    description="to DS1-S6730-SBY-NIX Eth-Trunk31"),
+        m.Interface(device_id=ds.id, name="Eth-Trunk30", if_type="bundle", oper_status="up", description="to PEIN1-H-SBY-NIX Eth-Trunk30"),
+        m.Interface(device_id=ds.id, name="Eth-Trunk31", if_type="bundle", oper_status="up", description="to PE1-ATN910-SBY-NIX Eth-Trunk10"),
+    ])
+    db.commit()
+    result = discover_links(db)
+    assert (result.config_links, result.ip_links) == (2, 0)

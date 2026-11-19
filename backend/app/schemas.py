@@ -246,7 +246,7 @@ class LinkCreate(BaseModel):
     latency_ms: float | None = Field(default=None, ge=0)
     distance_km: float | None = Field(default=None, ge=0)
     status: Literal["up", "down", "planned"] = "up"
-    discovery_source: Literal["lldp", "config", "approved", "manual"] = "manual"
+    discovery_source: Literal["lldp", "config", "approved", "ip", "manual"] = "manual"
     fiber_id: int | None = None
     wavelength_id: int | None = None
 
@@ -360,6 +360,9 @@ class TopologyLayoutIn(BaseModel):
 class LinkApprovalPair(BaseModel):
     interface_id: int
     peer_interface_id: int
+    # The port is shared on purpose (a bundle to a third-party NNI, one VLAN per far end): approve even though
+    # LLDP or the config already links it to another device.
+    shared: bool = False
 
 
 class LinkApprovalsIn(BaseModel):
@@ -371,6 +374,7 @@ class LinkApprovalsIn(BaseModel):
 class DiscoveryResult(BaseModel):
     lldp_links: int
     config_links: int
+    ip_links: int = 0  # pairs on one /30 or /31
     created: int
     updated: int
     marked_down: int

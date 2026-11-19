@@ -196,7 +196,7 @@ def approve_links(payload: s.LinkApprovalsIn, user: CurrentUser = Depends(requir
     for pair in payload.pairs:
         savepoint = db.begin_nested()
         try:
-            links.append(approve_link(db, pair.interface_id, pair.peer_interface_id, user.username))
+            links.append(approve_link(db, pair.interface_id, pair.peer_interface_id, user.username, shared=pair.shared))
             savepoint.commit()
         except ApprovalError as error:
             savepoint.rollback()

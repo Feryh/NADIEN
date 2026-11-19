@@ -125,7 +125,7 @@ export const ENTITIES: Entity[] = [
       { name: 'latency_ms', label: 'Latency ms', type: 'number' },
       { name: 'distance_km', label: 'km', type: 'number', hideInTable: true },
       { name: 'status', label: 'Status', type: 'select', options: ['up', 'down', 'planned'] },
-      { name: 'discovery_source', label: 'Source', type: 'select', options: ['lldp', 'config', 'manual'] },
+      { name: 'discovery_source', label: 'Source', type: 'select', options: ['lldp', 'ip', 'config', 'approved', 'manual'] },
       { name: 'fiber_id', label: 'Fiber', type: 'ref', ref: 'fibers', hideInTable: true },
       { name: 'wavelength_id', label: 'Wavelength', type: 'ref', ref: 'wavelengths', hideInTable: true },
     ],
