@@ -5,7 +5,7 @@ import { api, DeviceSummary as Summary } from '../api'
 // Inventory page key per backend category (entities.ts DEVICE_CATEGORIES).
 const PAGE: Record<string, string> = {
   router: 'devices-router', metro: 'devices-metro', switch: 'devices-switch', csr: 'devices-csr', olt: 'devices-olt',
-  access: 'devices-access',
+  cpe: 'devices-cpe',
 }
 
 function top(counts: Record<string, number>, n = 3): string {

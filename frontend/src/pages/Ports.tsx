@@ -55,10 +55,9 @@ const CATEGORY_TABS = [
   { key: '', label: 'Semua' },
   { key: 'router', label: 'Router' },
   { key: 'metro', label: 'Metro' },
-  { key: 'switch', label: 'Switch (DS)' },
+  { key: 'switch', label: 'Switch (DS/Access)' },
   { key: 'csr', label: 'CSR' },
   { key: 'olt', label: 'OLT' },
-  { key: 'access', label: 'Access/Switch' },
   { key: 'cpe', label: 'CPE' },
   { key: 'other', label: 'Lainnya' },
 ]

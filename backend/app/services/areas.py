@@ -679,19 +679,18 @@ def site_for(hostname: str, pop_code: str) -> str:
 CATEGORIES: dict[str, list[str]] = {
     "router": ["p", "pe", "bng", "dci"],
     "metro": ["agg"],
-    "switch": ["switch"],
+    # Distribution switches (DS) and access switches (SW): one category in inventory and port capacity.
+    "switch": ["switch", "access"],
     "csr": ["csr"],
     "olt": ["olt"],
-    "access": ["access"],
     "cpe": ["cpe"],
 }
 CATEGORY_LABELS = {
     "router": "Router (P/PE/BNG/DCI)",
     "metro": "Metro / Aggregation",
-    "switch": "Switch (DS)",
+    "switch": "Switch (DS / Access)",
     "csr": "CSR (Cell Site Router)",
     "olt": "OLT",
-    "access": "Access / Switch",
     "cpe": "CPE (Customer Premises)",
     "other": "Lainnya",
 }

@@ -1,8 +1,40 @@
-"""Huawei VRP (NE40E / NE8000) current-configuration parser."""
+"""Huawei VRP (NE40E / NE8000) current-configuration parser, plus the uplink boards of Huawei OLTs (MA5600T/MA5800)."""
+
+import re
 
 from .base import ParsedConfig, find_blocks, indent_tree, ip_only, to_cidr, to_int
 
 LOOPBACKS = ("loopback0",)
+
+# OLT uplink boards: `interface mpu 0/8` holds per-port lines (`speed 1 10000`, `shutdown 2` …) for ports
+# 0/8/0-3. Observium reports only the ports in use, as `ethernet0/8/1`; the others still exist on the board.
+_OLT_BOARD = re.compile(r"^\s*interface (mpu|giu|eth|ethb|scu) (\d+)/(\d+)\s*$")
+_OLT_BOARD_TYPES = {"mpu", "giu", "eth", "ethb", "scu"}
+_OLT_PORT_LINE = re.compile(r"^\s*(undo\s+)?(speed|auto-neg|shutdown|mdi|duplex|flow-control|native-vlan)\s+(\d+)\b\s*(\S*)")
+_OLT_SECTION_END = re.compile(r"^\s*(interface\s|<|#|quit\b|return\b)")
+
+
+def _olt_uplink_ports(text: str, cfg: ParsedConfig) -> None:
+    """The OLT config is not indented consistently (sections end where the next `<section>` marker starts), so the
+    board blocks are read line by line."""
+    board: tuple[str, str] | None = None
+    for line in text.splitlines():
+        if match := _OLT_BOARD.match(line):
+            board = (match.group(2), match.group(3))
+            continue
+        if _OLT_SECTION_END.match(line):
+            board = None
+            continue
+        match = _OLT_PORT_LINE.match(line) if board else None
+        if not match:
+            continue
+        undo, command, port, value = match.groups()
+        itf = cfg.iface(f"ethernet{board[0]}/{board[1]}/{port}")
+        itf.card_port = True
+        if command == "shutdown":
+            itf.shutdown = not undo
+        elif command == "speed" and not undo and value.isdigit():
+            itf.speed_gbps = int(value) / 1000
 
 
 def parse(text: str) -> ParsedConfig:
@@ -11,7 +43,7 @@ def parse(text: str) -> ParsedConfig:
         words = block.words
         if words[0] == "sysname" and len(words) > 1:
             cfg.hostname = words[1]
-        elif words[0] == "interface" and len(words) > 1:
+        elif words[0] == "interface" and len(words) > 1 and not (len(words) == 3 and words[1] in _OLT_BOARD_TYPES):
             name = words[1]
             itf = cfg.iface(name)
             itf.is_bundle = name.lower().startswith("eth-trunk") and "." not in name
@@ -45,4 +77,5 @@ def parse(text: str) -> ParsedConfig:
                 if len(w) > i + 2:
                     cfg.srv6_locator = f"{w[i + 1]}/{w[i + 2]}"
                     break
+    _olt_uplink_ports(text, cfg)
     return cfg
