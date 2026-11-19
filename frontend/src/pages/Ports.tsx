@@ -29,7 +29,8 @@ interface DeviceRow extends Usage {
   role: string
   category: string
   vendor: string | null
-  speeds: Record<string, { used: number; idle: number; disabled: number }>
+  available: number  // idle + disabled: free ports, shutdown ones included
+  speeds: Record<string, { used: number; idle: number; disabled: number; available: number }>
 }
 interface InterfaceRow {
   id: number
@@ -143,7 +144,7 @@ export default function Ports() {
         if (speedBucket(iface.speed_gbps) !== speedClass) return false
         return state === 'used'
           ? iface.admin_status !== 'down' && iface.oper_status === 'up'
-          : iface.admin_status !== 'down' && iface.oper_status !== 'up'
+          : iface.admin_status === 'down' || iface.oper_status !== 'up'
       }))
     } catch (e) {
       setInterfaceError((e as Error).message)
@@ -186,7 +187,8 @@ export default function Ports() {
         <p className="hint">
           Port fisik yang dilaporkan Observium saja, dengan kecepatan dari ifSpeed/ifHighSpeed. Bundle/LAG, sub-interface, dan
           interface virtual (VLAN/SVI, manajemen, tunnel) tidak dihitung. <b>Terpakai</b> = oper up · <b>Idle</b> = admin up tapi
-          oper down (siap dipakai) · <b>Disabled</b> = admin down (shutdown).
+          oper down (siap dipakai) · <b>Disabled</b> = admin down (shutdown). Di tabel perangkat, idle per kapasitas
+          sudah termasuk port shutdown: semua port yang bisa dipakai.
           {summary && summary.config_only_ports > 0 && (
             <> {n(summary.config_only_ports)} port yang hanya ada di config RANCID (tanpa data Observium) tidak ikut dihitung.</>
           )}
@@ -245,7 +247,7 @@ export default function Ports() {
                         <b>{speedClass}</b> ({' '}
                         <button type="button" className="port-count-link" onClick={() => showInterfaces(d.device_id, speedClass, 'used')} title={`Lihat port ${speedClass} yang terpakai`}>{n(counts.used)}</button>
                         /{' '}
-                        <button type="button" className="port-count-link" onClick={() => showInterfaces(d.device_id, speedClass, 'idle')} title={`Lihat port ${speedClass} yang idle`}>{n(counts.idle)}</button>
+                        <button type="button" className="port-count-link" onClick={() => showInterfaces(d.device_id, speedClass, 'idle')} title={`Lihat port ${speedClass} yang idle: ${n(counts.idle)} oper down + ${n(counts.disabled)} shutdown`}>{n(counts.available)}</button>
                         )
                       </span>)}
                     </td>
@@ -261,10 +263,12 @@ export default function Ports() {
                         {interfaceError && <div className="error">{interfaceError}</div>}
                         {!interfaceLoading && !interfaceError && <div className="interface-list">
                           {expandedInterfaces.length ? expandedInterfaces.map((iface) => (
-                            <span key={iface.id} className="speed-chip" title={iface.description ?? undefined}>{iface.name}</span>
+                            <span key={iface.id} className="speed-chip" title={iface.description ?? undefined}>
+                              {iface.name}{expanded.state === 'idle' && iface.admin_status === 'down' && <span className="muted"> (shutdown)</span>}
+                            </span>
                           )) : <span className="muted">Tidak ada interface pada status ini</span>}
                         </div>}
-                        {selectedClass && <span className="muted small">{` · ${n(selectedClass[1][expanded.state])} interface`}</span>}
+                        {selectedClass && <span className="muted small">{` · ${n(expanded.state === 'idle' ? selectedClass[1].available : selectedClass[1].used)} interface`}</span>}
                       </td>
                     </tr>,
                   )

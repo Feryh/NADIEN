@@ -1071,7 +1071,9 @@ def port_devices(
     if needle:
         rows = [r for r in rows if needle in r["hostname"].lower()]
     reverse = sort != "hostname"
-    rows = sorted(rows, key=lambda r: r[sort] if sort != "hostname" else r["hostname"], reverse=reverse)
+    # "Idle" on the device list means ports that can be put to use: admin-down (shutdown) ones included.
+    field = "available" if sort == "idle" else sort
+    rows = sorted(rows, key=lambda r: r[field] if sort != "hostname" else r["hostname"], reverse=reverse)
     return {"total_devices": len(rows), "devices": rows[:limit]}
 
 
@@ -1099,7 +1101,9 @@ def _device_port_usage(db: Session, category, area, pop, vendor, speed) -> list[
             "device_id": device_id, "hostname": d.hostname, "pop": ctx.pop_code(device_id),
             "area": ctx.area_of_device(device_id), "site": site_for(d.hostname, ctx.pop_code(device_id)),
             "role": d.role, "category": category_for(d.role), "vendor": ctx.vendors.get(d.vendor_id or -1),
-            **u.summary(),
-            "speeds": {r["speed"]: {"used": r["used"], "idle": r["idle"], "disabled": r["disabled"]} for r in u.speeds()},
+            **u.summary(), "available": u.idle + u.disabled,
+            # available = idle + disabled: a shutdown port is a free port on the device, ready to be enabled.
+            "speeds": {r["speed"]: {"used": r["used"], "idle": r["idle"], "disabled": r["disabled"],
+                                   "available": r["idle"] + r["disabled"]} for r in u.speeds()},
         })
     return rows
