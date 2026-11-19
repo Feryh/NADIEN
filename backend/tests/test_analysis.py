@@ -210,9 +210,20 @@ def test_port_summary_and_devices(net):
     assert jkt["totals"]["total"] == 8
 
     devices = api.get("/api/inventory/ports/devices?sort=idle").json()["devices"]
-    assert devices[0]["hostname"] == "JKT-ABW-OLT1-HW" and devices[0]["idle"] == 2 and devices[0]["site"] == "ABW"
+    top = {d["hostname"] for d in devices if d["available"] == devices[0]["available"]}
+    assert devices[0]["available"] == 2 and top == {"JKT-ABW-OLT1-HW", "JKT-ABW-P1-NCS"}  # 2 idle vs 1 idle + 1 shutdown
+    assert next(d for d in devices if d["hostname"] == "JKT-ABW-OLT1-HW")["site"] == "ABW"
     ten_g = api.get("/api/inventory/ports/devices?speed=10G").json()
     assert {r["hostname"] for r in ten_g["devices"]} == {"JKT-ABW-OLT1-HW", "JKT-CSF-ME1-HW"}
+
+
+def test_should_count_shutdown_ports_as_idle_capacity_when_listing_devices(net):
+    api, _ = net
+    devices = api.get("/api/inventory/ports/devices").json()["devices"]
+    with_shutdown = next(d for d in devices if any(c["disabled"] for c in d["speeds"].values()))
+    speed = next(c for c in with_shutdown["speeds"].values() if c["disabled"])
+    assert speed["available"] == speed["idle"] + speed["disabled"]
+    assert with_shutdown["available"] == with_shutdown["idle"] + with_shutdown["disabled"]
 
 
 def test_areas_and_auto_assign(net, db):

@@ -29,7 +29,8 @@ interface DeviceRow extends Usage {
   role: string
   category: string
   vendor: string | null
-  speeds: Record<string, { used: number; idle: number; disabled: number }>
+  available: number  // idle + disabled: free ports, shutdown ones included
+  speeds: Record<string, { used: number; idle: number; disabled: number; available: number }>
 }
 interface InterfaceRow {
   id: number
@@ -45,10 +46,6 @@ const STANDARD_SPEEDS: [number, string][] = [
   [0.01, '10M'], [0.1, '100M'], [1, '1G'], [2.5, '2.5G'], [10, '10G'], [25, '25G'], [40, '40G'],
   [50, '50G'], [100, '100G'], [200, '200G'], [400, '400G'], [800, '800G'],
 ]
-function speedBucket(speed: number | null): string {
-  if (speed == null || speed <= 0) return 'Unknown'
-  return STANDARD_SPEEDS.find(([nominal]) => Math.abs(speed - nominal) <= nominal * 0.02)?.[1] ?? 'Non-standar'
-}
 function speedOrder(bucket: string): number {
   const index = STANDARD_SPEEDS.findIndex(([, label]) => label === bucket)
   return index >= 0 ? index : bucket === 'Non-standar' ? -1 : -2
@@ -138,13 +135,9 @@ export default function Ports() {
     setInterfaceError(null)
     setInterfaceLoading(true)
     try {
-      const interfaces = await api.get<InterfaceRow[]>(`/interfaces?device_id=${deviceId}&if_type=physical&limit=10000`)
-      setExpandedInterfaces(interfaces.filter((iface) => {
-        if (speedBucket(iface.speed_gbps) !== speedClass) return false
-        return state === 'used'
-          ? iface.admin_status !== 'down' && iface.oper_status === 'up'
-          : iface.admin_status !== 'down' && iface.oper_status !== 'up'
-      }))
+      // The backend applies the same port-class and state rules as the counts, so the list matches the number.
+      const query = new URLSearchParams({ speed: speedClass, state })
+      setExpandedInterfaces(await api.get<InterfaceRow[]>(`/inventory/ports/devices/${deviceId}/ports?${query}`))
     } catch (e) {
       setInterfaceError((e as Error).message)
     } finally {
@@ -184,9 +177,12 @@ export default function Ports() {
           </select>
         </div>
         <p className="hint">
-          Port fisik yang dilaporkan Observium saja, dengan kecepatan dari ifSpeed/ifHighSpeed. Bundle/LAG, sub-interface, dan
+          Port fisik yang dilaporkan Observium saja, dikelompokkan menurut jenis port (GigabitEthernet = 1G,
+          XGigabitEthernet = 10G, dst.), bukan speed link saat ini; bila Observium melaporkan speed lebih besar (mis. port 10G
+          Huawei NE bernama GigabitEthernet) atau nama tidak menyebut jenis, dipakai ifSpeed/ifHighSpeed. Bundle/LAG, sub-interface, dan
           interface virtual (VLAN/SVI, manajemen, tunnel) tidak dihitung. <b>Terpakai</b> = oper up · <b>Idle</b> = admin up tapi
-          oper down (siap dipakai) · <b>Disabled</b> = admin down (shutdown).
+          oper down (siap dipakai) · <b>Disabled</b> = admin down (shutdown). Di tabel perangkat, idle per kapasitas
+          sudah termasuk port shutdown: semua port yang bisa dipakai.
           {summary && summary.config_only_ports > 0 && (
             <> {n(summary.config_only_ports)} port yang hanya ada di config RANCID (tanpa data Observium) tidak ikut dihitung.</>
           )}
@@ -245,7 +241,7 @@ export default function Ports() {
                         <b>{speedClass}</b> ({' '}
                         <button type="button" className="port-count-link" onClick={() => showInterfaces(d.device_id, speedClass, 'used')} title={`Lihat port ${speedClass} yang terpakai`}>{n(counts.used)}</button>
                         /{' '}
-                        <button type="button" className="port-count-link" onClick={() => showInterfaces(d.device_id, speedClass, 'idle')} title={`Lihat port ${speedClass} yang idle`}>{n(counts.idle)}</button>
+                        <button type="button" className="port-count-link" onClick={() => showInterfaces(d.device_id, speedClass, 'idle')} title={`Lihat port ${speedClass} yang idle: ${n(counts.idle)} oper down + ${n(counts.disabled)} shutdown`}>{n(counts.available)}</button>
                         )
                       </span>)}
                     </td>
@@ -261,10 +257,12 @@ export default function Ports() {
                         {interfaceError && <div className="error">{interfaceError}</div>}
                         {!interfaceLoading && !interfaceError && <div className="interface-list">
                           {expandedInterfaces.length ? expandedInterfaces.map((iface) => (
-                            <span key={iface.id} className="speed-chip" title={iface.description ?? undefined}>{iface.name}</span>
+                            <span key={iface.id} className="speed-chip" title={iface.description ?? undefined}>
+                              {iface.name}{expanded.state === 'idle' && iface.admin_status === 'down' && <span className="muted"> (shutdown)</span>}
+                            </span>
                           )) : <span className="muted">Tidak ada interface pada status ini</span>}
                         </div>}
-                        {selectedClass && <span className="muted small">{` · ${n(selectedClass[1][expanded.state])} interface`}</span>}
+                        {selectedClass && <span className="muted small">{` · ${n(expanded.state === 'idle' ? selectedClass[1].available : selectedClass[1].used)} interface`}</span>}
                       </td>
                     </tr>,
                   )
