@@ -85,7 +85,7 @@ def test_unassigned_devices_move_to_their_city(db):
 
 def test_category_and_speed_bucket():
     assert [category_for(r) for r in ("pe", "bng", "agg", "olt", "access", None)] == [
-        "router", "router", "metro", "olt", "access", "other"]
+        "router", "router", "metro", "olt", "switch", "other"]
     assert [speed_bucket(s) for s in (None, 0, 0.1, 1, 10, 2.5, 100, 400)] == [
         "Unknown", "Unknown", "100M", "1G", "10G", "2.5G", "100G", "400G"]
 

@@ -256,10 +256,9 @@ const deviceEntity = ENTITIES.find((e) => e.key === 'devices') as Entity
 const DEVICE_CATEGORIES: [string, string, string][] = [
   ['devices-router', 'Router (P/PE/BNG/DCI)', 'p,pe,bng,dci'],
   ['devices-metro', 'Metro / Aggregation', 'agg'],
-  ['devices-switch', 'Switch (DS)', 'switch'],
+  ['devices-switch', 'Switch (DS / Access)', 'switch,access'],
   ['devices-csr', 'CSR (Cell Site Router)', 'csr'],
   ['devices-olt', 'OLT', 'olt'],
-  ['devices-access', 'Access / Switch', 'access'],
   ['devices-cpe', 'CPE (Customer Premises)', 'cpe'],
 ]
 ENTITIES.splice(

@@ -48,7 +48,7 @@ def _apply_pon_ports(db: Session, device: m.Device, cfg: ParsedConfig, index: di
         if iface is None:
             iface = m.Interface(device_id=device.id, name=name, if_type="physical", mib_type="PonStatus",
                                 speed_gbps=PON_GBPS.get(p.pon), admin_status="down" if p.shutdown else "up",
-                                oper_status="down")
+                                oper_status="down", config_port=True)
             db.add(iface)
             db.flush()
             index[norm_if(name)] = iface
@@ -56,6 +56,34 @@ def _apply_pon_ports(db: Session, device: m.Device, cfg: ParsedConfig, index: di
         if iface.optic_type != p.pon:
             iface.optic_type = p.pon
             counts["pon_types_set"] += 1
+
+
+_SLOT_PORT_TAIL = re.compile(r"(\d+/\d+)/(\d+)$")
+
+
+def _apply_card_ports(db: Session, device: m.Device, cfg: ParsedConfig, index: dict[str, m.Interface],
+                      counts: Counter) -> None:
+    """Card ports from the config (OLT uplink boards) that the NMS does not report: added as idle or disabled ports
+    that count in the device's port capacity. A port the NMS reports under another name style
+    (`Huawei-MAN-VNR0-Et 0/8/1`) is matched on its frame/slot/port."""
+    by_tail: dict[str, m.Interface] = {}
+    slot_speed: dict[str, float] = {}
+    for iface in index.values():
+        if iface.if_type == "physical" and (match := _SLOT_PORT_TAIL.search(iface.name)):
+            by_tail[match.group(0)] = iface
+            if iface.speed_gbps:
+                slot_speed[match.group(1)] = max(slot_speed.get(match.group(1), 0.0), iface.speed_gbps)
+    for p in cfg.interfaces.values():
+        match = _SLOT_PORT_TAIL.search(p.name) if p.card_port else None
+        if match is None or norm_if(p.name) in index or match.group(0) in by_tail:
+            continue
+        iface = m.Interface(device_id=device.id, name=p.name, if_type="physical", mib_type="ethernetCsmacd",
+                            speed_gbps=p.speed_gbps or slot_speed.get(match.group(1)),
+                            admin_status="down" if p.shutdown else "up", oper_status="down", config_port=True)
+        db.add(iface)
+        db.flush()
+        index[norm_if(p.name)] = iface
+        counts["card_ports_created"] += 1
 
 
 def apply_config(db: Session, device: m.Device, cfg: ParsedConfig, create_ports: bool = True) -> dict:
@@ -87,8 +115,10 @@ def apply_config(db: Session, device: m.Device, cfg: ParsedConfig, create_ports:
         return iface
 
     _apply_pon_ports(db, device, cfg, index, counts)
+    _apply_card_ports(db, device, cfg, index, counts)
     for p in cfg.interfaces.values():
-        if SKIP_PORT.match(p.name) or p.pon:  # loopback/mgmt: on the device record; PON ports: handled above
+        # loopback/mgmt: on the device record; PON and card ports: handled above
+        if SKIP_PORT.match(p.name) or p.pon or p.card_port:
             continue
         known = norm_if(p.name) in index
         useful = p.description or p.ipv4 or p.bundle or p.is_bundle

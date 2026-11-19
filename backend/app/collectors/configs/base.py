@@ -23,6 +23,10 @@ class ParsedInterface:
     # OLT PON port: its technology ("GPON", "XGS-PON" …) and (slot, port), from the interface type in the config.
     pon: str | None = None
     pon_slot_port: tuple[int, int] | None = None
+    # A port the config proves sits on a card (OLT uplink board), named as the NMS names it. Created even when the
+    # NMS leaves it out (no optic, never used), with the speed configured for it.
+    card_port: bool = False
+    speed_gbps: float | None = None
 
 
 @dataclass
@@ -168,7 +172,7 @@ _SPEED_PREFIXES: list[tuple[str, float]] = [
     ("100ge", 100), ("cgei", 100), ("fiftygige", 50), ("50ge", 50), ("fortygige", 40),
     ("fortygigabitethernet", 40), ("40ge", 40), ("twentyfivegige", 25), ("25ge", 25), ("xxvgei", 25),
     ("tengige", 10), ("tengigabitethernet", 10), ("xgigabitethernet", 10), ("10ge", 10), ("xgei", 10),
-    ("te", 10), ("xe", 10), ("gigabitethernet", 1), ("gige", 1), ("ge", 1), ("gei", 1), ("gi", 1),
+    ("te", 10), ("xe", 10), ("qsfp28", 100), ("qsfp+", 40), ("sfp28", 25), ("sfp+", 10), ("xfp", 10), ("gigabitethernet", 1), ("gige", 1), ("ge", 1), ("gei", 1), ("gi", 1),
     ("fastethernet", 0.1), ("fa", 0.1),
 ]
 _FIBERHOME_ETH = re.compile(r"^eth-(\d*)gi")  # eth-gi / eth-10gi / eth-25gi / eth-100gi

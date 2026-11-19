@@ -162,6 +162,9 @@ class Interface(TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(String(512))
     ipv4_address: Mapped[str | None] = mapped_column(String(64))
     optic_type: Mapped[str | None] = mapped_column(String(64))
+    # A port the config proves exists on a card (OLT PON ports, OLT uplink boards) though the NMS leaves it out;
+    # it counts in port capacity like the ports Observium reports.
+    config_port: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     # Traffic rate at the last Observium utilization sync: ports without a link (PON ports) have no samples.
     in_gbps: Mapped[float | None] = mapped_column(Float)
     out_gbps: Mapped[float | None] = mapped_column(Float)

@@ -45,7 +45,6 @@ from ..services.areas import (
     bucket_sort_key,
     category_for,
     site_for,
-    PON_GBPS,
     port_bucket,
 )
 from ..services.capacity import occupancy_pct
@@ -973,13 +972,13 @@ class _Usage:
 
 
 def _counted_ports():
-    """Physical ports that count in port capacity: those Observium reports, plus OLT PON ports from the config
-    (optic_type holds their technology). Other ports known only from a config file may not exist on the box; an
-    OLT config lists every PON port of its cards, while Observium leaves out the ones not in service."""
+    """Physical ports that count in port capacity: those Observium reports, plus the card ports an OLT config proves
+    (config_port: PON ports and uplink-board ports Observium leaves out because they are not in service). Other
+    ports known only from a config file may not exist on the box."""
     return (select(m.Interface)
             .outerjoin(m.ObserviumPort, m.ObserviumPort.interface_id == m.Interface.id)
             .where(m.Interface.if_type == "physical",
-                   or_(m.ObserviumPort.interface_id.is_not(None), m.Interface.optic_type.in_(list(PON_GBPS)))))
+                   or_(m.ObserviumPort.interface_id.is_not(None), m.Interface.config_port.is_(True))))
 
 
 def _port_rows(db: Session) -> list[tuple[int, str, str | None, str | None, int]]:
@@ -1000,7 +999,7 @@ def _config_only_ports(db: Session) -> dict[int, int]:
         select(m.Interface.device_id, func.count())
         .outerjoin(m.ObserviumPort, m.ObserviumPort.interface_id == m.Interface.id)
         .where(m.Interface.if_type == "physical", m.ObserviumPort.interface_id.is_(None),
-               or_(m.Interface.optic_type.is_(None), m.Interface.optic_type.not_in(list(PON_GBPS))))
+               m.Interface.config_port.is_(False))
         .group_by(m.Interface.device_id)
     ).all())
 
