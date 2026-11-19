@@ -35,10 +35,12 @@ ROLE_TOKENS: dict[str, str] = {
     "BNG": "bng", "BRAS": "bng",
     "DCI": "dci",
     "P": "p", "CORE": "p", "CR": "p",
-    "PE": "pe", "PEIN": "pe", "PESH": "pe", "CGW": "pe", "NNI": "pe", "BR": "pe",
+    "PE": "pe", "PESH": "pe",
+    "PEIN": "agg",  # PEIN1-H-JKTS-IDT: metro/aggregation PEs; a hostname that also says SPE stays a PE "CGW": "pe", "NNI": "pe", "BR": "pe",
     "ME": "agg", "AGG": "agg", "CS": "agg",
     "DS": "switch",  # DS1-S6730-…, DS2-C3750-…: distribution switches, not routers
     "SW": "access", "ACC": "access", "AC": "access", "CSG": "access",
+    "CPE": "cpe",  # TNG-BJJ-CPE1-SRX300, CPE1-ATN910-…: customer-premises routers, not PEs
 }
 _TOKEN_SPLIT = re.compile(r"[-_.\s]+")
 
@@ -150,7 +152,10 @@ def role_from_hostname(hostname: str) -> str | None:
     tokens = _tokens(hostname)
     if tokens and tokens[0].startswith("DS"):  # DS1-…, DS9-…, DSI-…, DSIN1-…: this network's switches
         return "switch"
-    return next((role for token in _tokens(hostname) if (role := _role_word(token))), None)
+    words = [token.rstrip("0123456789") for token in tokens]
+    if "PEIN" in words and "SPE" in words:
+        return "pe"
+    return next((role for token in tokens if (role := _role_word(token))), None)
 
 
 def guess_role(hostname: str) -> str:

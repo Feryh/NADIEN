@@ -2,7 +2,7 @@
 // so both read the same role colours, line widths and short hostnames.
 
 export const ROLE_COLOR: Record<string, string> = {
-  p: '#6366f1', dci: '#f97316', pe: '#0ea5e9', bng: '#e879f9', agg: '#14b8a6', switch: '#22d3ee', csr: '#fb7185', access: '#64748b', olt: '#a3e635',
+  p: '#6366f1', dci: '#f97316', pe: '#0ea5e9', bng: '#e879f9', agg: '#14b8a6', switch: '#22d3ee', csr: '#fb7185', access: '#64748b', olt: '#a3e635', cpe: '#facc15',
 }
 
 export const UNKNOWN_HEX = '#94a3b8'

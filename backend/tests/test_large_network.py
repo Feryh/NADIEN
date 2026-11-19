@@ -44,7 +44,7 @@ def test_infer_pop_role_first_hostnames(hostname, pop):
     ("BKS-LBJ-ME1-NCS540", "agg"),
     ("DS1-S6730-BGR-BOB", "switch"),
     ("PE1-ATN910-PTT-WTR", "pe"),
-    ("PEIN1-H-JKTT-CPY1", "pe"),
+    ("PEIN1-H-JKTT-CPY1", "agg"),
     ("P1-NCS5504-SMG-RMH-BALI", "p"),
     ("SW-STREAM-2A-NDC", "access"),
     ("JKT-CSF-CLDMGMT-02", "pe"),  # nothing recognisable -> default
