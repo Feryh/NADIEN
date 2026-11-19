@@ -12,7 +12,7 @@ from typing import Any
 import zipfile
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from pydantic import BaseModel, Field
@@ -45,6 +45,7 @@ from ..services.areas import (
     bucket_sort_key,
     category_for,
     site_for,
+    PON_GBPS,
     port_bucket,
 )
 from ..services.capacity import occupancy_pct
@@ -971,18 +972,25 @@ class _Usage:
         return rows
 
 
+def _counted_ports():
+    """Physical ports that count in port capacity: those Observium reports, plus OLT PON ports from the config
+    (optic_type holds their technology). Other ports known only from a config file may not exist on the box; an
+    OLT config lists every PON port of its cards, while Observium leaves out the ones not in service."""
+    return (select(m.Interface)
+            .outerjoin(m.ObserviumPort, m.ObserviumPort.interface_id == m.Interface.id)
+            .where(m.Interface.if_type == "physical",
+                   or_(m.ObserviumPort.interface_id.is_not(None), m.Interface.optic_type.in_(list(PON_GBPS)))))
+
+
 def _port_rows(db: Session) -> list[tuple[int, str, str | None, str | None, int]]:
-    """Physical ports Observium reports as (device, port class, admin, oper, count). Only those count: ports known
-    only from a config file may not exist on the box. Logical interfaces are not physical. The class comes from
-    the port type in the name (port_bucket), falling back to Observium's ifHighSpeed/ifSpeed."""
+    """Counted ports as (device, port class, admin, oper, count). The class is the PON technology for OLT PON
+    ports, else the port type in the name (port_bucket), falling back to Observium's ifHighSpeed/ifSpeed."""
     counts: Counter = Counter()
-    for device_id, name, speed, admin, oper in db.execute(
-        select(m.Interface.device_id, m.Interface.name, m.Interface.speed_gbps, m.Interface.admin_status,
-               m.Interface.oper_status)
-        .join(m.ObserviumPort, m.ObserviumPort.interface_id == m.Interface.id)
-        .where(m.Interface.if_type == "physical")
-    ):
-        counts[(device_id, port_bucket(name, speed), admin, oper)] += 1
+    query = _counted_ports().with_only_columns(
+        m.Interface.device_id, m.Interface.name, m.Interface.speed_gbps, m.Interface.admin_status,
+        m.Interface.oper_status, m.Interface.optic_type)
+    for device_id, name, speed, admin, oper, optic in db.execute(query):
+        counts[(device_id, port_bucket(name, speed, optic), admin, oper)] += 1
     return [(*key, n) for key, n in counts.items()]
 
 
@@ -991,7 +999,8 @@ def _config_only_ports(db: Session) -> dict[int, int]:
     return dict(db.execute(
         select(m.Interface.device_id, func.count())
         .outerjoin(m.ObserviumPort, m.ObserviumPort.interface_id == m.Interface.id)
-        .where(m.Interface.if_type == "physical", m.ObserviumPort.interface_id.is_(None))
+        .where(m.Interface.if_type == "physical", m.ObserviumPort.interface_id.is_(None),
+               or_(m.Interface.optic_type.is_(None), m.Interface.optic_type.not_in(list(PON_GBPS))))
         .group_by(m.Interface.device_id)
     ).all())
 
@@ -1085,17 +1094,12 @@ def device_ports_in_class(device_id: int, speed: str = Query(..., max_length=16)
     """The ports behind one count of the device list: same port class and state rules, idle including shutdown."""
     if db.get(m.Device, device_id) is None:
         raise HTTPException(404, "Device not found")
-    rows = db.execute(
-        select(m.Interface.id, m.Interface.name, m.Interface.speed_gbps, m.Interface.admin_status,
-               m.Interface.oper_status, m.Interface.description)
-        .join(m.ObserviumPort, m.ObserviumPort.interface_id == m.Interface.id)
-        .where(m.Interface.device_id == device_id, m.Interface.if_type == "physical")
-        .order_by(m.Interface.name)
-    ).all()
+    rows = db.scalars(_counted_ports().where(m.Interface.device_id == device_id).order_by(m.Interface.name)).all()
     wanted = {"used"} if state == "used" else {"idle", "disabled"}
     return [{"id": r.id, "name": r.name, "speed_gbps": r.speed_gbps, "admin_status": r.admin_status,
              "oper_status": r.oper_status, "description": r.description}
-            for r in rows if port_bucket(r.name, r.speed_gbps) == speed and _port_state(r.admin_status, r.oper_status) in wanted]
+            for r in rows
+            if port_bucket(r.name, r.speed_gbps, r.optic_type) == speed and _port_state(r.admin_status, r.oper_status) in wanted]
 
 
 def device_port_usage(db: Session, category: str | None = None, area: str | None = None, pop: str | None = None,

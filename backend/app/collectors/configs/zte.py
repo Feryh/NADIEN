@@ -7,15 +7,27 @@ Interfaces are top-level `interface <name>` blocks. LAG membership lives in the 
 IS-IS: `router isis <n>` with either `net <NET>` or `area <area>` + `system-id <id>`.
 """
 
+import re
+
 from .base import Block, ParsedConfig, indent_tree, ip_only, to_cidr, to_int
 
 LOOPBACKS = ("loopback0", "loopback1")
+
+# OLT PON ports: C600 `gpon_olt-1/3/5`, C300 `gpon-olt_1/3/5` (rack/slot/port). The interface type is the PON
+# technology of the card and its optics; Observium reports every one of them at the same ifSpeed (10G on C600).
+_PON_PORT = re.compile(r"^(10g-?epon|xgs-?pon|xg-?pon|xgs|epon|gpon|combo)[-_]olt[-_]\d+/(\d+)/(\d+)$", re.IGNORECASE)
+PON_TECH = {"gpon": "GPON", "xgs": "XGS-PON", "xgspon": "XGS-PON", "xgs-pon": "XGS-PON", "xgpon": "XG-PON",
+            "xg-pon": "XG-PON", "epon": "EPON", "10gepon": "10G-EPON", "10g-epon": "10G-EPON",
+            "combo": "XGS-PON/GPON combo"}
 
 
 def _interface(cfg: ParsedConfig, block: Block) -> None:
     name = block.words[1]
     itf = cfg.iface(name)
     itf.is_bundle = name.lower().startswith("smartgroup") and "." not in name
+    if match := _PON_PORT.match(name):
+        itf.pon = PON_TECH[match.group(1).lower()]
+        itf.pon_slot_port = (int(match.group(2)), int(match.group(3)))
     for c in block.children:
         cw = c.words
         if cw[0] == "description" and len(cw) > 1:

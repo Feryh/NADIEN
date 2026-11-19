@@ -728,11 +728,17 @@ def speed_bucket(speed_gbps: float | None) -> str:
     return NON_STANDARD
 
 
-def port_bucket(name: str, speed_gbps: float | None) -> str:
+# PON technology of an OLT port (from its card in the config, optic_type): its line rate, whatever ifSpeed says.
+PON_GBPS = {"GPON": 2.5, "XG-PON": 10.0, "XGS-PON": 10.0, "EPON": 1.0, "10G-EPON": 10.0, "XGS-PON/GPON combo": 10.0}
+
+
+def port_bucket(name: str, speed_gbps: float | None, optic_type: str | None = None) -> str:
     """Port class of what the device has: the larger of the port type in its name (GigabitEthernet = 1G,
     XGigabitEthernet = 10G…) and the speed Observium reports. A 1G port linked at 100M or a 10G port with a 1G
     optic keeps its type; Huawei NE routers name 10G ports GigabitEthernet, so a higher reported speed wins.
     A reported speed outside the standard ones (SNMP overflow) is ignored when the name gives the type."""
+    if optic_type in PON_GBPS:
+        return speed_bucket(PON_GBPS[optic_type])
     nominal = speed_from_name(name)
     reported = speed_bucket(speed_gbps)
     if nominal is None:
