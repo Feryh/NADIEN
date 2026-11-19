@@ -578,7 +578,7 @@ def _port_row(i: m.Interface, on_olt: bool, link: dict[str, Any] | None) -> dict
     onts = onts_online(i.description) if is_pon else None
     pon_pct = pon_port_occupancy(onts) if onts is not None else None
     bandwidth_pct = port_utilization_pct(i.in_gbps, i.out_gbps, i.speed_gbps)
-    return {"id": i.id, "name": i.name, "if_type": i.if_type, "speed_gbps": i.speed_gbps, "speed": port_bucket(i.name, i.speed_gbps),
+    return {"id": i.id, "name": i.name, "if_type": i.if_type, "speed_gbps": i.speed_gbps, "speed": port_bucket(i.name, i.speed_gbps, i.optic_type),
             "admin_status": i.admin_status, "oper_status": i.oper_status, "state": _port_state(i.admin_status, i.oper_status),
             "description": i.description, "optic_type": i.optic_type,
             "in_gbps": i.in_gbps, "out_gbps": i.out_gbps, "utilization_pct": bandwidth_pct,

@@ -20,6 +20,9 @@ class ParsedInterface:
     bundle: str | None = None  # parent bundle name using the device's own naming (Bundle-Ether10, ae10, ...)
     is_bundle: bool = False
     shutdown: bool = False
+    # OLT PON port: its technology ("GPON", "XGS-PON" …) and (slot, port), from the interface type in the config.
+    pon: str | None = None
+    pon_slot_port: tuple[int, int] | None = None
 
 
 @dataclass

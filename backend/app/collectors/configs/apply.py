@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from ... import models as m
 from ...services.topology import norm_host, norm_if
 from ..observium.parsers import SKIP_PORT, VIRTUAL_NAME
+from ...services.areas import PON_GBPS
 from .base import ParsedConfig
 
 
@@ -31,6 +32,30 @@ def _classify(name: str, is_bundle: bool) -> str:
     if "." in name:
         return "subinterface"
     return "virtual" if VIRTUAL_NAME.match(name) else "physical"
+
+
+def _apply_pon_ports(db: Session, device: m.Device, cfg: ParsedConfig, index: dict[str, m.Interface],
+                     counts: Counter) -> None:
+    """OLT PON ports as Observium names them (`Slot3/Port5`), with their technology in optic_type. The config lists
+    every PON port of the cards; Observium reports only those in service, so the others (enabled without ONTs, or
+    shut down) are added here as idle or disabled ports and still count in the OLT's port capacity."""
+    for p in cfg.interfaces.values():
+        if not p.pon or p.pon_slot_port is None:
+            continue
+        slot, port = p.pon_slot_port
+        name = f"Slot{slot}/Port{port}"
+        iface = index.get(norm_if(name))
+        if iface is None:
+            iface = m.Interface(device_id=device.id, name=name, if_type="physical", mib_type="PonStatus",
+                                speed_gbps=PON_GBPS.get(p.pon), admin_status="down" if p.shutdown else "up",
+                                oper_status="down")
+            db.add(iface)
+            db.flush()
+            index[norm_if(name)] = iface
+            counts["pon_ports_created"] += 1
+        if iface.optic_type != p.pon:
+            iface.optic_type = p.pon
+            counts["pon_types_set"] += 1
 
 
 def apply_config(db: Session, device: m.Device, cfg: ParsedConfig, create_ports: bool = True) -> dict:
@@ -61,8 +86,9 @@ def apply_config(db: Session, device: m.Device, cfg: ParsedConfig, create_ports:
             counts["interfaces_created"] += 1
         return iface
 
+    _apply_pon_ports(db, device, cfg, index, counts)
     for p in cfg.interfaces.values():
-        if SKIP_PORT.match(p.name):  # loopback/mgmt: kept on the device record, not as Metro ports
+        if SKIP_PORT.match(p.name) or p.pon:  # loopback/mgmt: on the device record; PON ports: handled above
             continue
         known = norm_if(p.name) in index
         useful = p.description or p.ipv4 or p.bundle or p.is_bundle
