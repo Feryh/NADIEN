@@ -105,7 +105,7 @@ class Device(TimestampMixin, Base):
     vendor_id: Mapped[int | None] = mapped_column(ForeignKey("vendors.id"))
     model_id: Mapped[int | None] = mapped_column(ForeignKey("device_models.id"))
     software_id: Mapped[int | None] = mapped_column(ForeignKey("software_versions.id"))
-    role: Mapped[str] = mapped_column(String(32), default="pe")  # p | pe | agg | access | dci | olt | bng
+    role: Mapped[str] = mapped_column(String(32), default="pe")  # p | pe | agg | switch | csr | access | dci | olt | bng | cpe
     mgmt_ip: Mapped[str | None] = mapped_column(String(64))
     loopback_ipv4: Mapped[str | None] = mapped_column(String(64))
     isis_net: Mapped[str | None] = mapped_column(String(64))

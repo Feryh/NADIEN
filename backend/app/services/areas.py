@@ -683,6 +683,7 @@ CATEGORIES: dict[str, list[str]] = {
     "csr": ["csr"],
     "olt": ["olt"],
     "access": ["access"],
+    "cpe": ["cpe"],
 }
 CATEGORY_LABELS = {
     "router": "Router (P/PE/BNG/DCI)",
@@ -691,6 +692,7 @@ CATEGORY_LABELS = {
     "csr": "CSR (Cell Site Router)",
     "olt": "OLT",
     "access": "Access / Switch",
+    "cpe": "CPE (Customer Premises)",
     "other": "Lainnya",
 }
 CATEGORY_ORDER = list(CATEGORY_LABELS)
@@ -704,7 +706,7 @@ def category_for(role: str | None) -> str:
 
 # Role tiers for layered device layouts (top to bottom).
 # switch: distribution switches (DS1/DS2) sit at the metro layer, between the edge and OLT/access.
-ROLE_TIER = {"dci": 0, "p": 0, "pe": 1, "bng": 1, "agg": 2, "switch": 2, "csr": 3, "access": 3, "olt": 3}
+ROLE_TIER = {"dci": 0, "p": 0, "pe": 1, "bng": 1, "agg": 2, "switch": 2, "csr": 3, "access": 3, "olt": 3, "cpe": 3}
 
 
 # Standard port speeds; anything else (106G, 8G, 622M, SNMP overflow 4295G…) is "Non-standar":
