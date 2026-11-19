@@ -8,8 +8,9 @@ When both ends of an LLDP adjacency are bundle members, the link is recorded onc
 at bundle level with capacity = sum of member speeds.
 """
 
+import ipaddress
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -303,6 +304,38 @@ class _Discovery:
                 pairs.append((a, b))
         return pairs
 
+    def from_p2p(self) -> None:
+        """Two routers on the same /30 or /31 are linked, whatever box (a carrier's NNI, a transport node) LLDP sees
+        in between. The link goes on the port carrying the address (100GE1/1/1 for 100GE1/1/1.536). LLDP still
+        decides: a port LLDP links to an inventory device is left alone. Runs after the descriptions and only fills
+        a gap: a /30 often crosses an L2 switch (PEIN Eth-Trunk30 -> DS1 switch -> PE1), and the description names
+        the switch, the cable's real far end. So at least one end must have no link yet; the other may be shared, as
+        a carrier NNI port carries one /30 per far end."""
+        lldp_ports: set[int] = set()
+        for adj in self.adjacencies.values():
+            if adj.source == "lldp":
+                lldp_ports.update((adj.a.id, adj.b.id))
+                for pair in adj.member_pairs:
+                    lldp_ports.update(pair)
+        lldp_ports = _with_parents(self, frozenset(lldp_ports))  # LLDP on a member speaks for its bundle
+        # A pair an engineer approved by hand is their call: an address pair does not take its port away.
+        for approval in self.db.scalars(select(LinkApproval)):
+            lldp_ports.update((approval.a_interface_id, approval.b_interface_id))
+        index = _P2pIndex(self)
+        for ends in index.by_net.values():
+            if len(ends) != 2 or ends[0].device_id == ends[1].device_id:
+                continue
+            a, b = (self._link_port(index.carrier(end)) for end in ends)
+            if (a.if_type not in ("physical", "bundle") or b.if_type not in ("physical", "bundle")
+                    or a.id in lldp_ports or b.id in lldp_ports or frozenset((a.id, b.id)) in self.adjacencies
+                    or (a.id in self.covered and b.id in self.covered)):
+                continue
+            self.add(a, b, "ip")
+
+    def _link_port(self, iface: Interface) -> Interface:
+        """A bundle member carrying an address links through its bundle."""
+        return self.ifaces.get(iface.parent_id, iface) if iface.parent_id else iface
+
     def from_approvals(self) -> None:
         """Pairs an engineer confirmed by hand (LinkApproval), unless LLDP or the config already linked either port:
         once the box in between is in the inventory, what LLDP sees wins and the approval is no longer used.
@@ -311,7 +344,10 @@ class _Discovery:
         taken = set(self.covered)
         for approval in self.db.scalars(select(LinkApproval)):
             a, b = self.ifaces.get(approval.a_interface_id), self.ifaces.get(approval.b_interface_id)
-            if a is not None and b is not None and a.id not in taken and b.id not in taken:
+            if a is None or b is None:
+                continue
+            # A shared approval rides a port that also carries another link (third-party NNI, one VLAN per far end).
+            if approval.shared or (a.id not in taken and b.id not in taken):
                 self.add(a, b, "approved")
 
     def one_sided(self, pair: frozenset[int], sides: dict[int, list[Interface]]) -> None:
@@ -468,6 +504,7 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
     run = _Discovery(db)
     unresolved = run.from_lldp()
     run.from_config()
+    run.from_p2p()  # after the descriptions: a /30 may cross an L2 switch the description names as the far end
     run.from_approvals()
 
     now = datetime.now(timezone.utc)
@@ -525,7 +562,7 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
     phantom = run.phantom_ids(valid_iface_ids)
     marked_down = superseded = 0
     for key, link in existing.items():
-        if link.id in seen_ids or link.discovery_source not in ("lldp", "config", "approved"):
+        if link.id in seen_ids or link.discovery_source not in ("lldp", "config", "approved", "ip"):
             continue
         replaced = (
             key in member_pairs
@@ -537,6 +574,7 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
             # pairing of the same descriptions, not a second link (else every re-pairing leaves one down behind)
             or (link.discovery_source == "config" and bool(_with_parents(run, key) & run.covered))
             or link.discovery_source == "approved"  # approval revoked, or LLDP now sees the ports directly
+            or link.discovery_source == "ip"  # the address pair is gone, or LLDP now links one of its ports
             or any(run.ifaces[i].if_type == "virtual" for i in key if i in run.ifaces)  # a VLAN/management interface
         )
         if replaced:
@@ -562,6 +600,7 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
     return DiscoveryResult(
         lldp_links=sources["lldp"],
         config_links=sources["config"],
+        ip_links=sources["ip"],
         created=created,
         updated=updated,
         marked_down=marked_down,
@@ -570,6 +609,51 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
         interfaces_removed=removed,
         unresolved_neighbors=unresolved,
     )
+
+
+def _p2p_net(address: str | None) -> ipaddress.IPv4Network | None:
+    """The /30 or /31 an address sits in: such a subnet has room for two routers only."""
+    try:
+        network = ipaddress.ip_interface((address or "").strip()).network
+    except ValueError:
+        return None
+    return network if network.version == 4 and network.prefixlen in (30, 31) else None
+
+
+class _P2pIndex:
+    """Interfaces per point-to-point subnet. Two routers on the same /30 or /31 are linked, whatever box (a carrier's
+    NNI, a transport node) LLDP sees in between. Sub-interfaces carry most of these addresses (100GE1/1/1.536); their
+    link is drawn on the port that carries them, found by name since the inventory gives them no parent."""
+
+    def __init__(self, run: "_Discovery"):
+        self.run = run
+        self.by_net: dict[ipaddress.IPv4Network, list[Interface]] = defaultdict(list)
+        self.subs: dict[int, list[Interface]] = defaultdict(list)  # carrying port id -> its sub-interfaces
+        for iface in run.ifaces.values():
+            network = _p2p_net(iface.ipv4_address)
+            if network is not None:
+                self.by_net[network].append(iface)
+            carrier = self.carrier(iface)
+            if carrier is not iface:
+                self.subs[carrier.id].append(iface)
+
+    def carrier(self, iface: Interface) -> Interface:
+        if "." not in iface.name:
+            return iface
+        return self.run.if_index.get((iface.device_id, norm_if(iface.name.rsplit(".", 1)[0]))) or iface
+
+    def peer(self, port: Interface) -> dict[str, Any] | None:
+        """The far end sharing a /30 or /31 with the port or one of its sub-interfaces; None unless exactly one."""
+        for own in (port, *sorted(self.subs.get(port.id, []), key=lambda i: i.name)):
+            network = _p2p_net(own.ipv4_address)
+            if network is None:
+                continue
+            others = [i for i in self.by_net[network] if i.device_id != port.device_id]
+            if len(others) == 1:
+                far = others[0]
+                return {"subnet": str(network), "local_port": own.name, "local_ip": own.ipv4_address,
+                        "remote_port": far.name, "remote_ip": far.ipv4_address, "peer": self.carrier(far)}
+        return None
 
 
 def unknown_lldp_peers(db: Session) -> list[dict[str, Any]]:
@@ -583,11 +667,15 @@ def unknown_lldp_peers(db: Session) -> list[dict[str, Any]]:
         approvals[approval.a_interface_id] = approvals[approval.b_interface_id] = approval
     # Ports LLDP or the config already link: approving onto one is refused (approve_link), so say so up front.
     taken: dict[int, str] = {}
-    for link in db.scalars(select(Link).where(Link.status == "up", Link.discovery_source != "approved")):
+    # Approved and address-pair links may share a port (a carrier NNI), so they block nothing.
+    for link in db.scalars(select(Link).where(Link.status == "up", Link.discovery_source.not_in(("approved", "ip")))):
         for port_id in (link.a_interface_id, link.b_interface_id):
             if port_id:
                 taken[port_id] = link.name
     rows: dict[int, dict[str, Any]] = {}
+    p2p = _P2pIndex(run)
+    drawn = {frozenset((link.a_interface_id, link.b_interface_id))
+             for link in db.scalars(select(Link).where(Link.discovery_source == "ip"))}
     for n in db.scalars(select(LldpNeighbor)):
         local = run.devices.get(n.device_id)
         if local is None or run.by_host.get(norm_host(n.remote_system_name)) is not None:
@@ -598,16 +686,21 @@ def unknown_lldp_peers(db: Session) -> list[dict[str, Any]]:
         bundle = run.ifaces.get(port.parent_id) if port.parent_id else None
         target = bundle or port
         described = next((p for p in (target, port) if p.description), None)
-        if described is None:
-            continue
-        named = run.mentioned_device(described.description)
+        text = described.description if described else ""
+        named = run.mentioned_device(text) if text else None
+        # The same /30 or /31 on both routers settles the far end, even when the description names none or an old box.
+        ip_match = p2p.peer(target) or (p2p.peer(port) if port is not target else None)
         if named is not None and named.id == local.id:
-            continue
-        token = next((m.group(0) for m in _HOSTNAME_SHAPED.finditer(described.description)
+            if ip_match is None:
+                continue  # the description names this box itself: nothing to pair
+            named = None
+        token = next((m.group(0) for m in _HOSTNAME_SHAPED.finditer(text)
                       if m.group(1).lower() in run.host_first_parts
                       and _city(m.group(0)) != _city(local.hostname)), None)
-        if named is None and token is None:
+        if named is None and token is None and ip_match is None:
             continue
+        if ip_match is not None and frozenset((target.id, ip_match["peer"].id)) in drawn:
+            continue  # discovery already draws this pair from the shared /30 or /31
         mac_only = bool(_MAC.fullmatch(re.sub(r"[:.\-\s]", "", n.remote_system_name or "")))
         if mac_only and named is not None and norm_if(n.remote_port_id or "") in {
                 norm_if(p.name) for p in run.ports_of(named.id)}:
@@ -616,7 +709,9 @@ def unknown_lldp_peers(db: Session) -> list[dict[str, Any]]:
         if row is None:
             suggested = run.replacement_for(token) if named is None and token else None
             candidate = named or suggested
-            peer = run.named_port(candidate.id, described.description) if candidate else None
+            peer = run.named_port(candidate.id, text) if candidate else None
+            if ip_match is not None:
+                peer = ip_match["peer"]
             approval = approvals.get(target.id)
             if approval is not None:  # the pair an approver chose, which may differ from the description
                 peer = run.ifaces.get(approval.b_interface_id if approval.a_interface_id == target.id
@@ -624,9 +719,12 @@ def unknown_lldp_peers(db: Session) -> list[dict[str, Any]]:
             peer_device = run.devices.get(peer.device_id) if peer else candidate
             row = rows[target.id] = {
                 "device_id": local.id, "device": local.hostname, "interface_id": target.id, "port": target.name,
-                "is_bundle": bundle is not None, "lldp": [], "description": described.description,
+                "is_bundle": bundle is not None, "lldp": [], "description": text,
                 "described_device_id": named.id if named else None,
-                "described_device": named.hostname if named else token,
+                "described_device": named.hostname if named else token or "",
+                # Both ends on one /30 or /31: the far end found by address, not by description.
+                "ip_match": None if ip_match is None else {
+                    k: v for k, v in ip_match.items() if k != "peer"} | {"peer_port": ip_match["peer"].name},
                 # A box the description names under an old name (MKS-BSW-BNG2-M4 for its replacement -M8).
                 "suggested_device": suggested.hostname if suggested and not named else None,
                 "peer_device_id": peer_device.id if peer_device else None,
@@ -635,7 +733,8 @@ def unknown_lldp_peers(db: Session) -> list[dict[str, Any]]:
                 # The link already on the peer port (or on this one), when that blocks approving the pair.
                 "taken_by": None if approval is not None else taken.get(target.id) or (taken.get(peer.id) if peer else None),
                 "approval": None if approval is None else {
-                    "id": approval.id, "approved_by": approval.approved_by, "approved_at": approval.approved_at},
+                    "id": approval.id, "approved_by": approval.approved_by, "approved_at": approval.approved_at,
+                    "shared": approval.shared},
             }
         row["lldp"].append({"local_port": port.name, "neighbor": n.remote_system_name, "port": n.remote_port_id})
     return sorted(rows.values(), key=lambda r: (r["device"], r["port"]))
@@ -655,8 +754,11 @@ def _link_on(db: Session, a_id: int, b_id: int) -> Link | None:
         | ((Link.a_interface_id == b_id) & (Link.b_interface_id == a_id))))
 
 
-def approve_link(db: Session, interface_id: int, peer_interface_id: int, username: str) -> int:
-    """Record the approval and draw the link now (discovery keeps it from then on). Returns the link id."""
+def approve_link(db: Session, interface_id: int, peer_interface_id: int, username: str, shared: bool = False) -> int:
+    """Record the approval and draw the link now (discovery keeps it from then on). Returns the link id.
+
+    `shared`: the port carries another link on purpose (a bundle to a third-party NNI, one VLAN per far end), so a
+    link LLDP or the config already has on it does not block the approval."""
     a, b = db.get(Interface, interface_id), db.get(Interface, peer_interface_id)
     if a is None or b is None:
         raise ApprovalError(f"Port {interface_id if a is None else peer_interface_id} tidak ditemukan", 404)
@@ -664,20 +766,24 @@ def approve_link(db: Session, interface_id: int, peer_interface_id: int, usernam
         raise ApprovalError("Kedua port ada di perangkat yang sama", 422)
     link = _link_on(db, a.id, b.id)
     # Approved links may share a port (a hub trunk to several sites); a port LLDP or the config links is taken.
-    busy = db.scalar(select(Link).where(Link.status == "up", Link.discovery_source != "approved",
+    busy = db.scalar(select(Link).where(Link.status == "up", Link.discovery_source.not_in(("approved", "ip")),
                                         Link.id != (link.id if link else -1),
                                         Link.a_interface_id.in_((a.id, b.id)) | Link.b_interface_id.in_((a.id, b.id))))
-    if busy is not None:
-        raise ApprovalError(f"Port sudah dipakai link lain: {busy.name}", 409)
+    if busy is not None and not shared:
+        raise ApprovalError(f"Port sudah dipakai link lain: {busy.name}. Bila port ini memang dipakai bersama "
+                            "(NNI pihak ketiga, beda VLAN), setujui sebagai port bersama.", 409)
     other = db.scalar(select(LinkApproval).where(
         (LinkApproval.a_interface_id == a.id) | (LinkApproval.b_interface_id == a.id))
         .where(~((LinkApproval.a_interface_id == min(a.id, b.id)) & (LinkApproval.b_interface_id == max(a.id, b.id)))))
     if other is not None:
         raise ApprovalError("Port ini sudah disetujui ke port lain; cabut persetujuan itu dulu", 409)
     low, high = sorted((a.id, b.id))
-    if db.scalar(select(LinkApproval).where(LinkApproval.a_interface_id == low,
-                                            LinkApproval.b_interface_id == high)) is None:
-        db.add(LinkApproval(a_interface_id=low, b_interface_id=high, approved_by=username[:64]))
+    approval = db.scalar(select(LinkApproval).where(LinkApproval.a_interface_id == low,
+                                                    LinkApproval.b_interface_id == high))
+    if approval is None:
+        db.add(LinkApproval(a_interface_id=low, b_interface_id=high, approved_by=username[:64], shared=shared))
+    elif shared:
+        approval.shared = True
     if link is None:
         a_dev, b_dev = db.get(Device, a.device_id), db.get(Device, b.device_id)
         speeds = [s for s in (a.speed_gbps, b.speed_gbps) if s]

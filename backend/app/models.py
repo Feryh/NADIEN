@@ -639,3 +639,6 @@ class LinkApproval(Base):
     b_interface_id: Mapped[int] = mapped_column(ForeignKey("interfaces.id", ondelete="CASCADE"), index=True)
     approved_by: Mapped[str] = mapped_column(String(64))
     approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # The port also carries another link (a bundle to a third-party NNI, one VLAN per far end): drawn even though
+    # LLDP or the config already links one of its ports.
+    shared: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())

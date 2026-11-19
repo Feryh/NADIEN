@@ -332,24 +332,33 @@ interface UnknownLldpPeer {
   peer_port: string | null
   /** Link LLDP or the config already has on the peer port (or on this one): approving the pair would be refused. */
   taken_by: string | null
-  approval: { id: number; approved_by: string; approved_at: string } | null
+  /** Both ends on one /30 or /31: the far end found by address (peer_* then follow it, not the description). */
+  ip_match: { subnet: string; local_port: string; local_ip: string; remote_port: string; remote_ip: string; peer_port: string } | null
+  /** shared: approved as a port shared with another link (a third-party NNI, one VLAN per far end). */
+  approval: { id: number; approved_by: string; approved_at: string; shared: boolean } | null
   /** Client side only: the far end was picked by hand in this session. */
   manual?: boolean
 }
 
-type PeerState = 'pending' | 'approved' | 'taken' | 'no_peer'
+type PeerState = 'ip_match' | 'pending' | 'approved' | 'taken' | 'no_peer'
 const PEER_STATE_LABEL: Record<PeerState, string> = {
-  pending: 'Bisa disetujui', approved: 'Disetujui', taken: 'Port lawan sudah dipakai', no_peer: 'Port lawan tidak dikenali',
+  ip_match: 'Cocok IP p2p (/30, /31)', pending: 'Bisa disetujui', approved: 'Disetujui', taken: 'Port lawan sudah dipakai',
+  no_peer: 'Port lawan tidak dikenali',
 }
 const PEER_STATE_PILL: Record<PeerState, string> = {
-  pending: 'pill-warn', approved: 'pill-ok', taken: 'pill-bad', no_peer: 'pill-muted',
+  ip_match: 'pill-ok', pending: 'pill-warn', approved: 'pill-ok', taken: 'pill-bad', no_peer: 'pill-muted',
 }
 
 function peerState(r: UnknownLldpPeer): PeerState {
   if (r.approval) return 'approved'
   if (r.peer_interface_id == null) return 'no_peer'
+  // One subnet on both routers is proof enough, even on a port another link uses (a carrier NNI, one VLAN each).
+  if (r.ip_match && !r.manual) return 'ip_match'
   return r.taken_by ? 'taken' : 'pending'
 }
+
+/** Pairs that can be approved now: IP-matched ones go in as shared ports, since one NNI port carries many /30s. */
+const approvable = (r: UnknownLldpPeer) => peerState(r) === 'pending' || peerState(r) === 'ip_match'
 
 function pairLabel(r: UnknownLldpPeer): string {
   return `${r.device}:${r.port} ↔ ${r.peer_device ?? r.described_device}:${r.peer_port ?? '?'}`
@@ -466,10 +475,10 @@ export function UnknownLldpPeers() {
   const paged = usePaged(shown, `${needle}|${filter}`)
   const byId = useMemo(() => new Map((rows ?? []).map((r) => [r.interface_id, r])), [rows])
   const picked = [...selected].map((id) => byId.get(id)).filter((r): r is UnknownLldpPeer => r != null)
-  const toApprove = picked.filter((r) => peerState(r) === 'pending')
+  const toApprove = picked.filter(approvable)
   const toRevoke = picked.filter((r) => r.approval != null)
   // A pair can be ticked to approve it (pending) or to revoke it (approved); the others need another peer port first.
-  const selectable = paged.pageRows.filter((r) => peerState(r) === 'pending' || peerState(r) === 'approved')
+  const selectable = paged.pageRows.filter((r) => approvable(r) || peerState(r) === 'approved')
   const allOnPage = selectable.length > 0 && selectable.every((r) => selected.has(r.interface_id))
 
   function toggle(ids: number[], on: boolean) {
@@ -485,7 +494,8 @@ export function UnknownLldpPeers() {
     setBusy(true)
     setError(null)
     try {
-      const pairs = toApprove.map((r) => ({ interface_id: r.interface_id, peer_interface_id: r.peer_interface_id }))
+      const pairs = toApprove.map((r) => ({ interface_id: r.interface_id, peer_interface_id: r.peer_interface_id,
+        shared: peerState(r) === 'ip_match' }))
       // Each pair is judged on its own: the refused ones come back with their reason, the rest are approved.
       const result = await api.post<{ approved: number; rejected: { interface_id: number; reason: string }[] }>(
         '/topology/link-approvals', { pairs })
@@ -498,6 +508,36 @@ export function UnknownLldpPeers() {
       load()
     } catch (e) {
       setError(`Tidak ada yang disetujui: ${(e as Error).message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** One pair whose port also carries another link on purpose (third-party NNI, one VLAN per far end). */
+  async function approveShared(r: UnknownLldpPeer) {
+    if (r.peer_interface_id == null) return
+    const busyWith = r.taken_by ?? refused.get(r.interface_id) ?? 'link lain'
+    if (!window.confirm(`Setujui ${pairLabel(r)} sebagai port bersama?\n\nPort ini tetap membawa ${busyWith}; `
+      + 'kedua link digambar (mis. bundle ke NNI pihak ketiga, beda VLAN per tujuan).')) return
+    setBusy(true)
+    setError(null)
+    try {
+      await api.post('/topology/link-approvals',
+        { pairs: [{ interface_id: r.interface_id, peer_interface_id: r.peer_interface_id, shared: true }] })
+      setRefused((current) => {
+        const next = new Map(current)
+        next.delete(r.interface_id)
+        return next
+      })
+      setSelected((current) => {
+        const next = new Set(current)
+        next.delete(r.interface_id)
+        return next
+      })
+      setNotice(`${pairLabel(r)} disetujui sebagai port bersama dan digambar di topologi.`)
+      load()
+    } catch (e) {
+      setError(`Tidak disetujui: ${(e as Error).message}`)
     } finally {
       setBusy(false)
     }
@@ -584,6 +624,12 @@ export function UnknownLldpPeers() {
                       ? <><RouterLink to={`/topology?level=neighbors&device_id=${r.peer_device_id}`}>{r.peer_device}</RouterLink>
                         {r.peer_port && <span className="mono muted"> {r.peer_port}</span>}</>
                       : <span>{r.described_device}</span>}
+                    {r.ip_match && !r.manual && (
+                      <div className="small" title={`${r.ip_match.local_port} ${r.ip_match.local_ip} ↔ ${r.ip_match.remote_port} ${r.ip_match.remote_ip}`}>
+                        cocok IP {r.ip_match.subnet}: <span className="mono">{r.ip_match.local_port} ↔ {r.ip_match.remote_port}</span>
+                        {r.described_device && r.described_device !== r.peer_device && <span className="muted"> (deskripsi: {r.described_device})</span>}
+                      </div>
+                    )}
                     {r.manual && <div className="muted small">dipilih manual (deskripsi: {r.described_device})</div>}
                     {!r.manual && r.suggested_device && (
                       <div className="muted small">saran: deskripsi menyebut {r.described_device} (tidak di inventory)</div>
@@ -603,8 +649,15 @@ export function UnknownLldpPeers() {
                     <span className={`pill ${PEER_STATE_PILL[state]}`}
                       title={r.approval ? `oleh ${r.approval.approved_by}, ${new Date(r.approval.approved_at).toLocaleString('id-ID')}` : undefined}>
                       {PEER_STATE_LABEL[state]}</span>
+                    {r.approval?.shared && <div className="muted small">port bersama (NNI)</div>}
                     {state === 'taken' && <div className="muted small">dipakai {r.taken_by}</div>}
                     {refused.has(r.interface_id) && <div className="error-text small">Ditolak: {refused.get(r.interface_id)}</div>}
+                    {mayApprove && !r.approval && r.peer_interface_id != null
+                      && (state === 'taken' || refused.get(r.interface_id)?.includes('dipakai link lain')) && (
+                      <button className="link-button small" disabled={busy} onClick={() => approveShared(r)}
+                        title="Port ini memang membawa beberapa link (bundle ke NNI pihak ketiga, beda VLAN per tujuan)">
+                        Setujui sebagai port bersama (NNI)</button>
+                    )}
                   </td>
                   <td className="small">{r.description}</td>
                 </tr>
