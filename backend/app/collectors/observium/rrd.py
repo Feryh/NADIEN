@@ -220,7 +220,6 @@ def _targets(db: Session, source: RrdSource, server: str = "main") -> tuple[list
     port on the main server is read from there, so the CSR server only serves links the main one cannot."""
     all_refs = list(db.scalars(select(m.ObserviumPort)))
     refs = {r.interface_id: r for r in all_refs if r.source == server}
-    main_ports = {r.interface_id for r in all_refs if r.source == "main"}
     ports = {row.id: row for row in db.execute(
         select(m.Interface.id, m.Interface.speed_gbps, m.Interface.in_gbps, m.Interface.out_gbps).where(
             m.Interface.id.in_(select(m.Link.a_interface_id).union(select(m.Link.b_interface_id)))))}
@@ -232,22 +231,36 @@ def _targets(db: Session, source: RrdSource, server: str = "main") -> tuple[list
         port = ports.get(iface_id)
         return None if port is None else max(port.in_gbps or 0.0, port.out_gbps or 0.0)
 
+    server_of = {r.interface_id: r.source for r in all_refs}
     targets, unmapped = [], 0
     for link in db.scalars(select(m.Link)):
         ends = (link.a_interface_id, link.b_interface_id)
-        if server != "main" and (not any(i in refs for i in ends) or any(i in main_ports for i in ends)):
-            continue
-        order = ((ends[0], False), (ends[1], True))
+        order = [(ends[0], False), (ends[1], True)]
         if read_narrow_end(speed(ends[1]), speed(ends[0]), busiest(ends[1]), busiest(ends[0])):
-            # A bundle whose members lead to several boxes (smartgroup1 200G to two 100G switches) carries more than
-            # this link: the narrower end only carries what goes over it, as in the live Full sync.
-            order = order[::-1]
+            # A bundle whose members lead to several boxes (smartgroup1 200G to two 100G switches), or a shared NNI
+            # bundle carrying one VLAN per far end (smartgroup91 to 13 sites), carries more than this link: the
+            # narrower end only carries what goes over it, as in the live Full sync. That end is read from whichever
+            # server monitors it (a CSR far end from the CSR server), never replaced by the wider end.
+            order.reverse()
+        else:
+            # Either end carries this link's traffic: the main server reads it when it can.
+            order.sort(key=lambda end: server_of.get(end[0]) != "main")
+        mine = False  # this server is the one to read the link
         for iface_id, swapped in order:
-            ref = refs.get(iface_id or -1)
-            if ref is not None and source.usable(ref):
-                targets.append(Target(link, ref, swapped))
+            owner = server_of.get(iface_id or -1)
+            if owner is None:
+                continue
+            if owner != server:
+                break  # the server that monitors this end reads the link
+            mine = True
+            if source.usable(refs[iface_id]):
+                targets.append(Target(link, refs[iface_id], swapped))
                 break
         else:
+            # Main reports every link it cannot read itself; another server only those it was the one to read.
+            unmapped += server == "main" or mine
+            continue
+        if server == "main" and not mine:
             unmapped += 1
     return targets, unmapped
 
