@@ -160,3 +160,20 @@ def test_reserve_and_release_api(net):
         assert bad.status_code == 422
     finally:
         app.dependency_overrides.clear()
+
+
+def test_should_take_the_direct_link_when_both_pops_fall_back_to_the_same_area_centre(db):
+    """JKT and JKTT have no coordinates (both at the Jakarta centre); BGR has its own. A direct JKT-JKTT link must
+    beat a detour through Bogor."""
+    pops = {c: m.Pop(code=c, name=c) for c in ("JKT", "JKTT")}
+    pops["BGR"] = m.Pop(code="BGR", name="Bogor", latitude=-6.5717, longitude=106.8082)
+    db.add_all(pops.values())
+    db.flush()
+    d = {c: m.Device(hostname=f"{c}-X", pop_id=p.id) for c, p in pops.items()}
+    db.add_all(d.values())
+    db.flush()
+    for a, b in (("JKT", "JKTT"), ("JKT", "BGR"), ("BGR", "JKTT")):
+        db.add(m.Link(name=f"{a}-{b}", a_device_id=d[a].id, b_device_id=d[b].id, capacity_gbps=100, status="up"))
+    db.commit()
+    r = compute(build_graph(db), {d["JKT"].id}, {d["JKTT"].id}, 1, "none")
+    assert r["primary"]["devices"] == ["JKT-X", "JKTT-X"]
