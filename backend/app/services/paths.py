@@ -14,7 +14,7 @@ Links on the same fiber as the primary (shared-risk) are always excluded from th
 
 Latency per link: measured `latency_ms` when present, else estimated — 0.05 ms inside a POP,
 distance × 5 µs/km, the great-circle distance between POP (or area-centre) coordinates × 1.4
-route factor, 1 ms between POPs of one area, else a pessimistic 5 ms. Estimated values are
+route factor, 0.15 ms between POPs of one area, else a pessimistic 5 ms. Estimated values are
 flagged so they're never mistaken for measurements.
 """
 
@@ -32,7 +32,10 @@ from ..config import settings
 US_PER_KM = 0.005  # ms per km of fibre (~5 µs/km)
 ROUTE_FACTOR = 1.4  # fibre route vs straight line
 INTRA_POP_MS = 0.05
-SAME_AREA_MS = 1.0  # two POPs in one area, exact distance unknown
+# Two POPs in one area whose exact distance is unknown (both fell back to the area centre): a metro hop,
+# ~20 km of fibre. It must stay below any inter-city estimate, or a direct JKT-JKTT link loses to a detour
+# through Bogor.
+SAME_AREA_MS = 0.15
 # No location at all: deliberately pessimistic, so a route through unmapped POPs never looks
 # faster than one whose length is known or estimated.
 UNKNOWN_HOP_MS = 5.0
