@@ -371,3 +371,28 @@ def test_should_keep_the_described_switch_links_when_a_30_crosses_that_l2_switch
     db.commit()
     result = discover_links(db)
     assert (result.config_links, result.ip_links) == (2, 0)
+
+
+def test_should_draw_the_address_pair_with_the_holder_that_is_up_when_a_standby_box_keeps_the_same_30(db):
+    """DPS-KRS TenGigE0/0/0/3.948 (.146/30) reaches DPS-NDC-ME1 Eth-Trunk4.948 (.145/30); DPS-NDC-BNG2 still has .145
+    configured on a trunk that is down. Only the two holders that are up are linked."""
+    pop = m.Pop(code="DPS", name="Denpasar")
+    db.add(pop)
+    db.flush()
+    krs, me1, bng2 = (m.Device(hostname=h, pop_id=pop.id)
+                      for h in ("DPS-KRS-ME1-NCS540", "DPS-NDC-ME1-M8", "DPS-NDC-BNG2-M8"))
+    db.add_all([krs, me1, bng2])
+    db.flush()
+    ports = {}
+    for device, port, sub, ip, oper in ((krs, "TenGigE0/0/0/3", ".948", "172.16.16.146/30", "up"),
+                                        (me1, "Eth-Trunk4", ".948", "172.16.16.145/30", "up"),
+                                        (bng2, "Eth-Trunk20", ".948", "172.16.16.145/30", "down")):
+        ports[device.hostname] = m.Interface(device_id=device.id, name=port, if_type="bundle" if "Trunk" in port
+                                             else "physical", speed_gbps=10, oper_status=oper)
+        db.add_all([ports[device.hostname],
+                    m.Interface(device_id=device.id, name=port + sub, if_type="subinterface", oper_status=oper,
+                                ipv4_address=ip)])
+    db.commit()
+    assert discover_links(db).ip_links == 1
+    (link,) = db.scalars(select(m.Link)).all()
+    assert {link.a_interface_id, link.b_interface_id} == {ports["DPS-KRS-ME1-NCS540"].id, ports["DPS-NDC-ME1-M8"].id}
