@@ -322,7 +322,8 @@ class _Discovery:
         for approval in self.db.scalars(select(LinkApproval)):
             lldp_ports.update((approval.a_interface_id, approval.b_interface_id))
         index = _P2pIndex(self)
-        for ends in index.by_net.values():
+        for holders in index.by_net.values():
+            ends = _live_holders(holders)
             if len(ends) != 2 or ends[0].device_id == ends[1].device_id:
                 continue
             a, b = (self._link_port(index.carrier(end)) for end in ends)
@@ -620,6 +621,15 @@ def _p2p_net(address: str | None) -> ipaddress.IPv4Network | None:
     return network if network.version == 4 and network.prefixlen in (30, 31) else None
 
 
+def _live_holders(holders: list[Interface]) -> list[Interface]:
+    """The interfaces that really hold a point-to-point address. The same /30 is often left configured on a second
+    box (a standby or retired BNG: DPS-NDC-BNG2 Eth-Trunk20.948 next to DPS-NDC-ME1 Eth-Trunk4.948); with more than
+    two holders only those up count."""
+    if len(holders) <= 2:
+        return holders
+    return [i for i in holders if i.oper_status == "up"]
+
+
 class _P2pIndex:
     """Interfaces per point-to-point subnet. Two routers on the same /30 or /31 are linked, whatever box (a carrier's
     NNI, a transport node) LLDP sees in between. Sub-interfaces carry most of these addresses (100GE1/1/1.536); their
@@ -648,7 +658,7 @@ class _P2pIndex:
             network = _p2p_net(own.ipv4_address)
             if network is None:
                 continue
-            others = [i for i in self.by_net[network] if i.device_id != port.device_id]
+            others = [i for i in _live_holders(self.by_net[network]) if i.device_id != port.device_id]
             if len(others) == 1:
                 far = others[0]
                 return {"subnet": str(network), "local_port": own.name, "local_ip": own.ipv4_address,
