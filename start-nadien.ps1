@@ -12,6 +12,7 @@
     .\start-nadien.ps1 restart
     .\start-nadien.ps1 status
     .\start-nadien.ps1 stop -Mode native
+    .\start-nadien.ps1 restart -Mode native -Lan   # UI juga bisa dibuka tim lain lewat VPN/LAN (IP laptop ini)
     .\start-nadien.ps1 reset-password          # admin lupa password / terkunci: cetak password sementara
     .\start-nadien.ps1 reset-password budi
 #>
@@ -25,6 +26,10 @@ param(
 
     [ValidateSet("auto", "docker", "native")]
     [string]$Mode = "auto",
+
+    # Native mode: vite listens on every interface, so teammates on the same VPN/LAN can open the UI. The API stays
+    # behind vite's /api proxy. Windows Firewall must allow inbound TCP on the UI port (the script only checks).
+    [switch]$Lan,
 
     [string]$Distro = "Ubuntu",
     [string]$DatabaseUrl = "sqlite:////root/nadien.db"
@@ -128,9 +133,11 @@ function Start-Frontend {
         & npm install
         Pop-Location
     }
-    Write-Host "  Menjalankan frontend (vite)..."
+    $viteArgs = @("`"$vite`"", "frontend", "--port", $FrontendPort, "--strictPort")
+    if ($Lan) { $viteArgs += @("--host", "0.0.0.0") }
+    Write-Host ("  Menjalankan frontend (vite){0}..." -f $(if ($Lan) { " untuk akses VPN/LAN" } else { "" }))
     Start-Process -FilePath $NodeExe -WorkingDirectory $ProjectRoot -WindowStyle Hidden `
-        -ArgumentList @("`"$vite`"", "frontend", "--port", $FrontendPort, "--strictPort") `
+        -ArgumentList $viteArgs `
         -RedirectStandardOutput (Join-Path $LogDir "frontend.log") -RedirectStandardError (Join-Path $LogDir "frontend.err.log") | Out-Null
     Wait-Url "http://localhost:$FrontendPort" "Frontend" | Out-Null
 }
@@ -155,11 +162,43 @@ function Show-Status {
     return $backend -and $frontend
 }
 
+function Get-LanAddresses {
+    # Addresses teammates can reach: skip loopback, link-local and the Hyper-V/WSL virtual switches.
+    Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" -and $_.InterfaceAlias -notlike "vEthernet*" } |
+        Sort-Object InterfaceAlias
+}
+
+function Test-FirewallAllowsPort([int]$Port) {
+    $rules = Get-NetFirewallRule -Enabled True -Direction Inbound -Action Allow -ErrorAction SilentlyContinue
+    $ports = $rules | Get-NetFirewallPortFilter -ErrorAction SilentlyContinue |
+        Where-Object { $_.Protocol -eq "TCP" -and $_.LocalPort -contains "$Port" }
+    return [bool]$ports
+}
+
+function Show-LanAccess {
+    $listening = Get-NetTCPConnection -State Listen -LocalPort $FrontendPort -ErrorAction SilentlyContinue |
+        Where-Object { $_.LocalAddress -in "0.0.0.0", "::" }
+    if (-not $listening) {
+        Write-Warning "Frontend masih hanya di localhost. Jalankan: .\start-nadien.ps1 restart -Mode native -Lan"
+        return
+    }
+    Write-Host "Akses tim (VPN/LAN):"
+    foreach ($address in Get-LanAddresses) {
+        Write-Host ("  http://{0}:{1}   ({2})" -f $address.IPAddress, $FrontendPort, $address.InterfaceAlias)
+    }
+    if (-not (Test-FirewallAllowsPort $FrontendPort)) {
+        Write-Warning (("Belum ada aturan Windows Firewall yang membuka TCP {0}. Jalankan sekali di PowerShell (Administrator):`n" +
+            "  New-NetFirewallRule -DisplayName 'NADIEN UI {0}' -Direction Inbound -Protocol TCP -LocalPort {0} -Action Allow -Profile Public,Private") -f $FrontendPort)
+    }
+}
+
 function Invoke-Native {
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
     switch ($Action) {
         "status" {
             $ok = Show-Status
+            if ($Lan) { Show-LanAccess }
             exit $(if ($ok) { 0 } else { 1 })
         }
         "stop" {
@@ -184,6 +223,7 @@ function Invoke-Native {
         Write-Host ""
         Write-Host "NADIEN (native):  UI http://localhost:$FrontendPort   API http://localhost:$BackendPort/docs"
         Write-Host "Log: $LogDir"
+        if ($Lan) { Show-LanAccess }
         if (-not $ok) { exit 1 }
     }
 }
