@@ -31,7 +31,7 @@ OS_VENDOR: dict[str, tuple[str, str]] = {
 # Hostnames follow either POP-SITE-ROLE#-MODEL (JKT-ABW-OLT1-HW) or ROLE#-MODEL-POP-SITE
 # (OLT2-MA5800-X15-JKTS-TND); the first role token from the left wins.
 ROLE_TOKENS: dict[str, str] = {
-    "OLT": "olt",
+    "OLT": "olt", "OLP": "olt",  # OLP1-…: OLT Pole, a pole-mounted OLT (JKT-MTH-OLP4-FH, JMB-MLP-OLP1-ZTE)
     "BNG": "bng", "BRAS": "bng",
     "DCI": "dci",
     "P": "p", "CORE": "p", "CR": "p",
