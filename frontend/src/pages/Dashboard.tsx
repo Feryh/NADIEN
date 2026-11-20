@@ -60,7 +60,7 @@ function Summary() {
   return (
     <>
       <div className="kpis">
-        <Kpi label="Metro POP" value={c.pops} sub={`${c.devices} router · ${c.interfaces} interface`} />
+        <Kpi label="POP / AREA" value={c.pops} sub={`${c.devices} router · ${c.interfaces} interface`} />
         <Kpi label="Links" value={c.links} sub={`${summary.links_down} down`} />
         <Kpi label="Available Ports" value={summary.available_ports} sub="physical, admin up, belum terpakai" />
         <Kpi

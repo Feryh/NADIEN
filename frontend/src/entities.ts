@@ -41,7 +41,7 @@ const externalFields: Field[] = [
 export const ENTITIES: Entity[] = [
   // ---------------------------------------------------------------- Node Inventory
   {
-    key: 'pops', label: 'Metro POP', endpoint: '/pops', display: 'code', group: 'Node Inventory',
+    key: 'pops', label: 'POP / AREA', endpoint: '/pops', display: 'code', group: 'Node Inventory',
     fields: [
       { name: 'code', label: 'Code', required: true },
       { name: 'name', label: 'Name', required: true },

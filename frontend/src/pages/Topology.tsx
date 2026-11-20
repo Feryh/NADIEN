@@ -1413,7 +1413,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
           (r.devices_moved ? `, ${r.devices_moved} perangkat dipindah dari UNASSIGNED ke POP kotanya` : '') +
           (r.pops_created.length ? ` (POP baru: ${r.pops_created.join(', ')})` : '') +
           `. ${left.unmapped_pops.length} POP belum dipetakan` +
-          (left.unmapped_pops.length ? ` (isi kolom Area di Inventory → Metro POP): ${left.unmapped_pops.slice(0, 15).join(', ')}${left.unmapped_pops.length > 15 ? ', …' : ''}` : ''),
+          (left.unmapped_pops.length ? ` (isi kolom Area di Inventory → POP / AREA): ${left.unmapped_pops.slice(0, 15).join(', ')}${left.unmapped_pops.length > 15 ? ', …' : ''}` : ''),
       })
       await load()
     } catch (e) {
