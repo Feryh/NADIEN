@@ -8,9 +8,15 @@ written and matched space-insensitively elsewhere. LAG members are added inside 
 IS-IS NET: ` net 49.0001.0000.0000.0001.00` inside the isis block.
 """
 
+import re
+
 from .base import Block, ParsedConfig, find_blocks, indent_tree, ip_only, to_cidr, to_int
 
 LOOPBACK_PREFIX = "loopback"
+# RANCID sometimes captures the pager's echo in front of a line: `                      showrun showrun showrun
+# interface lag 2`. Indented, that line would read as part of the interface before it, which would take lag 2's
+# address and description (DPS-SGR eth-25gi 0/1/0/24.1155 got 172.15.3.169 instead of 172.16.39.2).
+_PAGER_ECHO = re.compile(r"^[ \t]*(?:showrun[ \t]+)+(?=\S)", re.MULTILINE)
 
 
 def _interface(cfg: ParsedConfig, block: Block) -> None:
@@ -37,7 +43,7 @@ def _interface(cfg: ParsedConfig, block: Block) -> None:
 
 def parse(text: str) -> ParsedConfig:
     cfg = ParsedConfig(vendor="fiberhome")
-    blocks = indent_tree(text)
+    blocks = indent_tree(_PAGER_ECHO.sub("", text))
     for block in blocks:
         words = block.words
         if words[0] in ("hostname", "sysname") and len(words) > 1:

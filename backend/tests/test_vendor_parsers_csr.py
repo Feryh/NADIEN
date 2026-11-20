@@ -86,3 +86,12 @@ def test_should_classify_as_csr_when_hostname_is_cell_site_despite_me_token():
 ])
 def test_should_match_whole_port_names_only_when_reading_descriptions(text, name, expected):
     assert _names_port(text, name) is expected
+
+
+def test_should_start_a_new_interface_when_rancid_left_pager_echo_before_it_in_a_fiberhome_config():
+    text = ("interface eth-25gi 0/1/0/24.1155\n ip address 172.16.39.2/30\n description To DPS-NDC via FS\n!\n"
+            "                      showrun showrun showrun interface lag 2\n lag mode lacp\n"
+            " lag add interface eth-25gi 0/1/0/16\n ip address 172.15.3.169/30\n description to-EMR-51604\n!\n")
+    cfg = parse_config(text, "fiberhome")
+    assert (cfg.interfaces["eth-25gi 0/1/0/24.1155"].ipv4, cfg.interfaces["lag 2"].ipv4) == (
+        "172.16.39.2/30", "172.15.3.169/30")
