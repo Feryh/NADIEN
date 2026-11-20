@@ -130,6 +130,30 @@ def test_should_read_rrd_history_from_the_narrower_bundle_when_its_far_end_bundl
     assert (target.ref.observium_port_id, target.swapped) == (22, True)
 
 
+def test_should_read_rrd_history_on_the_csr_server_when_the_narrow_far_end_of_a_shared_nni_lives_there(db):
+    from app.collectors.observium.rrd import _targets
+
+    a, b = _devices(db)
+    sg91 = m.Interface(device_id=a.id, name="smartgroup91", if_type="bundle", speed_gbps=20, out_gbps=9.0)  # NNI XL
+    far = m.Interface(device_id=b.id, name="xgei-1/1/0/9", if_type="physical", speed_gbps=10, out_gbps=0.9)
+    db.add_all([sg91, far])
+    db.flush()
+    db.add_all([m.Link(name="nni", a_device_id=a.id, a_interface_id=sg91.id, b_device_id=b.id, b_interface_id=far.id,
+                       capacity_gbps=10, status="up", discovery_source="ip"),
+                m.ObserviumPort(interface_id=sg91.id, observium_port_id=11, if_index=1, observium_hostname="a"),
+                m.ObserviumPort(interface_id=far.id, observium_port_id=22, if_index=2, observium_hostname="b",
+                                source="csr")])
+    db.commit()
+
+    class Source:
+        def usable(self, ref):
+            return True
+
+    main, _ = _targets(db, Source(), "main")
+    (csr,), _ = _targets(db, Source(), "csr")
+    assert main == [] and (csr.ref.observium_port_id, csr.swapped) == (22, True)
+
+
 def test_should_leave_rate_unknown_when_observium_reports_more_than_the_port_can_carry():
     rec = parse_port({"port_id": "1", "device_id": "1", "ifName": "ethernet0/9/0", "ifHighSpeed": "10000",
                       "ifOperStatus": "up", "ifInOctets_rate": str(int(548832e9 / 8)), "ifOutOctets_rate": "125000000"})
