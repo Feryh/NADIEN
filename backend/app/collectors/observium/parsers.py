@@ -36,13 +36,17 @@ ROLE_TOKENS: dict[str, str] = {
     "DCI": "dci",
     "P": "p", "CORE": "p", "CR": "p",
     "PE": "pe", "PESH": "pe",
-    "PEIN": "agg",  # PEIN1-H-JKTS-IDT: metro/aggregation PEs; a hostname that also says SPE stays a PE "CGW": "pe", "NNI": "pe", "BR": "pe",
+    "CGW": "pe", "NNI": "pe", "BR": "pe",
+    "PEIN": "agg",  # PEIN1-H-JKTS-IDT: metro/aggregation PEs; a hostname that also says SPE stays a PE
     "ME": "agg", "AGG": "agg", "CS": "agg",
     "DS": "switch",  # DS1-S6730-…, DS2-C3750-…: distribution switches, not routers
     "SW": "access", "ACC": "access", "AC": "access", "CSG": "access",
     "CPE": "cpe",  # TNG-BJJ-CPE1-SRX300, CPE1-ATN910-…: customer-premises routers, not PEs
 }
 _TOKEN_SPLIT = re.compile(r"[-_.\s]+")
+# Huawei ATN910 routers (PE1-ATN910C-TJB-KMN) aggregate access at the metro layer whatever their role token says;
+# a CPE1-ATN910-… stays a customer-premises router.
+METRO_MODEL_PREFIXES = ("ATN910",)
 
 # Column sizes in models.Interface; PostgreSQL rejects longer values instead of truncating.
 MAX_IFNAME = 128
@@ -155,6 +159,8 @@ def role_from_hostname(hostname: str) -> str | None:
     words = [token.rstrip("0123456789") for token in tokens]
     if "PEIN" in words and "SPE" in words:
         return "pe"
+    if "CPE" not in words and any(token.startswith(METRO_MODEL_PREFIXES) for token in tokens):
+        return "agg"
     return next((role for token in tokens if (role := _role_word(token))), None)
 
 
