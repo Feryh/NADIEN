@@ -332,6 +332,31 @@ def _store(db: Session, t: Target, got: Any, nan_days: int, report: dict[str, An
     return True
 
 
+def shared_port_only(db: Session) -> list[m.Link]:
+    """Links whose only monitored end is a carrier NNI bundle other links share (PE1-ATN910-BTL-SWN Gi0/2/0, not in
+    Observium, to PEIN-H-TGSL-BSD Eth-Trunk11 shared by 6 links). That bundle is never read for one of them, so
+    nothing can tell their traffic: their history, read from the bundle before, goes."""
+    links = [l for l in db.scalars(select(m.Link)) if l.status != "down"]
+    shared = shared_ports((l.a_interface_id, l.b_interface_id) for l in links)
+    ends = sorted({i for l in links for i in (l.a_interface_id, l.b_interface_id) if i})
+    speeds = dict(db.execute(select(m.Interface.id, m.Interface.speed_gbps)
+                             .where(m.Interface.id.in_(ends))).tuples().all())
+    monitored = set(db.scalars(select(m.ObserviumPort.interface_id).where(m.ObserviumPort.interface_id.in_(ends))))
+    return [l for l in links
+            if any(wide_end_excluded(speeds.get(narrow), speeds.get(wide), wide in shared) and narrow not in monitored
+                   for wide, narrow in ((l.a_interface_id, l.b_interface_id), (l.b_interface_id, l.a_interface_id)))]
+
+
+def _clear_shared_port_only(db: Session) -> int:
+    blind = shared_port_only(db)
+    if blind:
+        db.execute(delete(m.UtilizationSample).where(m.UtilizationSample.link_id.in_([l.id for l in blind])))
+        for link in blind:
+            link.current_gbps = 0.0
+        db.commit()
+    return len(blind)
+
+
 def sync_rrd(db: Session, source: RrdSource, days: int = 90,
              progress: Callable[[str], None] | None = None, server: str = "main",
              backfill_days: int | None = None) -> dict[str, Any]:
@@ -344,6 +369,8 @@ def sync_rrd(db: Session, source: RrdSource, days: int = 90,
                               "links_without_port_map": unmapped, "links_with_history": 0, "missing_files": 0,
                               "errors": [], "error_count": 0, "samples": 0, "days_without_data": 0,
                               "possibly_clipped": [], "spikes_ignored": 0}
+    if server == "main":
+        report["links_on_shared_port_only"] = _clear_shared_port_only(db)
     if backfill_days is not None:
         report["backfill_days"] = backfill_days
         report["links_backfilled"] = sum(len(ts) for window, ts in windows.items() if window != days)

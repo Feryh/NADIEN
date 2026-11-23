@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from ..models import Device, Interface, Link, LinkApproval, LldpNeighbor, TopologyEvent, UtilizationSample
@@ -99,13 +99,15 @@ class _Discovery:
     def __init__(self, db: Session):
         self.db = db
         self.stats: Counter[str] = Counter()
-        self.devices = {d.id: d for d in db.scalars(select(Device))}
+        # A decommissioned box (P1-NCS5504-BDL-KDT, SRG-SMY-ME1-FH820) keeps its last LLDP table, config and
+        # addresses; none of them may draw a link any more.
+        self.devices = {d.id: d for d in db.scalars(select(Device).where(Device.status != "decommissioned"))}
         self.by_host = {norm_host(d.hostname): d for d in self.devices.values()}
         self.by_host_key = {host_key(d.hostname): d for d in self.devices.values()}
         self._add_site_keys()
         self.host_first_parts = {k.split("-")[0] for k in self.by_host_key}
         self.max_host_parts = max((k.count("-") + 1 for k in self.by_host_key), default=1)
-        self.ifaces = {i.id: i for i in db.scalars(select(Interface))}
+        self.ifaces = {i.id: i for i in db.scalars(select(Interface)) if i.device_id in self.devices}
         self.if_index = {(i.device_id, norm_if(i.name)): i for i in self.ifaces.values()}
         self.adjacencies: dict[frozenset[int], _Adjacency] = {}
         self.covered: set[int] = set()
@@ -184,7 +186,7 @@ class _Discovery:
 
     def from_lldp(self) -> list[str]:
         unresolved = []
-        for n in self.db.scalars(select(LldpNeighbor)):
+        for n in self.db.scalars(fresh_lldp(self.db)):
             local = self.devices.get(n.device_id)
             remote = self.by_host.get(norm_host(n.remote_system_name))
             if local is None or remote is None:
@@ -612,6 +614,19 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
     )
 
 
+def fresh_lldp(db: Session):
+    """LLDP rows refreshed within `lldp_max_age_days` of the newest ones. A sync replaces only the tables of the
+    devices it polls, so a box Observium dropped (SRG-SMY-ME1-FH820, swapped for SRG-SMY-ME1-M8) keeps its last
+    table; measured against the newest rows, a sync that has not run for a while does not age everything out."""
+    from ..config import settings
+
+    newest = db.scalar(select(func.max(LldpNeighbor.collected_at)))
+    stmt = select(LldpNeighbor)
+    if newest is None or settings.lldp_max_age_days <= 0:
+        return stmt
+    return stmt.where(LldpNeighbor.collected_at >= newest - timedelta(days=settings.lldp_max_age_days))
+
+
 def _p2p_net(address: str | None) -> ipaddress.IPv4Network | None:
     """The /30 or /31 an address sits in: such a subnet has room for two routers only."""
     try:
@@ -686,7 +701,7 @@ def unknown_lldp_peers(db: Session) -> list[dict[str, Any]]:
     p2p = _P2pIndex(run)
     drawn = {frozenset((link.a_interface_id, link.b_interface_id))
              for link in db.scalars(select(Link).where(Link.discovery_source == "ip"))}
-    for n in db.scalars(select(LldpNeighbor)):
+    for n in db.scalars(fresh_lldp(db)):
         local = run.devices.get(n.device_id)
         if local is None or run.by_host.get(norm_host(n.remote_system_name)) is not None:
             continue

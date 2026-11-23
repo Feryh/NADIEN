@@ -396,3 +396,41 @@ def test_should_draw_the_address_pair_with_the_holder_that_is_up_when_a_standby_
     assert discover_links(db).ip_links == 1
     (link,) = db.scalars(select(m.Link)).all()
     assert {link.a_interface_id, link.b_interface_id} == {ports["DPS-KRS-ME1-NCS540"].id, ports["DPS-NDC-ME1-M8"].id}
+
+
+def test_should_not_draw_a_link_from_the_lldp_table_of_a_box_observium_stopped_polling(db):
+    """SRG-SMY-ME1-FH820 was swapped for SRG-SMY-ME1-M8: Observium no longer polls it, so its LLDP table stays as it
+    was on the day it dropped out, while SRG-BNG-HW-M4's own table now names the M8."""
+    from datetime import datetime, timedelta
+
+    pop = m.Pop(code="SRG", name="Serang")
+    db.add(pop)
+    db.flush()
+    bng, old, new = (m.Device(hostname=h, pop_id=pop.id)
+                     for h in ("SRG-BNG-HW-M4", "SRG-SMY-ME1-FH820", "SRG-SMY-ME1-M8"))
+    db.add_all([bng, old, new])
+    db.flush()
+    db.add_all([m.Interface(device_id=bng.id, name="100GE0/5/1", speed_gbps=100),
+                m.Interface(device_id=old.id, name="eth-100gi0/1/0/25", speed_gbps=100),
+                m.Interface(device_id=new.id, name="100GE0/2/0", speed_gbps=100)])
+    now = datetime(2026, 11, 23, 2, 0)
+    db.add_all([
+        m.LldpNeighbor(device_id=bng.id, local_interface="100GE0/5/1", remote_system_name="SRG-SMY-ME1-M8",
+                       remote_port_id="100GE0/2/0", collected_at=now),
+        m.LldpNeighbor(device_id=old.id, local_interface="eth-100gi0/1/0/25", remote_system_name="SRG-BNG-HW-M4",
+                       remote_port_id="100GE0/5/1", collected_at=now - timedelta(days=21)),
+    ])
+    db.commit()
+    discover_links(db)
+    assert [l.name for l in db.scalars(select(m.Link)) if l.status == "up"] == [
+        "SRG-BNG-HW-M4:100GE0/5/1 <> SRG-SMY-ME1-M8:100GE0/2/0"]
+
+
+def test_should_not_draw_links_of_a_decommissioned_device_from_its_config(db):
+    _network(db, "")
+    links = discover_links(db).config_links
+    device = db.scalars(select(m.Device)).first()
+    device.status = "decommissioned"
+    db.commit()
+    assert links == 1 and discover_links(db).config_links == 0
+    assert all(l.status == "down" for l in db.scalars(select(m.Link)))

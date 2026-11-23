@@ -245,3 +245,30 @@ def test_should_drop_window_days_the_source_no_longer_has_when_storing_rrd_histo
     _store(db, Target(link, None, False), [(today - timedelta(days=5), 1.2, 0.1)], 0, report, window_days=90)
     db.commit()
     assert [s.in_gbps for s in db.scalars(select(m.UtilizationSample))] == [1.2]
+
+
+def test_should_clear_the_history_of_a_link_whose_only_monitored_end_is_a_shared_nni_bundle(db):
+    from app.collectors.observium.rrd import _clear_shared_port_only
+
+    a, b = _devices(db)
+    other = m.Device(hostname="PE1-ATN910-BTL-XXX", pop_id=b.pop_id)
+    db.add(other)
+    db.flush()
+    trunk = m.Interface(device_id=a.id, name="Eth-Trunk11", if_type="bundle", speed_gbps=40)
+    own = m.Interface(device_id=b.id, name="GigabitEthernet0/2/0", speed_gbps=1)  # not in Observium
+    far2 = m.Interface(device_id=other.id, name="GigabitEthernet0/2/0", speed_gbps=1)
+    db.add_all([trunk, own, far2])
+    db.flush()
+    link = m.Link(name="btl", a_device_id=b.id, a_interface_id=own.id, b_device_id=a.id, b_interface_id=trunk.id,
+                  capacity_gbps=1, current_gbps=13.6, status="up", discovery_source="ip")
+    db.add_all([link, m.Link(name="other", a_device_id=other.id, a_interface_id=far2.id, b_device_id=a.id,
+                             b_interface_id=trunk.id, capacity_gbps=1, status="up", discovery_source="ip"),
+                m.ObserviumPort(interface_id=trunk.id, observium_port_id=11, if_index=1, observium_hostname="a"),
+                m.ObserviumPort(interface_id=far2.id, observium_port_id=33, if_index=3, observium_hostname="c")])
+    db.flush()
+    from datetime import datetime
+
+    db.add(m.UtilizationSample(link_id=link.id, ts=datetime(2026, 11, 20), in_gbps=13.6, out_gbps=1.0))
+    db.commit()
+    assert _clear_shared_port_only(db) == 1
+    assert link.current_gbps == 0.0 and db.scalars(select(m.UtilizationSample)).all() == []
