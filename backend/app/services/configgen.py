@@ -2,12 +2,21 @@
 
 Templates follow the service configs found in this network's RANCID backups (2026-11), not generic vendor
 examples:
-- l2vpn / iplc: LDP pseudowire to the other PE loopback. Huawei, ZTE and FiberHome build even point-to-point
+- l2vpn / iplc, Martini signalling (default): LDP pseudowire to the other PE loopback. Huawei, ZTE and FiberHome
+  build even point-to-point
   services as a VPLS instance with one peer (Huawei `vsi … pwsignal ldp`, ZTE `vpls`, FiberHome `vfi`); IOS-XR
-  uses `xconnect group … p2p` with the `MPLS-CONTROL-WORD` pw-class. The VC id is the VLAN, as on the ZTE metro,
+  uses a bridge-domain with the neighbour under it and the `MPLS-CONTROL-WORD` pw-class, in the bridge group the
+  box already uses most (myrepublic on the metro, MORATEL on the xMTI backbone). The VC id is the VLAN, as on the ZTE metro,
   unless given; the L2 MTU is the 2000 used by the metro VPLS instances. A VPLS request may list several VLANs:
   each gets its own sub-interface and instance (OXY_1480 … OXY_1485 in the backups). On ZTE the pw names are
   allocated from the device's RANCID running config: the lowest pwN not yet declared or referenced.
+- l2vpn / iplc, Kompella signalling: BGP auto-discovery and signalling (RFC 4761/6624), as on the xMTI boxes:
+  Huawei `vsi NAME auto` + `pwsignal bgp` (site N range 10 default-offset 1, encapsulation rfc4761-compatible),
+  IOS-XR bridge-domain + `vfi` with `autodiscovery bgp` / `signaling-protocol bgp` (ve-id = site, ve-range 11), ZTE
+  `vpws-community` + `auto-discovery kompella` (site N, remote-ce-range 1 10, access-point … map ce M). RD and RT
+  are both ASN:VC id unless given; site A is CE/site 1 and site B is 2. The BGP l2vpn sessions to the route
+  reflectors already exist on these boxes (`l2vpn-ad-family`, `address-family l2vpn vpls[-vpws]`), so no BGP
+  lines are written. FiberHome has no BGP-signalled L2VPN in the backups and keeps Martini only.
 - l3vpn: VRF with RD/RT from the service, sub-interface in the VRF, connected routes into BGP. The VRF block is
   only written (and removed on rollback) when no other live service already uses that VRF on the device.
 - internet: sub-interface with a public address in the global table.
@@ -36,6 +45,7 @@ from .l2vpn_peers import pw_usage, vpls_instances
 from .vendors import DIALECT_LABELS, dialect_for
 
 VC_ID_BASE = 100000  # services without a VLAN: 100000 + service id
+DEFAULT_XR_BRIDGE_GROUP = "Corporate"  # when the running config cannot be read
 MAX_VLANS = 64
 L2_MTU = 2000
 SYNTAX_WARNING = "Template mengikuti config layanan di backup RANCID; tetap cocokkan dengan versi software perangkat."
@@ -58,6 +68,9 @@ class Addressing:
     b_peer: str | None = None
     # Site B joins a VPLS already on its PE instead of getting an access port: vpls_key() of the instance.
     b_vpls: str | None = None
+    # L2VPN signalling: "martini" (LDP pseudowire) or "kompella" (BGP auto-discovery and signalling).
+    signaling: Literal["martini", "kompella"] = "martini"
+    l2_rd: str | None = None  # Kompella RD and RT (ASN:N); default ASN:VC id
 
 
 @dataclass
@@ -65,7 +78,6 @@ class _Ctx:
     service: m.Service
     customer: str
     name: str  # VSI / VPLS / VFI / p2p instance name, e.g. PT-CONTOH_1201
-    group: str  # IOS-XR xconnect group, e.g. xg_PT-CONTOH
     port: str
     sub: str
     vlan: int | None
@@ -84,6 +96,10 @@ class _Ctx:
     vc_conflicts: list[str] = field(default_factory=list)  # why this VC id cannot be used as is
     pw: str | None = None  # ZTE pw name allocated from the running config
     first: bool = True  # first VLAN of a batch: carries the vendor's entry command and shared blocks
+    site: int = 1  # Kompella: local site / CE id (site A = 1, site B = 2)
+    remote_site: int = 2
+    l2_rd: str = "<asn>:<id>"  # Kompella RD and RT
+    bridge_group: str = DEFAULT_XR_BRIDGE_GROUP  # IOS-XR: the group the box already uses most
 
     @property
     def mbps(self) -> int:
@@ -241,7 +257,11 @@ def _endpoint(db: Session, service: m.Service, customer: m.Customer | None, labe
         out["warnings"].append("Vendor/OS perangkat tidak didukung generator (VRP, ZTE, IOS-XR, FiberHome); tulis manual.")
         return out
     out["dialect_label"] = DIALECT_LABELS[dialect]
+    kompella = _kind(service.service_type) == "l2vpn" and addressing.signaling == "kompella"
     join = addressing.b_vpls if label == "B" and _kind(service.service_type) == "l2vpn" else None
+    if join and kompella:
+        out["warnings"].append("Gabung ke VPLS existing hanya untuk signaling Martini (LDP).")
+        return out
     if join:
         _join_vpls(db, service, device, dialect, join, peer_id, peer_ip, addressing, vlans, config_source, out)
         return out
@@ -249,20 +269,30 @@ def _endpoint(db: Session, service: m.Service, customer: m.Customer | None, labe
         out["warnings"].append(f"Site {label} belum punya port akses: pilih port, atau gabungkan ke VPLS yang sudah ada.")
         return out
     kind = _kind(service.service_type)
-    template = TEMPLATES[dialect].get(kind)
+    template = KOMPELLA.get(dialect) if kompella else TEMPLATES[dialect].get(kind)
+    if kompella and template is None:
+        out["warnings"].append(f"Signaling Kompella (BGP) tidak dibuat untuk {DIALECT_LABELS[dialect]}: backup RANCID "
+                               "tidak memuat contohnya. Pakai signaling Martini (LDP).")
+        return out
     if template is None:
         out["warnings"].append(f"{service.service_type.upper()} tidak dibuat untuk {DIALECT_LABELS[dialect]}: perangkat "
                                "jenis ini di jaringan hanya membawa L2 (VPLS), tidak ada contoh konfigurasinya.")
         return out
-    contexts = [_context(db, service, customer, device, port, peer_id, ip, peer_ip, addressing, vlan, first=i == 0)
+    contexts = [_context(db, service, customer, device, port, peer_id, ip, peer_ip, addressing, vlan, first=i == 0,
+                         label=label)
                 for i, vlan in enumerate(vlans or [None])]
     warnings: list[str] = []
-    if kind == "l2vpn" and peer_dialect and (dialect == "fiberhome") != (peer_dialect == "fiberhome"):
+    if kompella and peer_dialect and (dialect == "zte") != (peer_dialect == "zte"):
+        warnings.append("Kompella di ZTE berbentuk VPWS (vpws-community), di Huawei/IOS-XR berbentuk VPLS (vsi / vfi): "
+                        "pastikan RR meneruskan signaling vpls dan vpws, dan site/CE id kedua ujung saling cocok.")
+    if kind == "l2vpn" and not kompella and peer_dialect and (dialect == "fiberhome") != (peer_dialect == "fiberhome"):
         warnings.append("FiberHome memakai pseudowire tanpa control-word (encapsulation raw), vendor lain dengan "
                         "control-word: samakan pengaturan control-word di kedua ujung.")
     if addressing.vc_id and len(contexts) > 1:
         warnings.append("VC id manual diabaikan untuk batch beberapa VLAN: isi VC id per VLAN.")
-    if kind == "l2vpn":
+    if kompella:
+        _check_kompella(contexts, addressing, config_source, device.id, dialect, out["notes"], warnings)
+    elif kind == "l2vpn":
         _check_running_config(contexts, config_source, device.id, dialect, out["notes"], warnings)
     config: list[str] = []
     rollback: list[str] = []
@@ -277,6 +307,10 @@ def _endpoint(db: Session, service: m.Service, customer: m.Customer | None, labe
     if kind == "l2vpn":
         out["vc_ids"] = [{"vlan": ctx.vlan, "vc_id": ctx.vc_id, "pw": ctx.pw, "conflicts": ctx.vc_conflicts}
                          for ctx in contexts]
+        out["signaling"] = addressing.signaling
+        if kompella:
+            out["kompella"] = [{"vlan": ctx.vlan, "rd": ctx.l2_rd, "site": ctx.site, "remote_site": ctx.remote_site}
+                               for ctx in contexts]
     return out
 
 
@@ -378,6 +412,7 @@ def _check_running_config(contexts: list[_Ctx], config_source: ConfigSource, dev
         else:
             notes.append(f"PW id belum dicek ke config perangkat: {exc}")
         return
+    _set_bridge_group(contexts, text, dialect, notes)
     in_use = set(pw_usage(text, dialect))
     for ctx in contexts:
         if (ctx.peer_loopback, ctx.vc_id) in in_use:
@@ -386,6 +421,60 @@ def _check_running_config(contexts: list[_Ctx], config_source: ConfigSource, dev
                             "isi VC id lain.")
     if dialect == "zte":
         _allocate_zte_pw(contexts, text, notes, warnings)
+
+
+_BGP_ASN = {"vrp": re.compile(r"^bgp (\d+)\s*$", re.M), "zte": re.compile(r"^router bgp (\d+)\s*$", re.M),
+            "iosxr": re.compile(r"^router bgp (\d+)\s*$", re.M)}
+_L2_BGP_FAMILY = {"vrp": re.compile(r"^\s*l2vpn-ad-family\s*$", re.M),
+                  "zte": re.compile(r"^\s*address-family l2vpn vpls\s*$", re.M),
+                  "iosxr": re.compile(r"^\s*address-family l2vpn vpls-vpws\s*$", re.M)}
+_RD_LINE = re.compile(r"^\s*(?:route-distinguisher|rd) (\S+)\s*$", re.M)
+
+
+_XR_BRIDGE_GROUP = re.compile(r"^ bridge group (\S+)\s*$", re.M)
+
+
+def _set_bridge_group(contexts: list[_Ctx], text: str, dialect: str, notes: list[str]) -> None:
+    """IOS-XR: the bridge group the box already uses most for its bridge-domains."""
+    if dialect != "iosxr":
+        return
+    groups = _XR_BRIDGE_GROUP.findall(text)
+    if not groups:
+        notes.append(f"Bridge group belum terbaca dari config perangkat: dipakai {DEFAULT_XR_BRIDGE_GROUP}.")
+        return
+    group = max(set(groups), key=groups.count)
+    for ctx in contexts:
+        ctx.bridge_group = group
+    notes.append(f"Bridge group {group} diambil dari config RANCID perangkat.")
+
+
+def _check_kompella(contexts: list[_Ctx], addressing: Addressing, config_source: ConfigSource, device_id: int,
+                    dialect: str, notes: list[str], warnings: list[str]) -> None:
+    """RD/RT per instance (ASN:VC id unless given), the ASN from the box's BGP process when not given, the BGP l2vpn
+    family the instance needs, and RDs already used on the box."""
+    text = ""
+    try:
+        text = config_source(device_id)
+    except running_config.RunningConfigError as exc:
+        notes.append(f"RD Kompella belum dicek ke config perangkat: {exc}")
+    asn = str(addressing.bgp_asn) if addressing.bgp_asn else ""
+    if not asn and text and (match := _BGP_ASN[dialect].search(text)):
+        asn = match.group(1)
+        notes.append(f"ASN BGP {asn} diambil dari config RANCID perangkat.")
+    if not asn:
+        warnings.append("ASN BGP belum diketahui: isi ASN atau ganti <asn> di RD/RT.")
+    if addressing.l2_rd and len(contexts) > 1:
+        warnings.append("RD/RT manual diabaikan untuk batch beberapa VLAN: tiap VLAN memakai ASN:VC id.")
+    if text and not _L2_BGP_FAMILY[dialect].search(text):
+        warnings.append("Address-family BGP L2VPN (Kompella) belum ada di config perangkat: aktifkan dulu ke RR.")
+    _set_bridge_group(contexts, text, dialect, notes)
+    in_use = set(_RD_LINE.findall(text))
+    for ctx in contexts:
+        manual = addressing.l2_rd if len(contexts) == 1 else None
+        ctx.l2_rd = manual or f"{asn or '<asn>'}:{ctx.vc_id}"
+        if ctx.l2_rd in in_use:
+            ctx.vc_conflicts.append(f"RD {ctx.l2_rd} sudah ada di config RANCID")
+            warnings.append(f"RD {ctx.l2_rd} sudah dipakai di config perangkat: isi VC id atau RD/RT lain.")
 
 
 def _allocate_zte_pw(contexts: list[_Ctx], text: str, notes: list[str], warnings: list[str]) -> None:
@@ -425,7 +514,7 @@ def _vc_clash(db: Session, service: m.Service, vc_id: int) -> str | None:
 
 def _context(db: Session, service: m.Service, customer: m.Customer | None, device: m.Device, port: str,
              peer_id: int | None, ip: str | None, peer_ip: str | None, addressing: Addressing, vlan: int | None,
-             first: bool) -> _Ctx:
+             first: bool, label: str = "A") -> _Ctx:
     warnings: list[str] = []
     sub = f"{port}.{vlan}" if vlan else port
     if not vlan:
@@ -436,7 +525,8 @@ def _context(db: Session, service: m.Service, customer: m.Customer | None, devic
     peer_loopback = peer_ip or (peer.loopback_ipv4 if peer else None)
     vc_id = vc_id_for(service, addressing, vlan)
     vc_conflicts: list[str] = []
-    if _kind(service.service_type) == "l2vpn":
+    kompella = _kind(service.service_type) == "l2vpn" and addressing.signaling == "kompella"
+    if _kind(service.service_type) == "l2vpn" and not kompella:
         if not peer_loopback:
             warnings.append("Loopback PE lawan belum diketahui: pilih neighbour atau isi <loopback-peer> secara manual.")
         clash = _vc_clash(db, service, vc_id)
@@ -462,16 +552,16 @@ def _context(db: Session, service: m.Service, customer: m.Customer | None, devic
     if vrf_exists:
         warnings.append(f"VRF {service.vrf_name} sudah dipakai layanan lain di perangkat ini: blok VRF tidak dibuat ulang "
                         "dan tidak dihapus saat rollback.")
-    customer_slug = _slug(customer.name)[:20] if customer else ""
     return _Ctx(
         service=service, customer=customer.name if customer else "",
-        name=instance_name(service, customer, vlan), group=f"xg_{customer_slug or 'NADIEN'}",
+        name=instance_name(service, customer, vlan),
         port=port, sub=sub, vlan=vlan,
         peer_loopback=peer_loopback or "<loopback-peer>",
         vc_id=vc_id, kbps=service.bandwidth_mbps * 1000, policer=addressing.policer,
         ip=parsed[0] if parsed else None, mask=parsed[1] if parsed else None,
         vrf=service.vrf_name or "<vrf>", rd=rd or "<rd>", rt=rts or ["<rt>"], asn=asn or "<asn>",
         vrf_exists=vrf_exists, warnings=warnings, vc_conflicts=vc_conflicts, first=first,
+        site=1 if label == "A" else 2, remote_site=2 if label == "A" else 1,
     )
 
 
@@ -506,6 +596,15 @@ def _vrp_sub(ctx: _Ctx) -> list[str]:
 def _vrp_l2vpn(ctx: _Ctx) -> tuple[list[str], list[str]]:
     config = ["system-view", f"vsi {ctx.name}", " pwsignal ldp", f"  vsi-id {ctx.vc_id}", "  control-word enable",
               f"  peer {ctx.peer_loopback}", "  quit", f" mtu {L2_MTU}", " encapsulation ethernet", " quit",
+              *_vrp_sub(ctx), f" l2 binding vsi {ctx.name}", *_vrp_car(ctx), " quit"]
+    return config, ["system-view", f"undo interface {ctx.sub}", f"undo vsi {ctx.name}"]
+
+
+def _vrp_kompella(ctx: _Ctx) -> tuple[list[str], list[str]]:
+    config = ["system-view", f"vsi {ctx.name} auto", " pwsignal bgp", f"  route-distinguisher {ctx.l2_rd}",
+              f"  vpn-target {ctx.l2_rd} import-extcommunity", f"  vpn-target {ctx.l2_rd} export-extcommunity",
+              "  encapsulation rfc4761-compatible", f"  site {ctx.site} range 10 default-offset 1", "  quit",
+              f" mtu {L2_MTU}", " encapsulation ethernet", " quit",
               *_vrp_sub(ctx), f" l2 binding vsi {ctx.name}", *_vrp_car(ctx), " quit"]
     return config, ["system-view", f"undo interface {ctx.sub}", f"undo vsi {ctx.name}"]
 
@@ -545,16 +644,37 @@ def _xr_service_policy(ctx: _Ctx) -> list[str]:
     return [f" service-policy input NADIEN-{ctx.mbps}M"] if ctx.policer else []
 
 
-def _xr_l2vpn(ctx: _Ctx) -> tuple[list[str], list[str]]:
-    config = ["configure", *_xr_policy(ctx), f"interface {ctx.sub} l2transport", f" description {ctx.description}"]
+def _xr_ac(ctx: _Ctx) -> list[str]:
+    """The attachment circuit: an l2transport sub-interface with the VLAN popped."""
+    lines = ["configure", *_xr_policy(ctx), f"interface {ctx.sub} l2transport", f" description {ctx.description}"]
     if ctx.vlan:
-        config += [f" encapsulation dot1q {ctx.vlan}", " rewrite ingress tag pop 1 symmetric"]
-    config += [*_xr_service_policy(ctx), "root", "l2vpn", f" xconnect group {ctx.group}", f"  p2p {ctx.name}",
-               f"   interface {ctx.sub}", f"   neighbor ipv4 {ctx.peer_loopback} pw-id {ctx.vc_id}",
-               "    pw-class MPLS-CONTROL-WORD", "root"]
+        lines += [f" encapsulation dot1q {ctx.vlan}", " rewrite ingress tag pop 1 symmetric"]
+    return lines + [*_xr_service_policy(ctx), "root"]
+
+
+def _xr_bridge_domain(ctx: _Ctx) -> list[str]:
+    return ["l2vpn", f" bridge group {ctx.bridge_group}", f"  bridge-domain {ctx.name}", f"   mtu {L2_MTU}",
+            f"   interface {ctx.sub}", "   exit"]
+
+
+def _xr_rollback(ctx: _Ctx) -> list[str]:
+    return ["configure", f"no l2vpn bridge group {ctx.bridge_group} bridge-domain {ctx.name}", f"no interface {ctx.sub}"]
+
+
+def _xr_l2vpn(ctx: _Ctx) -> tuple[list[str], list[str]]:
+    config = [*_xr_ac(ctx), *_xr_bridge_domain(ctx), f"   neighbor {ctx.peer_loopback} pw-id {ctx.vc_id}",
+              "    pw-class MPLS-CONTROL-WORD", "root"]
     ctx.warnings.append("pw-class MPLS-CONTROL-WORD harus sudah ada di perangkat (dipakai di metro Cisco).")
-    rollback = ["configure", f"no l2vpn xconnect group {ctx.group} p2p {ctx.name}", f"no interface {ctx.sub}"]
-    return config, rollback
+    return config, _xr_rollback(ctx)
+
+
+def _xr_kompella(ctx: _Ctx) -> tuple[list[str], list[str]]:
+    # ve-range 11 is the smallest IOS-XR takes; it covers Huawei's `site N range 10` on the far end.
+    config = [*_xr_ac(ctx), *_xr_bridge_domain(ctx), f"   vfi {ctx.name}", f"    vpn-id {ctx.vc_id}",
+              "    autodiscovery bgp", f"     rd {ctx.l2_rd}", f"     route-target import {ctx.l2_rd}",
+              f"     route-target export {ctx.l2_rd}", "     signaling-protocol bgp", f"      ve-id {ctx.site}",
+              "      ve-range 11", "root"]
+    return config, _xr_rollback(ctx)
 
 
 def _xr_sub_l3(ctx: _Ctx, vrf: bool) -> list[str]:
@@ -615,6 +735,15 @@ def _zte_l2vpn(ctx: _Ctx) -> tuple[list[str], list[str]]:
     return config, rollback
 
 
+def _zte_kompella(ctx: _Ctx) -> tuple[list[str], list[str]]:
+    config = ["configure terminal", *_zte_sections(ctx, []), f"vpws-community {ctx.name}", f"  rd {ctx.l2_rd}",
+              "  auto-discovery kompella", "    control-word preferred", f"    route-target import {ctx.l2_rd}",
+              f"    route-target export {ctx.l2_rd}", f"    site {ctx.site}", "      remote-ce-range 1 10",
+              f"        access-point {ctx.sub} map ce {ctx.remote_site}", "          access-params ethernet",
+              "          $", "        $", "      $", "    $", "  $", "$", *_zte_qos(ctx)]
+    return config, ["configure terminal", f"no vpws-community {ctx.name}", f"no interface {ctx.sub}"]
+
+
 def _zte_l3vpn(ctx: _Ctx) -> tuple[list[str], list[str]]:
     config = ["configure terminal"]
     if not ctx.vrf_exists:
@@ -665,6 +794,8 @@ TEMPLATES = {
     "zte": {"l2vpn": _zte_l2vpn, "l3vpn": _zte_l3vpn, "internet": _zte_internet},
     "fiberhome": {"l2vpn": _fh_l2vpn},
 }
+# L2VPN with Kompella (BGP) signalling; FiberHome has none in the backups.
+KOMPELLA = {"vrp": _vrp_kompella, "iosxr": _xr_kompella, "zte": _zte_kompella}
 
 # Saving is a commit on every platform here; no write/save.
 COMMIT: dict[str, list[str]] = {"vrp": ["commit", "return"], "zte": ["commit", "end"], "fiberhome": ["commit", "end"],
