@@ -108,6 +108,7 @@ const INPUTS = [
 
 type Inputs = Record<(typeof INPUTS)[number]['key'], string> & { vlan: string; vlans: string }
 type VlanMode = 'standard' | 'multiple'
+type Signaling = 'martini' | 'kompella'
 
 export default function ConfigGenerator() {
   const [params, setParams] = useSearchParams()
@@ -124,6 +125,8 @@ export default function ConfigGenerator() {
   // Kept across refetches (result is cleared while a new one loads) so VC id inputs keep focus.
   const [vcRows, setVcRows] = useState<VcIdView[]>([])
   const [policer, setPolicer] = useState(false)
+  const [signaling, setSignaling] = useState<Signaling>('martini')
+  const [l2Rd, setL2Rd] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const { can } = useAuth()
   const navigate = useNavigate()
@@ -156,8 +159,14 @@ export default function ConfigGenerator() {
       q.set('vc_ids', overrides.map(([vlan, vc]) => `${vlan}:${vc.trim()}`).join(','))
     }
     if (policer) q.set('policer', 'true')
+    if (mode === 'l2vpn' && signaling === 'kompella') {
+      q.set('signaling', 'kompella')
+      // Kompella needs the BGP ASN for its RD/RT; the box's own ASN is read from RANCID when left empty.
+      if (inputs.bgp_asn.trim()) q.set('bgp_asn', inputs.bgp_asn.trim())
+      if (/^\d+:\d+$/.test(l2Rd.trim())) q.set('l2_rd', l2Rd.trim())
+    }
     return q.toString()
-  }, [inputs, mode, vlanMode, vcIds, policer])
+  }, [inputs, mode, vlanMode, vcIds, policer, signaling, l2Rd])
 
   useEffect(() => {
     setVcRows([])
@@ -226,6 +235,18 @@ export default function ConfigGenerator() {
           <h3>Parameter {mode.toUpperCase()}</h3>
           <div className="mop-meta">
             {mode === 'l2vpn' && <label>
+              <span>Signaling L2VPN</span>
+              <select value={signaling} onChange={(e) => setSignaling(e.target.value as Signaling)}>
+                <option value="martini">Martini (LDP pseudowire)</option>
+                <option value="kompella">Kompella (BGP auto-discovery)</option>
+              </select>
+            </label>}
+            {mode === 'l2vpn' && signaling === 'kompella' && <label>
+              <span>RD / RT (opsional)</span>
+              <input value={l2Rd} placeholder="default ASN:VC id, mis. 46038:1480" maxLength={32}
+                onChange={(e) => setL2Rd(e.target.value)} />
+            </label>}
+            {mode === 'l2vpn' && <label>
               <span>Mode VLAN</span>
               <select value={vlanMode} onChange={(e) => setVlanMode(e.target.value as VlanMode)}>
                 <option value="standard">Standard (1 VLAN)</option>
@@ -244,7 +265,7 @@ export default function ConfigGenerator() {
               <small className="muted">Pisahkan VLAN dengan koma; gunakan tanda rentang untuk beberapa VLAN berurutan.</small>
             </label>}
             {INPUTS.filter((f) => mode === 'l2vpn'
-              ? vlanMode === 'standard' && f.key === 'vc_id'
+              ? (vlanMode === 'standard' && f.key === 'vc_id') || (signaling === 'kompella' && f.key === 'bgp_asn')
               : ['a_ip', 'b_ip', 'bgp_asn'].includes(f.key)).map((f) => (
                 <label key={f.key}>
                   <span>{f.label}</span>
@@ -262,7 +283,7 @@ export default function ConfigGenerator() {
             ? <>
                 <L2vpnHostnameForm devices={devices} baseQuery={query} standardPw={standardPw} vlanMode={vlanMode}
                   vcIds={vcIds} onVcIdChange={(vlan, value) => setVcIds({ ...vcIds, [vlan]: value })} />
-                <p className="hint">Standard: 1 VLAN, PW-id = VLAN kecuali VC / PW id diisi. Multi VLAN: satu pseudowire per VLAN dengan PW-id = VLAN masing-masing (bisa diganti di tabel).</p>
+                <p className="hint">Standard: 1 VLAN, PW-id = VLAN kecuali VC / PW id diisi. Multi VLAN: satu pseudowire per VLAN dengan PW-id = VLAN masing-masing (bisa diganti di tabel). Kompella: RD/RT = ASN:VC id (ASN dari config RANCID bila kosong), site A = CE 1 dan site B = CE 2; sesi BGP L2VPN ke RR harus sudah ada.</p>
               </>
             : <p className="hint">Parameter di atas diterapkan ke konfigurasi layanan yang dipilih di bawah. Untuk L2VPN, Standard menambah 1 VLAN (kosong = VLAN layanan, VC id bisa diisi); Multi VLAN menambah daftar/rentang VLAN sekaligus dengan VC id = VLAN masing-masing.</p>}
         </div>}

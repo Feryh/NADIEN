@@ -57,7 +57,7 @@ COMMANDS: dict[str, dict[str, list[str]]] = {
         "vrf": ["show vrf {vrf}"],
         "ping": ["ping {peer_lo} source {lo}"],
         "commit": ["commit label {circuit_tag}", "end"],
-        "verify_l2": ["show interfaces {sub}", "show l2vpn xconnect interface {sub} detail"],
+        "verify_l2": ["show interfaces {sub}", "show l2vpn bridge-domain interface {sub} detail"],
         "verify_l3": ["show interfaces {sub}", "show route vrf {vrf}", "show bgp vrf {vrf} summary"],
         "verify_inet": ["show interfaces {sub}", "show route | include {sub}"],
         "rollback": ["show configuration commit list", "rollback configuration last 1",

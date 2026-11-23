@@ -250,3 +250,56 @@ def test_should_fall_back_to_vc_named_pw_when_running_config_is_unavailable(db, 
 def test_should_reject_bad_vlan_list_via_api(client, make_service):
     service = make_service("vrp", "l2vpn")
     assert client.get(f"/api/configs/services/{service.id}", params={"vlans": "10-5000"}).status_code == 422
+
+
+VRP_RUNNING = "bgp 46038\n l2vpn-ad-family\n  peer 10.0.1.253 enable\n#\nvsi X auto\n pwsignal bgp\n  route-distinguisher 46038:301\n"
+
+
+def test_should_build_bgp_signalled_vsi_with_site_ids_when_kompella_is_chosen_on_vrp(db, make_service):
+    out = generate(db, make_service("vrp", "l2vpn"), Addressing(signaling="kompella"),
+                   config_source=lambda device_id: VRP_RUNNING)["endpoints"]
+    a, b = out["A"]["config"], out["B"]["config"]
+    assert a[1:5] == ["vsi PT-CONTOH_300 auto", " pwsignal bgp", "  route-distinguisher 46038:300",
+                      "  vpn-target 46038:300 import-extcommunity"]
+    assert "  site 1 range 10 default-offset 1" in a and "  site 2 range 10 default-offset 1" in b
+    assert not any("pwsignal ldp" in line or "peer " in line for line in a)
+
+
+XR_RUNNING = ("router bgp 46038\n address-family l2vpn vpls-vpws\nl2vpn\n bridge group MORATEL\n  bridge-domain X\n"
+              " bridge group MORATEL\n  bridge-domain Y\n bridge group Hairpin\n  bridge-domain Z\n")
+
+
+def test_should_put_the_vfi_with_ve_ids_in_a_bridge_domain_when_kompella_is_chosen_on_iosxr(db, make_service):
+    out = generate(db, make_service("iosxr", "l2vpn"), Addressing(signaling="kompella", bgp_asn=46038),
+                   config_source=lambda device_id: XR_RUNNING)["endpoints"]
+    a = out["A"]["config"]
+    assert a[a.index(" bridge group MORATEL"):][:7] == [
+        " bridge group MORATEL", "  bridge-domain PT-CONTOH_300", "   mtu 2000", "   interface ge-0/0/1.300",
+        "   exit", "   vfi PT-CONTOH_300", "    vpn-id 300"]
+    assert "      ve-id 1" in a and "      ve-id 2" in out["B"]["config"] and "     rd 46038:300" in a
+
+
+def test_should_put_the_ldp_neighbour_in_a_bridge_domain_when_martini_is_chosen_on_iosxr(db, make_service):
+    a = generate(db, make_service("iosxr", "l2vpn"), config_source=lambda device_id: XR_RUNNING)["endpoints"]["A"]
+    assert a["config"][-4:] == ["   exit", "   neighbor 10.0.0.1 pw-id 300", "    pw-class MPLS-CONTROL-WORD", "root"]
+    assert a["rollback"][1] == "no l2vpn bridge group MORATEL bridge-domain PT-CONTOH_300"
+
+
+def test_should_build_vpws_community_when_kompella_is_chosen_on_zte(db, make_service):
+    a = generate(db, make_service("zte", "l2vpn"), Addressing(signaling="kompella", l2_rd="46038:7670"),
+                 config_source=lambda device_id: "router bgp 46038\n  address-family l2vpn vpls\n")["endpoints"]["A"]
+    assert ["vpws-community PT-CONTOH_300", "  rd 46038:7670", "  auto-discovery kompella"] == a["config"][
+        a["config"].index("vpws-community PT-CONTOH_300"):][:3]
+    assert "        access-point ge-0/0/1.300 map ce 2" in a["config"]
+    assert a["rollback"][1] == "no vpws-community PT-CONTOH_300"
+
+
+def test_should_warn_when_kompella_rd_is_already_used_on_the_device(db, make_service):
+    a = generate(db, make_service("vrp", "l2vpn", vlan_id=301), Addressing(signaling="kompella"),
+                 config_source=lambda device_id: VRP_RUNNING)["endpoints"]["A"]
+    assert a["vc_ids"][0]["conflicts"] == ["RD 46038:301 sudah ada di config RANCID"]
+
+
+def test_should_keep_martini_only_when_device_is_fiberhome(db, make_service):
+    a = generate(db, make_service("fiberhome", "l2vpn"), Addressing(signaling="kompella"))["endpoints"]["A"]
+    assert a["config"] == [] and "Martini" in a["warnings"][0]

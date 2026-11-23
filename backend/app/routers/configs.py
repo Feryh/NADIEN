@@ -57,6 +57,8 @@ def addressing_params(
     a_peer: str | None = Query(None, max_length=15, description="L2VPN: neighbour di site A (loopback PE B), default dari inventory"),
     b_peer: str | None = Query(None, max_length=15, description="L2VPN: neighbour di site B (loopback PE A), default dari inventory"),
     b_vpls: str | None = Query(None, max_length=200, description="L2VPN: site B gabung ke VPLS existing (key dari /l2vpn/vpls), tanpa port akses"),
+    signaling: Literal["martini", "kompella"] = Query("martini", description="L2VPN: martini (LDP) atau kompella (BGP)"),
+    l2_rd: str | None = Query(None, max_length=32, pattern=r"^\d+:\d+$", description="Kompella: RD dan RT (ASN:N); default ASN:VC id"),
 ) -> Addressing:
     """Shared by the config generator and the MoP routes; bad addresses are a 422 before anything is built."""
     try:
@@ -69,7 +71,7 @@ def addressing_params(
     except AddressError as exc:
         raise HTTPException(422, str(exc)) from exc
     return Addressing(a_ip or None, b_ip or None, vc_id, bgp_asn, policer, vlan_list, vc_id_map, *peers,
-                      b_vpls=(b_vpls or "").strip() or None)
+                      b_vpls=(b_vpls or "").strip() or None, signaling=signaling, l2_rd=l2_rd or None)
 
 
 def _service(db: Session, service_id: int) -> m.Service:
