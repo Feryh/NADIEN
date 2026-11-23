@@ -25,7 +25,9 @@ from ..services.capacity import (
     utilization_pct,
     read_narrow_end,
     read_on_wider_end,
+    shared_ports,
     spike_indexes,
+    wide_end_excluded,
 )
 from ..services.olt import (PonUsage, is_management_port, is_pon_port, olt_layout, onts_online, pon_level,
                             pon_port_occupancy)
@@ -101,6 +103,8 @@ def _wider_end_links(db: Session, link_ids: set[int] | None = None) -> set[int]:
     if link_ids is not None:
         stmt = stmt.where(m.Link.id.in_(link_ids))
     links = db.execute(stmt).all()
+    shared = shared_ports(db.execute(select(m.Link.a_interface_id, m.Link.b_interface_id)
+                                     .where(m.Link.status != "down")).tuples())
     iface_ids = {i for row in links for i in row[1:] if i}
     ports = {row.id: row for row in db.execute(select(
         m.Interface.id, m.Interface.speed_gbps, m.Interface.in_gbps, m.Interface.out_gbps).where(
@@ -115,7 +119,8 @@ def _wider_end_links(db: Session, link_ids: set[int] | None = None) -> set[int]:
 
     return {l.id for l in links if read_on_wider_end((speed(l.a_interface_id), speed(l.b_interface_id)),
                                                      (rate(l.a_interface_id), rate(l.b_interface_id)),
-                                                     (l.a_interface_id in monitored, l.b_interface_id in monitored))}
+                                                     (l.a_interface_id in monitored, l.b_interface_id in monitored),
+                                                     (l.a_interface_id in shared, l.b_interface_id in shared))}
 
 
 def _context(db: Session):
@@ -346,7 +351,8 @@ def _link_ends(db: Session) -> dict[int, dict[str, Any]]:
     """Per link: device ids and the port at each end, and whether it is a bundle (LAG), so a hot link can be
     checked on the device straight away."""
     rows = db.execute(select(m.Link.id, m.Link.a_device_id, m.Link.a_interface_id, m.Link.b_device_id,
-                             m.Link.b_interface_id)).all()
+                             m.Link.b_interface_id, m.Link.status)).all()
+    shared = shared_ports((r.a_interface_id, r.b_interface_id) for r in rows if r.status != "down")
     ports = {i.id: i for i in db.execute(select(m.Interface.id, m.Interface.name, m.Interface.if_type,
                                                 m.Interface.speed_gbps, m.Interface.in_gbps, m.Interface.out_gbps)
                                          .where(m.Interface.id.in_(select(m.Link.a_interface_id).union(
@@ -357,20 +363,24 @@ def _link_ends(db: Session) -> dict[int, dict[str, Any]]:
         ends[r.id] = {"a_device_id": r.a_device_id, "b_device_id": r.b_device_id,
                       "a_port": a.name if a else None, "b_port": b.name if b else None,
                       "bundle": any(p is not None and p.if_type == "bundle" for p in (a, b)),
-                      "live_gbps": _live_rate(a, b)}
+                      "live_gbps": _live_rate(a, b, r.a_interface_id in shared, r.b_interface_id in shared)}
     return ends
 
 
-def _live_rate(a: Any, b: Any) -> float | None:
+def _live_rate(a: Any, b: Any, a_shared: bool = False, b_shared: bool = False) -> float | None:
     """The busier direction Observium reported at the last Full sync, read on the same end the history comes from
-    (the narrower one): the number to hold against Observium's port page, next to the planning value."""
+    (the narrower one): the number to hold against Observium's port page, next to the planning value. A wider end
+    other links share is never read for this one."""
     def busiest(port: Any) -> float | None:
         return None if port is None else max(port.in_gbps or 0.0, port.out_gbps or 0.0)
 
-    narrow_b = a is not None and b is not None and read_narrow_end(b.speed_gbps, a.speed_gbps, busiest(b), busiest(a))
-    order = (b, a) if narrow_b else (a, b)
-    for port in order:
-        if port is not None and (port.in_gbps is not None or port.out_gbps is not None):
+    narrow_b = a is not None and b is not None and read_narrow_end(b.speed_gbps, a.speed_gbps, busiest(b), busiest(a),
+                                                                   a_shared)
+    order = [(b, a, b_shared), (a, b, a_shared)] if narrow_b else [(a, b, a_shared), (b, a, b_shared)]
+    for port, other, shared in order:
+        if port is None or (other is not None and wide_end_excluded(other.speed_gbps, port.speed_gbps, shared)):
+            continue
+        if port.in_gbps is not None or port.out_gbps is not None:
             return round(max(port.in_gbps or 0.0, port.out_gbps or 0.0), 3)
     return None
 

@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from ... import models as m
 from ...config import settings
 from ...services.areas import FUNCTION_TOKENS, csr_parts, is_city_code
-from ...services.capacity import read_narrow_end
+from ...services.capacity import read_narrow_end, shared_ports, wide_end_excluded
 from ...services.topology import discover_links, legacy_host_key, norm_host, norm_if
 from .client import ObserviumClient
 from .parsers import (
@@ -464,7 +464,9 @@ def _write_utilization(db: Session, rates: dict[int, tuple[float | None, float |
                                          for iface_id, (in_g, out_g) in rates.items()])
     speeds = dict(db.execute(select(m.Interface.id, m.Interface.speed_gbps).where(
         m.Interface.id.in_(select(m.Link.a_interface_id).union(select(m.Link.b_interface_id))))).tuples().all())
-    for link in db.scalars(select(m.Link)):
+    links = list(db.scalars(select(m.Link)))
+    shared = shared_ports((l.a_interface_id, l.b_interface_id) for l in links if l.status != "down")
+    for link in links:
         if link.status == "down":
             # A link discovery no longer sees often shares a port with the link that replaced it (a renamed far
             # end): the far end's traffic belongs to that live link, not to this one.
@@ -473,6 +475,10 @@ def _write_utilization(db: Session, rates: dict[int, tuple[float | None, float |
         a = rates.get(link.a_interface_id or -1)
         b = rates.get(link.b_interface_id or -1)
         a_ok, b_ok = bool(a and a[0] is not None), bool(b and b[0] is not None)
+        a_speed, b_speed = speeds.get(link.a_interface_id), speeds.get(link.b_interface_id)
+        # A carrier NNI bundle other links share carries all of them: only the far end is this link's traffic.
+        a_ok = a_ok and not wide_end_excluded(b_speed, a_speed, link.a_interface_id in shared)
+        b_ok = b_ok and not wide_end_excluded(a_speed, b_speed, link.b_interface_id in shared)
         if a_ok and b_ok and read_narrow_end(speeds.get(link.b_interface_id), speeds.get(link.a_interface_id),
                                              max(b[0] or 0, b[1] or 0), max(a[0] or 0, a[1] or 0)):
             # A bundle whose members lead to several boxes (smartgroup210: one member to this peer, one elsewhere)

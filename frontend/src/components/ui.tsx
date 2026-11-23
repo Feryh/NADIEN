@@ -52,6 +52,6 @@ export function fmtG(v: number | null | undefined): string {
 
 export function fmtMonths(v: number | null | undefined): string {
   if (v == null) return '—'
-  if (v === 0) return 'sudah lewat'
+  if (v === 0) return 'sudah di atas ambang'  // the trend's peak level is already past the threshold
   return `${v.toFixed(1)} bln`
 }

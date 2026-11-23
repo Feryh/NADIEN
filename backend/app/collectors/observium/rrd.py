@@ -29,7 +29,8 @@ from sqlalchemy.orm import Session
 
 from ... import models as m
 from ...config import settings
-from ...services.capacity import SPIKE_WINDOW_DAYS, peak_series, planning_current, read_narrow_end
+from ...services.capacity import (SPIKE_WINDOW_DAYS, peak_series, planning_current, read_narrow_end, shared_ports,
+                                  wide_end_excluded)
 
 CHUNK = 250  # RRD files per remote execution
 # Observium creates port RRDs with DS max 12,500,000,000 bytes/s (100 Gbps); RRD stores anything
@@ -232,11 +233,16 @@ def _targets(db: Session, source: RrdSource, server: str = "main") -> tuple[list
         return None if port is None else max(port.in_gbps or 0.0, port.out_gbps or 0.0)
 
     server_of = {r.interface_id: r.source for r in all_refs}
+    links = list(db.scalars(select(m.Link)))
+    shared = shared_ports((l.a_interface_id, l.b_interface_id) for l in links if l.status != "down")
     targets, unmapped = [], 0
-    for link in db.scalars(select(m.Link)):
+    for link in links:
         ends = (link.a_interface_id, link.b_interface_id)
         order = [(ends[0], False), (ends[1], True)]
-        if read_narrow_end(speed(ends[1]), speed(ends[0]), busiest(ends[1]), busiest(ends[0])):
+        # A carrier NNI bundle other links share is never read for one of them: it carries them all.
+        order = [(end, swapped) for end, swapped in order
+                 if not wide_end_excluded(speed(ends[1 - int(swapped)]), speed(end), end in shared)]
+        if read_narrow_end(speed(ends[1]), speed(ends[0]), busiest(ends[1]), busiest(ends[0]), ends[0] in shared):
             # A bundle whose members lead to several boxes (smartgroup1 200G to two 100G switches), or a shared NNI
             # bundle carrying one VLAN per far end (smartgroup91 to 13 sites), carries more than this link: the
             # narrower end only carries what goes over it, as in the live Full sync. That end is read from whichever
@@ -288,9 +294,11 @@ def _by_window(db: Session, targets: list[Target], days: int, backfill_days: int
     return windows
 
 
-def _store(db: Session, t: Target, got: Any, nan_days: int, report: dict[str, Any]) -> bool:
-    """Replace one link's samples from the first day the fetch returned onwards with the fetched daily peaks.
-    True when something was stored."""
+def _store(db: Session, t: Target, got: Any, nan_days: int, report: dict[str, Any],
+           window_days: int | None = None) -> bool:
+    """Replace one link's samples from the first day the fetch returned onwards with the fetched daily peaks, and
+    within the window from its first whole day: a day the source no longer has came from another port (the shared
+    bundle read before the far end was), so it goes. True when something was stored."""
     if got == "MISSING":
         report["missing_files"] += 1
         return False
@@ -310,6 +318,10 @@ def _store(db: Session, t: Target, got: Any, nan_days: int, report: dict[str, An
     # Never from the window start: the oldest day of a window that does not start at midnight is partial and
     # dropped by the source, so deleting it would erase the complete peak an earlier run stored for that day.
     first_day = min(ts for ts, _, _ in got)
+    if window_days:
+        whole = (datetime.now(first_day.tzinfo) - timedelta(days=window_days - 1)).replace(
+            hour=0, minute=0, second=0, microsecond=0)
+        first_day = min(first_day, whole)
     db.execute(delete(m.UtilizationSample).where(m.UtilizationSample.link_id == t.link.id,
                                                  m.UtilizationSample.ts >= first_day))
     for ts, rx, tx in got:
@@ -343,7 +355,8 @@ def sync_rrd(db: Session, source: RrdSource, days: int = 90,
             step(f"rrd {done}/{len(targets)}")
             parsed = source.fetch(chunk, window)
             stored = [t.link for t in chunk
-                      if _store(db, t, parsed.get(str(t.link.id)), int(parsed.get(f"{t.link.id}#nan", 0) or 0), report)]
+                      if _store(db, t, parsed.get(str(t.link.id)), int(parsed.get(f"{t.link.id}#nan", 0) or 0), report,
+                                window)]
             db.flush()
             report["spikes_ignored"] += settle_current(db, stored)
             db.commit()
