@@ -477,8 +477,9 @@ def _write_utilization(db: Session, rates: dict[int, tuple[float | None, float |
         a_ok, b_ok = bool(a and a[0] is not None), bool(b and b[0] is not None)
         a_speed, b_speed = speeds.get(link.a_interface_id), speeds.get(link.b_interface_id)
         # A carrier NNI bundle other links share carries all of them: only the far end is this link's traffic.
-        a_ok = a_ok and not wide_end_excluded(b_speed, a_speed, link.a_interface_id in shared)
-        b_ok = b_ok and not wide_end_excluded(a_speed, b_speed, link.b_interface_id in shared)
+        a_excluded = wide_end_excluded(b_speed, a_speed, link.a_interface_id in shared)
+        b_excluded = wide_end_excluded(a_speed, b_speed, link.b_interface_id in shared)
+        a_ok, b_ok = a_ok and not a_excluded, b_ok and not b_excluded
         if a_ok and b_ok and read_narrow_end(speeds.get(link.b_interface_id), speeds.get(link.a_interface_id),
                                              max(b[0] or 0, b[1] or 0), max(a[0] or 0, a[1] or 0)):
             # A bundle whose members lead to several boxes (smartgroup210: one member to this peer, one elsewhere)
@@ -489,6 +490,9 @@ def _write_utilization(db: Session, rates: dict[int, tuple[float | None, float |
         elif b_ok:
             in_g, out_g = b[1], b[0]  # seen from the far end, directions swap
         else:
+            if a_excluded or b_excluded:
+                # Only the shared bundle counts: this link's share of it is unknown, never the bundle's total.
+                link.current_gbps = 0.0
             continue
         in_g, out_g = in_g or 0.0, out_g or 0.0
         db.add(m.UtilizationSample(link_id=link.id, ts=now, in_gbps=in_g, out_gbps=out_g))

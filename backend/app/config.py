@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     observium_ssh_known_hosts: str | None = None
     # Growth used for exhaustion forecasts: least-squares trend over this many days of samples.
     trend_window_days: int = 90
+    # LLDP rows not refreshed this many days before the newest ones belong to a box Observium no longer polls
+    # (replaced, removed): discovery ignores them instead of drawing links it can no longer see.
+    lldp_max_age_days: int = 7
 
     # RANCID config archive used by Observium (Observium's API does not expose configs).
     # Either a local/mounted path, or SFTP to the Observium server with a read-only SSH account.
