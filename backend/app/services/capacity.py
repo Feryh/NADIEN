@@ -12,7 +12,8 @@ utilization samples (peak of in/out per sample).
 
 import math
 from bisect import bisect_left, bisect_right
-from collections.abc import Sequence
+from collections import Counter
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from statistics import median
@@ -254,21 +255,37 @@ def is_narrower(speed: float | None, other: float | None) -> bool:
     return bool(speed and other and speed < other)
 
 
+def shared_ports(ends: Iterable[tuple[int | None, int | None]]) -> set[int]:
+    """Ports that carry more than one link: a carrier NNI bundle with one VLAN per far end (MKS-BSW-BNG2 Eth-Trunk12
+    to 13 cell sites). Their traffic is the sum of those links, never one link's."""
+    counts = Counter(port for pair in ends for port in pair if port)
+    return {port for port, n in counts.items() if n > 1}
+
+
 def read_narrow_end(narrow_speed: float | None, wide_speed: float | None,
-                    narrow_rate: float | None, wide_rate: float | None) -> bool:
+                    narrow_rate: float | None, wide_rate: float | None, wide_shared: bool = False) -> bool:
     """Read the link's traffic on its narrower end — unless that end counts nothing while the other does: a VLAN
-    interface (Vbdif59) or a trunk without counters would read the link as idle."""
+    interface (Vbdif59) or a trunk without counters would read the link as idle. A wider end other links share
+    carries their traffic too, so the narrower end is read even when it counts nothing."""
     if not is_narrower(narrow_speed, wide_speed):
         return False
-    return not (not narrow_rate and wide_rate)
+    return wide_shared or not (not narrow_rate and wide_rate)
+
+
+def wide_end_excluded(narrow_speed: float | None, wide_speed: float | None, wide_shared: bool) -> bool:
+    """The wider end must never stand in for this link: it is shared with other links (shared_ports)."""
+    return wide_shared and is_narrower(narrow_speed, wide_speed)
 
 
 def read_on_wider_end(speeds: tuple[float | None, float | None], rates: tuple[float | None, float | None],
-                      monitored: tuple[bool, bool]) -> bool:
+                      monitored: tuple[bool, bool], shared: tuple[bool, bool] = (False, False)) -> bool:
     """Whether a link's traffic can only come from its wider end: the narrower end (whose speed is the link's
     capacity) is not monitored by Observium (gone, replaced, config-only) or counts nothing. The wider end — a
-    bundle — may carry more than this link, so its traffic above the capacity proves nothing."""
+    bundle — may carry more than this link, so its traffic above the capacity proves nothing. A shared wider end is
+    never read at all."""
     for narrow, wide in ((0, 1), (1, 0)):
         if is_narrower(speeds[narrow], speeds[wide]):
+            if shared[wide]:
+                return False
             return not (monitored[narrow] and read_narrow_end(speeds[narrow], speeds[wide], rates[narrow], rates[wide]))
     return False

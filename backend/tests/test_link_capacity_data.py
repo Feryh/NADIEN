@@ -195,3 +195,53 @@ def test_should_read_the_wider_end_when_the_narrower_one_counts_no_traffic(db):
 
     (target,), _ = _targets(db, Source())
     assert (target.ref.observium_port_id, target.swapped) == (11, False)
+
+
+def test_should_never_read_a_shared_nni_bundle_for_one_of_its_far_ends_even_when_the_far_end_counts_nothing(db):
+    from app.collectors.observium.rrd import _targets
+
+    a, b = _devices(db)
+    other = m.Device(hostname="KAL-KS-AMT-0001-ME1-ZTE", pop_id=b.pop_id)
+    db.add(other)
+    db.flush()
+    trunk = m.Interface(device_id=a.id, name="Eth-Trunk95", if_type="bundle", speed_gbps=100, out_gbps=24.3)
+    far = m.Interface(device_id=b.id, name="xgei-1/1/0/9", speed_gbps=10, in_gbps=0.0, out_gbps=0.0)
+    far2 = m.Interface(device_id=other.id, name="xgei-1/1/0/9", speed_gbps=10, out_gbps=3.0)
+    db.add_all([trunk, far, far2])
+    db.flush()
+    link = m.Link(name="amt", a_device_id=a.id, a_interface_id=trunk.id, b_device_id=b.id, b_interface_id=far.id,
+                  capacity_gbps=10, status="up", discovery_source="ip")
+    db.add_all([link, m.Link(name="amt2", a_device_id=a.id, a_interface_id=trunk.id, b_device_id=other.id,
+                             b_interface_id=far2.id, capacity_gbps=10, status="up", discovery_source="ip"),
+                m.ObserviumPort(interface_id=trunk.id, observium_port_id=11, if_index=1, observium_hostname="a"),
+                m.ObserviumPort(interface_id=far.id, observium_port_id=22, if_index=2, observium_hostname="b",
+                                source="csr")])
+    db.commit()
+
+    class Source:
+        def usable(self, ref):
+            return True
+
+    main, _ = _targets(db, Source(), "main")
+    csr, _ = _targets(db, Source(), "csr")
+    assert link.id not in {t.link.id for t in main} and [(t.link.id, t.ref.observium_port_id) for t in csr] == [
+        (link.id, 22)]
+
+
+def test_should_drop_window_days_the_source_no_longer_has_when_storing_rrd_history(db):
+    from datetime import datetime, timedelta, timezone
+
+    from app.collectors.observium.rrd import Target, _store
+
+    a, b = _devices(db)
+    link = m.Link(name="x", a_device_id=a.id, b_device_id=b.id, capacity_gbps=10, status="up")
+    db.add(link)
+    db.flush()
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    db.add(m.UtilizationSample(link_id=link.id, ts=today - timedelta(days=20), in_gbps=14.4, out_gbps=1.0))  # bundle
+    db.commit()
+    report = {"missing_files": 0, "error_count": 0, "errors": [], "days_without_data": 0, "possibly_clipped": [],
+              "links_with_history": 0, "samples": 0}
+    _store(db, Target(link, None, False), [(today - timedelta(days=5), 1.2, 0.1)], 0, report, window_days=90)
+    db.commit()
+    assert [s.in_gbps for s in db.scalars(select(m.UtilizationSample))] == [1.2]

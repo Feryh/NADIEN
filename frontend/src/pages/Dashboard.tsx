@@ -89,6 +89,7 @@ function Summary() {
             })}
           </div>
           <h3>Segera habis (ke ambang 80%)</h3>
+          <div className="muted small">Dihitung dari puncak tren harian, bukan nilai hari terakhir (persentase di kiri).</div>
           <table>
             <tbody>
               {summary.exhausting_soon.map((l) => (
@@ -102,7 +103,12 @@ function Summary() {
                     </Link>
                   </td>
                   <td className="num">{fmtG(l.capacity_gbps)}</td>
-                  <td className="num">{fmtMonths(l.months_to_threshold)}</td>
+                  <td className="num" title={`Puncak tren ${fmtG(l.forecast_basis_gbps)} dari ${fmtG(l.capacity_gbps)}; hari terakhir ${l.committed_pct.toFixed(0)}%`}>
+                    {fmtMonths(l.months_to_threshold)}
+                    {l.months_to_threshold === 0 && l.forecast_basis_gbps != null && l.capacity_gbps > 0 && (
+                      <div className="muted small">puncak {((l.forecast_basis_gbps / l.capacity_gbps) * 100).toFixed(0)}%</div>
+                    )}
+                  </td>
                 </tr>
               ))}
               {!summary.exhausting_soon.length && (
