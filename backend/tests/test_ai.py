@@ -53,6 +53,13 @@ def test_should_put_deployment_in_url_when_provider_is_azure():
     assert "model" not in json.loads(seen[0].content)
 
 
+def test_should_explain_the_model_name_when_openai_does_not_know_the_model():
+    reply = {"error": {"message": "The model `AUTO` does not exist or you do not have access to it.",
+                       "type": "invalid_request_error", "param": None, "code": "model_not_found"}}
+    with pytest.raises(AiError, match="Model `AUTO` tidak ada.*Auto"):
+        chat(ProviderConfig(kind="openai", model="AUTO", api_key="k"), "S", MESSAGES, _transport([], reply, status=404))
+
+
 def test_should_raise_readable_error_when_provider_rejects_key():
     with pytest.raises(AiError, match="kredensial"):
         chat(ProviderConfig(kind="openai", model="m", api_key="bad"), "S", MESSAGES, _transport([], {}, status=401))

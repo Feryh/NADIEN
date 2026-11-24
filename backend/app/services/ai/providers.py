@@ -83,7 +83,8 @@ def chat(config: ProviderConfig, system: str, messages: list[Message],
     return ChatResult(text=text, model=model, duration_ms=int((time.monotonic() - started) * 1000), usage=usage)
 
 
-def _post(client: httpx.Client, url: str, body: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
+def _post(client: httpx.Client, url: str, body: dict[str, Any], headers: dict[str, str],
+          model: str = "") -> dict[str, Any]:
     try:
         resp = client.post(url, json=body, headers=headers)
     except httpx.TimeoutException as exc:
@@ -92,6 +93,10 @@ def _post(client: httpx.Client, url: str, body: dict[str, Any], headers: dict[st
         raise AiError(f"Provider tidak bisa dihubungi: {exc}") from exc
     if resp.status_code in (401, 403):
         raise AiError(f"Provider menolak kredensial (HTTP {resp.status_code}). Periksa API key.")
+    if resp.status_code == 404 and "model_not_found" in resp.text:
+        # ChatGPT's "Auto" is a choice in the ChatGPT app; the API only takes an exact model name.
+        raise AiError(f"Model `{model}` tidak ada atau tidak tersedia untuk API key ini. Isi nama model persis seperti "
+                      "di daftar model akun penyedia; pilihan \"Auto\" di aplikasi ChatGPT tidak berlaku di API.")
     if resp.status_code >= 400:
         raise AiError(f"Provider mengembalikan HTTP {resp.status_code}: {resp.text[:300]}")
     try:
@@ -139,8 +144,8 @@ def _openai(client: httpx.Client, config: ProviderConfig, system: str, messages:
     if config.api_key:
         headers["Authorization"] = f"Bearer {config.api_key}"
     base = (config.base_url or DEFAULT_BASE_URL["openai"]).rstrip("/")
-    return _openai_result(_post(client, f"{base}/chat/completions", _openai_body(config, system, messages), headers),
-                          config.model)
+    return _openai_result(_post(client, f"{base}/chat/completions", _openai_body(config, system, messages), headers,
+                                config.model), config.model)
 
 
 def _azure(client: httpx.Client, config: ProviderConfig, system: str, messages: list[Message]):
