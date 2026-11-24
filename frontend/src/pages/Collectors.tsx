@@ -36,7 +36,10 @@ const PHASES: Record<string, string> = {
 }
 
 interface CollectorStatus {
-  observium: { url: string; configured: boolean; auth: string | null; last_sync_at: string | null; last_status: string | null }
+  observium: {
+    url: string; standby_url: string | null; configured: boolean; auth: string | null
+    last_sync_at: string | null; last_status: string | null
+  }
   observium_csr: { url: string; configured: boolean; last_sync_at: string | null; last_status: string | null }
   rancid: { source: string | null; configured: boolean }
   oxidized: { url: string | null; configured: boolean }
@@ -216,7 +219,8 @@ export default function Collectors() {
         </div>
         {!syncAllJob && jobBanner}
         <p className="hint">
-          {status?.observium.url} · device, port, IPv4, LLDP neighbour, dan rate port → inventory, topologi, sampel utilisasi.
+          {status?.observium.url}
+          {status?.observium.standby_url && ` (standby ${status.observium.standby_url})`} · device, port, IPv4, LLDP neighbour, dan rate port → inventory, topologi, sampel utilisasi.
           {status?.observium.last_sync_at && ` Terakhir: ${new Date(status.observium.last_sync_at).toLocaleString()} — ${status.observium.last_status}`}
         </p>
         {status?.observium_csr.url && (
