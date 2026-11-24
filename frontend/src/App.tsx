@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { saveTheme, storedTheme, type Theme } from './theme'
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthGate, Role, ROLE_LABELS, useAuth } from './auth'
 import Access from './pages/Access'
@@ -67,6 +68,13 @@ function Shell() {
   const customer = user.role === 'customer'
   const nav = customer ? CUSTOMER_NAV : NAV.filter((n) => !n.role || can(n.role))
   const [collapsed, setCollapsed] = useState(storedCollapsed)
+  const [theme, setTheme] = useState<Theme>(storedTheme)
+
+  function switchTheme() {
+    const next: Theme = theme === 'dark' ? 'light' : 'dark'
+    saveTheme(next)
+    setTheme(next)
+  }
 
   function toggle() {
     setCollapsed(!collapsed)
@@ -108,6 +116,12 @@ function Shell() {
           </div>
           {authEnabled && <button onClick={logout} title="Keluar">Keluar</button>}
         </div>
+        <button type="button" className="theme-toggle" onClick={switchTheme}
+          title={theme === 'dark' ? 'Pakai latar terang' : 'Pakai latar gelap'}
+          aria-label={theme === 'dark' ? 'Pakai latar terang' : 'Pakai latar gelap'}>
+          <span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span>
+          <span className="nav-label">{theme === 'dark' ? 'Tema terang' : 'Tema gelap'}</span>
+        </button>
         {!customer && <a className="api-link" href="/docs" target="_blank" rel="noreferrer">API docs ↗</a>}
       </aside>
       <main className="content">
