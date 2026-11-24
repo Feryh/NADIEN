@@ -66,9 +66,13 @@ def config_text(name: str) -> str:
     return (FIXTURES / "configs" / name).read_text(encoding="utf-8")
 
 
-def observium_transport(port_rates: dict[str, tuple[int, int]] | None = None, status: int = 200) -> httpx.MockTransport:
-    """Serve tests/fixtures/observium/*.json the way /api/v0 does (keyed by id, paginated)."""
+def observium_transport(port_rates: dict[str, tuple[int, int]] | None = None, status: int = 200,
+                        port_values: dict[str, dict[str, str]] | None = None) -> httpx.MockTransport:
+    """Serve tests/fixtures/observium/*.json the way /api/v0 does (keyed by id, paginated). `port_values`: extra
+    columns per port id."""
     data = json.loads((FIXTURES / "observium" / "api.json").read_text(encoding="utf-8"))
+    for port_id, values in (port_values or {}).items():
+        data["ports"][port_id].update(values)
     if port_rates:
         for port_id, (rx, tx) in port_rates.items():
             data["ports"][port_id]["ifInOctets_rate"] = str(rx)
@@ -82,6 +86,9 @@ def observium_transport(port_rates: dict[str, tuple[int, int]] | None = None, st
         rows = data.get(key, {})
         query = parse_qs(request.url.query.decode())
         items = list(rows.items())
+        if "fields" in query:  # like the real API: only the columns asked for, so a forgotten one shows in tests
+            wanted = set(query["fields"][0].split(","))
+            items = [(key_, {k: v for k, v in row.items() if k in wanted}) for key_, row in items]
         if "pagesize" in query:
             size, page = int(query["pagesize"][0]), int(query.get("pageno", ["1"])[0])
             items = items[(page - 1) * size : page * size]

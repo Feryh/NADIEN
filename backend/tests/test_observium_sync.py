@@ -149,3 +149,9 @@ def test_should_store_reachability_when_device_synced(db):
     assert down.last_polled_at.replace(tzinfo=None) == datetime(2026, 11, 9, 3, 0)
     assert hosts["JKT-P-01"].reachability == "up"
     assert hosts["JKT-P-01"].uptime_s is None
+
+
+def test_should_store_when_a_port_last_changed_state_when_syncing_ports(db):
+    sync_observium(db, client(port_values={"1001": {"ifLastChange": "2025-08-04 18:37:48"}}))
+    port = db.scalar(select(m.Interface).where(m.Interface.name == "HundredGigE0/0/0/0"))
+    assert port.oper_changed_at.replace(tzinfo=None) == datetime(2025, 8, 4, 11, 37, 48)  # WIB on the server

@@ -46,7 +46,7 @@ from .parsers import (
 ALL_PARTS = frozenset({"inventory", "neighbours", "utilization"})
 PORT_FIELDS = (
     "port_id,device_id,ifIndex,ifName,ifDescr,ifAlias,port_label_short,ifType,ifSpeed,ifHighSpeed,ifMtu,"
-    "ifAdminStatus,ifOperStatus,ifInOctets_rate,ifOutOctets_rate,deleted"
+    "ifAdminStatus,ifOperStatus,ifLastChange,ifInOctets_rate,ifOutOctets_rate,deleted"
 )
 PAGE_SIZE = 5000
 WRITE_BATCH = 20000
