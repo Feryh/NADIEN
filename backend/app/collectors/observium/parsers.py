@@ -267,6 +267,7 @@ class PortRecord:
     out_gbps: float | None
     if_index: int | None = None  # RRD file is port-<ifIndex>.rrd
     mib_type: str | None = None  # Observium ifType as reported (ethernetCsmacd, propVirtual, PonStatus …)
+    oper_changed_at: datetime | None = None  # ifLastChange
 
 
 def classify_port(name: str, if_type: str, speed_known: bool = True) -> str:
@@ -341,6 +342,7 @@ def parse_port(row: dict[str, Any]) -> PortRecord | None:
         out_gbps=_plausible_rate(_rate_gbps(row, "ifOutOctets_rate"), speed_gbps),
         if_index=_int(row.get("ifIndex")),
         mib_type=if_type[:64] or None,
+        oper_changed_at=_observium_time(row.get("ifLastChange")),
     )
 
 

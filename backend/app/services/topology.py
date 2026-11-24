@@ -122,6 +122,12 @@ class _Discovery:
         # Ports a description named a peer for, refused because their LLDP neighbour cannot be that peer.
         self.lldp_refused: set[int] = set()
         self.created_ids: set[int] = set()
+        from ..config import settings  # read at run time, like fresh_lldp: tests change it
+
+        # A port down longer than LLDP rows may age: what the NMS still lists on it, or its description says, is
+        # history (SRG-NDC-SW1-NX93: six OLTs on ports down since August 2025, the OLTs long moved elsewhere).
+        self.dead_before = (datetime.now(timezone.utc) - timedelta(days=settings.lldp_max_age_days)
+                            if settings.lldp_max_age_days > 0 else None)
         self._ports_by_device: dict[int, list[Interface]] | None = None
         self._by_stem: dict[str, list[Device]] | None = None
 
@@ -184,6 +190,16 @@ class _Discovery:
         self.covered.update(member_pair)
         self.covered.update(key)
 
+    def long_down(self, iface: Interface) -> bool:
+        """Down since before the LLDP age limit. An unknown change time (not synced yet) is not old: a port that went
+        down in an outage keeps its link, drawn down."""
+        changed = iface.oper_changed_at
+        if self.dead_before is None or iface.oper_status == "up" or changed is None:
+            return False
+        if changed.tzinfo is None:  # SQLite hands back naive UTC
+            changed = changed.replace(tzinfo=timezone.utc)
+        return changed < self.dead_before
+
     def from_lldp(self) -> list[str]:
         unresolved = []
         for n in self.db.scalars(fresh_lldp(self.db)):
@@ -206,7 +222,11 @@ class _Discovery:
                 # config, whose description may name the real port.
                 self.stats["lldp_logical_ports"] += 1
                 continue
-            self.add(self.iface(local, n.local_interface), self.iface(remote, n.remote_port_id), "lldp")
+            a, b = self.iface(local, n.local_interface), self.iface(remote, n.remote_port_id)
+            if self.long_down(a) or self.long_down(b):
+                self.stats["lldp_long_down"] += 1
+                continue
+            self.add(a, b, "lldp")
         self.drop_minority_bundles()
         return unresolved
 
@@ -263,7 +283,7 @@ class _Discovery:
         by_pair: dict[frozenset[int], dict[int, list[Interface]]] = {}
         for iface in self.ifaces.values():
             if (iface.id in self.covered or iface.id in self.lldp_seen or iface.parent_id or not iface.description
-                    or iface.if_type in ("subinterface", "virtual")):
+                    or iface.if_type in ("subinterface", "virtual") or self.long_down(iface)):
                 continue
             remote = self.mentioned_device(iface.description)
             if remote is None or remote.id == iface.device_id or not self.lldp_allows(iface, remote.id):
@@ -557,7 +577,8 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
     #  - a config-described link between devices LLDP now sees directly;
     #  - a link on a phantom port (created from an LLDP name that matched no real port);
     #  - a config-described link the far end's own description now contradicts (it never existed);
-    #  - a config-described link on a port where LLDP sees a box outside the inventory (LLDP decides).
+    #  - a config-described link on a port where LLDP sees a box outside the inventory (LLDP decides);
+    #  - a link on a port down for longer than LLDP rows may age (lldp_max_age_days).
     member_pairs = {pair for adj in run.adjacencies.values() if adj.link_type == "bundle" for pair in adj.member_pairs}
     lldp_device_pairs = {
         frozenset((adj.a.device_id, adj.b.device_id)) for adj in run.adjacencies.values() if adj.source == "lldp"
@@ -579,6 +600,8 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
             or link.discovery_source == "approved"  # approval revoked, or LLDP now sees the ports directly
             or link.discovery_source == "ip"  # the address pair is gone, or LLDP now links one of its ports
             or any(run.ifaces[i].if_type == "virtual" for i in key if i in run.ifaces)  # a VLAN/management interface
+            # a port of it down past the LLDP age limit: the cable is gone, not a link in an outage
+            or any(run.long_down(run.ifaces[i]) for i in key if i in run.ifaces)
         )
         if replaced:
             db.execute(delete(UtilizationSample).where(UtilizationSample.link_id == link.id))

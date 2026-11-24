@@ -53,6 +53,12 @@ def test_port_speed_rates_and_types():
     assert parse_port({"port_id": "4", "ifName": "ge-0/0/1", "ifSpeed": "1000000000"}).speed_gbps == 1
 
 
+def test_should_read_when_the_port_status_changed_from_iflastchange():
+    rec = parse_port({"port_id": "1", "device_id": "185", "ifName": "Ethernet1/26", "ifOperStatus": "down",
+                      "ifLastChange": "2025-08-04 18:37:48"})
+    assert rec.oper_changed_at == datetime(2025, 8, 4, 11, 37, 48, tzinfo=timezone.utc)  # server time is WIB
+
+
 def test_port_values_seen_on_real_observium():
     rec = parse_port({"port_id": "9", "device_id": "1", "ifName": "Eth-Trunk1.100", "ifMtu": "0",
                       "ifAlias": "X" * 900, "ifHighSpeed": "0", "ifSpeed": "0"})
