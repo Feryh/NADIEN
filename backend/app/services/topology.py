@@ -194,6 +194,10 @@ class _Discovery:
         """Down since before the LLDP age limit. An unknown change time (not synced yet) is not old: a port that went
         down in an outage keeps its link, drawn down."""
         changed = iface.oper_changed_at
+        if changed is None and iface.parent_id in self.ifaces:
+            # A member the NMS does not report (made up from the far end's LLDP, so "up" by default) is as dead as
+            # its bundle: SRG-SRG-OLT1-ZTE still names NX93 Ethernet1/5-6, whose port-channel14 is down since 2025.
+            return self.long_down(self.ifaces[iface.parent_id])
         if self.dead_before is None or iface.oper_status == "up" or changed is None:
             return False
         if changed.tzinfo is None:  # SQLite hands back naive UTC
