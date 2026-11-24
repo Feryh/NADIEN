@@ -1,7 +1,8 @@
 """Province and regency (kabupaten/kota) of a POP, so the topology can drill Area > Provinsi > Kab/Kota > POP.
 
 The city a POP serves comes from its curated `city`, else a city named in its `name` (Observium location),
-else its code (`CITIES` in `areas.py`). That city is then looked up here. Cities that are only a district
+else its code (`CITIES` in `areas.py`). That city is then looked up here. A code nobody curated is looked up in
+SNI 7657 (`sni.py`), the national list of kabupaten/kota codes, when it agrees with the POP's area and name. Cities that are only a district
 (Purwokerto, Cikarang, Soreang) belong to the regency that governs them; a city that is both a kota and a
 kabupaten (Bekasi, Bogor, Malang) is taken as the kota, where the POP almost always sits.
 
@@ -17,6 +18,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from .areas import AREAS, CITIES, city_code_for_hostname, csr_parts
+from .sni import SniPlace, place_for_code, sni_code
 
 UNMAPPED_PROVINCE = "Provinsi belum dipetakan"
 UNMAPPED_REGENCY = "Kab/Kota belum dipetakan"
@@ -247,6 +249,72 @@ def _city_of_code(code: str) -> str | None:
     return entry[0] if entry else None
 
 
+# Regencies of Jawa Barat and Banten that the network counts as Jabodetabek; the rest of both provinces is
+# "Jawa Barat & Banten".
+_JABODETABEK_REGENCIES = {"kota bekasi", "kab. bekasi", "kota bogor", "kab. bogor", "kota depok", "kota tangerang",
+                          "kab. tangerang", "kota tangerang selatan"}
+
+
+def area_of_regency(regency: str, province: str) -> str | None:
+    """The area a regency belongs to, or None when its province is not one this network uses."""
+    areas = _AREAS_OF_PROVINCE.get(province)
+    if not areas:
+        return None
+    if len(areas) == 1:
+        return next(iter(areas))
+    return "Jabodetabek" if regency.lower() in _JABODETABEK_REGENCIES else "Jawa Barat & Banten"
+
+
+def _squash(text: str | None) -> str:
+    """'Pare Pare' and 'Parepare', 'Kab. Kutai Kertanegara' and 'Kutai Kartanegara' compare equal."""
+    return _norm(text).replace(" ", "").replace("kerta", "karta")
+
+
+def _same_place(city: str, place: SniPlace) -> bool:
+    """A curated city ('magelang', 'tiom') names the same kabupaten/kota as an SNI entry. Provinces are not
+    compared: the 2010 standard predates the Papua provinces of 2022."""
+    regency = REGENCY_OF_CITY.get(city)
+    names = {_squash(city)} | ({_squash(regency[0])} if regency else set())
+    return bool(names & {_squash(place.capital), _squash(place.regency)})
+
+
+def _name_mentions(name: str | None, place: SniPlace) -> bool:
+    """The POP name spells out the SNI regency or capital ('Padang Pariaman', 'Bali-Nusra,…,Sumbawa Barat')."""
+    words = f" {_norm(name)} "
+    return any(f" {_norm(part)} " in words for part in (place.regency, place.capital))
+
+
+def _contradiction(code: str, name: str | None, place: SniPlace) -> str | None:
+    if _name_mentions(name, place):
+        # The POP's own name (its Observium location) is the stronger witness: PDG "Pandeglang-OLT Pandeglang" is
+        # Pandeglang as SNI says, whatever the code table guessed from other POPs.
+        return None
+    curated = _city_of_code(sni_code(code) or "")
+    if curated is not None and not _same_place(curated, place):
+        return f"kode dipakai untuk {_display(curated)}"
+    named = _city_of_name(name)
+    if named is not None and not _same_place(named, place):
+        return f"nama POP menyebut {_display(named)}"
+    return None
+
+
+def sni_place_for_pop(code: str, name: str | None, area: str | None) -> SniPlace | None:
+    """The SNI 7657 entry of a POP code, when nothing known about the POP contradicts it: a code the team curated
+    with another meaning, a city in the POP name in another regency, or an area the province is not in."""
+    place = place_for_code(code)
+    if place is None or _contradiction(code, name, place) is not None:
+        return None
+    return place if _fits(place.province, area) else None
+
+
+def sni_conflict(code: str, name: str | None, area: str | None) -> str | None:
+    """Why an SNI code is not taken for this POP, for the team to review; None when it is taken or not SNI."""
+    place = place_for_code(code)
+    if place is None or sni_place_for_pop(code, name, area) is not None:
+        return None
+    return _contradiction(code, name, place) or f"area POP {area}"
+
+
 def _fits(province: str, area: str | None) -> bool:
     """A province may hold a POP of `area`; an unmapped or custom (non-standard) area accepts any."""
     if area not in AREAS:
@@ -298,6 +366,10 @@ def place_for_pop(code: str, city: str | None, name: str | None, area: str | Non
     if province and _fits(province, area) and town in _CSR_TOWNS and _PROVINCE_BY_CSR_CODE.get(town[0]) == province:
         town_name, regency = _CSR_TOWNS[town]
         return Place(province, regency, town_name)
+    # After the POP's own cell sites: those name its town (SUM-SB-PDP-… is Padang Pariaman, PDP in SNI is
+    # Padang Panjang), the national list only says what a code usually means.
+    if (sni := sni_place_for_pop(code, name, area)) is not None:
+        return Place(sni.province, sni.regency, label or sni.capital)
     if province and _fits(province, area):
         return Place(province, UNMAPPED_REGENCY, label)
     return Place(UNMAPPED_PROVINCE, UNMAPPED_REGENCY, label)

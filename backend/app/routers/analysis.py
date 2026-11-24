@@ -48,6 +48,8 @@ from ..services.areas import (
     port_bucket,
 )
 from ..services.capacity import occupancy_pct
+from ..services.regions import area_of_regency, sni_conflict, sni_place_for_pop
+from ..services.sni import place_for_code as sni_entry
 from ..services.topology_readmodel import (
     UNASSIGNED_POP,
     Agg as _Agg,
@@ -388,6 +390,7 @@ def _pop_location_mapping(db: Session) -> dict[str, Any]:
 
     rows = []
     area_conflicts = []
+    sni_conflicts: list[dict[str, str]] = []
     for pop in pops:
         if pop.code.upper() == UNASSIGNED_POP:
             continue
@@ -404,6 +407,17 @@ def _pop_location_mapping(db: Session) -> dict[str, Any]:
                 inferred_area = None
         if _missing_location(city):
             inferred_city = city_for_pop(pop.code, pop.name, hostnames)
+        # SNI 7657 for what the curated codes, names and hostnames leave open, unless something contradicts it.
+        sni = sni_place_for_pop(pop.code, pop.name, area if not _missing_location(area) else inferred_area)
+        if sni is not None:
+            if _missing_location(area) and inferred_area is None:
+                inferred_area = area_of_regency(sni.regency, sni.province)
+            if _missing_location(city) and inferred_city is None:
+                inferred_city = sni.capital
+        elif (why := sni_conflict(pop.code, pop.name, area if not _missing_location(area) else inferred_area)):
+            entry = sni_entry(pop.code)
+            sni_conflicts.append({"code": pop.code, "name": pop.name, "sni_regency": entry.regency,
+                                  "sni_capital": entry.capital, "sni_province": entry.province, "reason": why})
         known_area = area if not _missing_location(area) else inferred_area
         known_city = city if not _missing_location(city) else inferred_city
         city_area = area_for_name(known_city)
@@ -436,6 +450,7 @@ def _pop_location_mapping(db: Session) -> dict[str, Any]:
         "mappings": rows,
         "area_conflict_count": len(area_conflicts),
         "area_conflicts": area_conflicts,
+        "sni_conflicts": sni_conflicts,
         "unmapped_area_count": len(area_left),
         "unmapped_area_pops": area_left,
         "unmapped_city_count": len(city_left),
