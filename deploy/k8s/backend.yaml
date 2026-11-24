@@ -32,6 +32,8 @@ spec:
     spec:
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 60
+      imagePullSecrets:
+        - { name: gitlab-registry }
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -156,6 +158,8 @@ spec:
       automountServiceAccountToken: false
       # A push to a device or a sync may be running: give it time. A job cut off anyway is marked failed via its heartbeat.
       terminationGracePeriodSeconds: 600
+      imagePullSecrets:
+        - { name: gitlab-registry }
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

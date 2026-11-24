@@ -22,6 +22,8 @@ spec:
       labels: { app: nadien-frontend }
     spec:
       automountServiceAccountToken: false
+      imagePullSecrets:
+        - { name: gitlab-registry }
       securityContext:
         runAsNonRoot: true
         runAsUser: 101

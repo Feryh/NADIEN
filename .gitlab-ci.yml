@@ -12,11 +12,14 @@ workflow:
 default:
   interruptible: true
 
-stages: [test, build]
+stages: [test, build, deploy]
 
 variables:
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
   npm_config_cache: "$CI_PROJECT_DIR/.cache/npm"
+  # Full path of the GitLab Kubernetes agent, as `<agent-configuration-project>:<agent-name>`.
+  KUBE_AGENT_CONTEXT: "gitlab-agent-universall/gitlab-agent:nkp-batam"
+  NADIEN_IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
 
 .python:
   image: python:3.12-slim
@@ -86,18 +89,53 @@ frontend:
     - npm ci
     - npm run build
 
-# Needs a privileged runner with service networking for Docker-in-Docker. The company runner (`integration`) is
-# unprivileged and runs services on the host network, so dind cannot start there; GitHub Actions builds both
-# images on every push. Run this by hand on a runner that allows it.
-docker:
-  image: docker:27
+# Kaniko builds without a privileged daemon, so this runs on the same unprivileged company runner
+# (`integration`) that can't do Docker-in-Docker. Pushes to this project's own GitLab registry.
+build-images:
   stage: build
-  services: [docker:27-dind]
-  variables:
-    DOCKER_TLS_CERTDIR: "/certs"
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
   needs: [backend, frontend]
-  when: manual
-  allow_failure: true
+  parallel:
+    matrix:
+      - COMPONENT: [backend, frontend]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   script:
-    - docker build -t nadien-backend:ci backend
-    - docker build -t nadien-frontend:ci frontend
+    - mkdir -p /kaniko/.docker
+    - |-
+      echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf '%s:%s' "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+    - >-
+      /kaniko/executor
+      --context "${CI_PROJECT_DIR}/${COMPONENT}"
+      --dockerfile "${CI_PROJECT_DIR}/${COMPONENT}/Dockerfile"
+      --destination "${CI_REGISTRY_IMAGE}/nadien-${COMPONENT}:${NADIEN_IMAGE_TAG}"
+      --destination "${CI_REGISTRY_IMAGE}/nadien-${COMPONENT}:latest"
+
+# Applies deploy/k8s with kustomize through the GitLab Kubernetes agent tunnel (see deploy/k8s/README.md).
+# Needs this project allow-listed under `ci_access` in the nkp-batam agent's config.yaml, and the
+# nadien-db/nadien-env/nadien-tls/gitlab-registry secrets already created in the target namespace (not
+# managed here, on purpose: they hold passwords and are never committed, see deploy/k8s/README.md §2).
+deploy-production:
+  stage: deploy
+  image:
+    name: bitnami/kubectl:1.30
+    entrypoint: [""]
+  needs: [build-images]
+  environment:
+    name: production
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+  script:
+    - kubectl config get-contexts
+    - kubectl config use-context "$KUBE_AGENT_CONTEXT"
+    - cd deploy/k8s
+    # NADIEN_DOMAIN is a CI/CD variable (Settings > CI/CD > Variables), not committed, so the real
+    # production host never lives in git history.
+    - 'sed -i "s#registry.example.co.id/neteng#${CI_REGISTRY_IMAGE}#g; s#newTag: \"0.1.0\"#newTag: \"${NADIEN_IMAGE_TAG}\"#g" kustomization.yaml'
+    - 'sed -i "s#nadien.example.co.id#${NADIEN_DOMAIN}#g" ingress.yaml kustomization.yaml'
+    - kubectl apply -k .
+    - kubectl -n nadien rollout status statefulset/nadien-db --timeout=180s
+    - kubectl -n nadien rollout status deploy/nadien-api deploy/nadien-worker deploy/nadien-frontend --timeout=180s

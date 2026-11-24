@@ -66,6 +66,17 @@ kubectl -n nadien create secret generic nadien-env --from-env-file=nadien.env
 kubectl -n nadien create secret tls nadien-tls --cert=fullchain.pem --key=privkey.pem
 ```
 
+Image di-push ke GitLab Container Registry oleh CI (`.gitlab-ci.yml`), yang privat. Tanpa secret ini, pod berhenti
+di `ImagePullBackOff`. Buat **Deploy Token** sekali (Settings > Repository > Deploy tokens, scope `read_registry`;
+jangan pakai token CI yang kedaluwarsa begitu job selesai, karena pod bisa pull ulang lama setelah pipeline selesai):
+
+```bash
+kubectl -n nadien create secret docker-registry gitlab-registry \
+  --docker-server="$CI_REGISTRY" \
+  --docker-username="<deploy-token-username>" \
+  --docker-password="<deploy-token-password>"
+```
+
 ## 3. Deploy
 
 Ganti `nadien.example.co.id` di `ingress.yaml` dan `kustomization.yaml`, dan nama registry di `kustomization.yaml`.
