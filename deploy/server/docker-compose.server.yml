@@ -1,0 +1,15 @@
+# Single-server deploy (deploy/server): copied next to every release by nadien-release.sh, on top of
+# docker-compose.yml and docker-compose.prod.yml. Images carry the release commit so the previous one stays for a
+# rollback; backups and the secret key live outside the releases.
+services:
+  backend:
+    image: nadien-backend:${NADIEN_RELEASE:?NADIEN_RELEASE is set in the release .env}
+    environment:
+      NADIEN_TRUSTED_PROXY_HOPS: "1"  # only the frontend nginx: no host reverse proxy yet
+    volumes: !override
+      - /data/nadien/backups:/backups
+
+  frontend:
+    image: nadien-frontend:${NADIEN_RELEASE:?NADIEN_RELEASE is set in the release .env}
+    # Reached directly over the VPN. Behind a host HTTPS proxy use ["127.0.0.1:8080:8080"] and hops "2".
+    ports: !override ["80:8080"]

@@ -1,0 +1,10 @@
+[Unit]
+Description=NADIEN maintenance window: a staged release goes live at 23:00 WIB
+
+[Timer]
+OnCalendar=*-*-* 23:00:00 Asia/Jakarta
+# A window missed while the server was down is skipped, not run at boot in the middle of the day.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

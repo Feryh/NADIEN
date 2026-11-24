@@ -1,0 +1,9 @@
+[Unit]
+Description=NADIEN: put the staged release live (maintenance window)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=cloud
+ExecStart=/data/nadien/deploy/nadien-release.sh apply-pending
