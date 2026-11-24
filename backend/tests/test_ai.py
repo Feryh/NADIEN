@@ -167,6 +167,44 @@ def test_should_attach_network_data_to_last_question_when_chatting(client, db, n
     assert sent[0][-1]["content"].startswith("# Data jaringan NADIEN")
 
 
+def test_should_list_chat_models_newest_first_when_openai_lists_its_models():
+    seen: list[httpx.Request] = []
+    reply = {"data": [{"id": "gpt-old", "created": 100}, {"id": "text-embedding-3-large", "created": 300},
+                      {"id": "gpt-new", "created": 200}, {"id": "tts-1", "created": 250}]}
+    models = providers.list_models(ProviderConfig(kind="openai", model="", api_key="k"), _transport(seen, reply))
+    assert models == ["gpt-new", "gpt-old"]
+    assert str(seen[0].url) == "https://api.openai.com/v1/models" and seen[0].headers["authorization"] == "Bearer k"
+
+
+def test_should_list_the_pulled_models_when_provider_is_ollama():
+    reply = {"models": [{"name": "qwen2.5:7b"}, {"name": "llama3.1:8b"}]}
+    models = providers.list_models(ProviderConfig(kind="ollama", model=""), _transport([], reply))
+    assert models == ["llama3.1:8b", "qwen2.5:7b"]
+
+
+def _saved_openai(client) -> int:
+    return client.post("/api/ai/providers", json={"name": "ChatGPT", "kind": "openai", "model": "AUTO",
+                                                  "base_url": "https://api.openai.com/v1", "api_key": "sk-saved"}).json()["id"]
+
+
+def test_should_use_the_stored_key_when_listing_models_for_the_saved_endpoint(client, monkeypatch):
+    used: list[ProviderConfig] = []
+    monkeypatch.setattr(ai_router, "list_models", lambda config: used.append(config) or ["gpt-new"])
+    provider_id = _saved_openai(client)
+    res = client.post("/api/ai/models", json={"kind": "openai", "base_url": "https://api.openai.com/v1",
+                                              "provider_id": provider_id})
+    assert res.json() == {"models": ["gpt-new"]} and used[0].api_key == "sk-saved"
+
+
+def test_should_not_send_the_stored_key_to_a_changed_endpoint_when_listing_models(client, monkeypatch):
+    used: list[ProviderConfig] = []
+    monkeypatch.setattr(ai_router, "list_models", lambda config: used.append(config) or [])
+    provider_id = _saved_openai(client)
+    res = client.post("/api/ai/models", json={"kind": "openai", "base_url": "https://attacker.example/v1",
+                                              "provider_id": provider_id})
+    assert res.status_code == 422 and used == []
+
+
 def test_should_return_502_when_provider_fails(client, monkeypatch):
     def failing(config, system, messages, transport=None):
         raise AiError("Provider tidak bisa dihubungi")

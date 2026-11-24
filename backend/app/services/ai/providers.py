@@ -8,6 +8,7 @@
 """
 
 import ipaddress
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -81,6 +82,61 @@ def chat(config: ProviderConfig, system: str, messages: list[Message],
     if not text.strip():
         raise AiError("Model tidak mengembalikan jawaban.")
     return ChatResult(text=text, model=model, duration_ms=int((time.monotonic() - started) * 1000), usage=usage)
+
+
+# Model ids that are not chat models: OpenAI's /models lists embeddings, speech, images and moderation beside them.
+_NOT_CHAT = re.compile(r"embed|whisper|tts|dall-e|moderation|davinci|babbage|transcribe|image|realtime|audio|search|sora",
+                       re.IGNORECASE)
+
+
+def list_models(config: ProviderConfig, transport: httpx.BaseTransport | None = None) -> list[str]:
+    """The models the provider offers this key, newest first where the provider says when they came out."""
+    if config.kind == "anthropic":
+        return _anthropic_models(config)
+    if config.kind == "azure_openai":
+        raise AiError("Azure OpenAI tidak menyediakan daftar deployment lewat API ini: isi nama deployment dari portal "
+                      "Azure.")
+    with httpx.Client(timeout=min(config.timeout_s, 30), transport=transport) as client:
+        if config.kind == "ollama":
+            base = (config.base_url or DEFAULT_BASE_URL["ollama"]).rstrip("/")
+            data = _get(client, f"{base}/api/tags", config.extra_headers)
+            return sorted(str(row.get("name")) for row in data.get("models") or [] if row.get("name"))
+        headers = dict(config.extra_headers)
+        if config.api_key:
+            headers["Authorization"] = f"Bearer {config.api_key}"
+        base = (config.base_url or DEFAULT_BASE_URL["openai"]).rstrip("/")
+        rows = [row for row in _get(client, f"{base}/models", headers).get("data") or [] if row.get("id")]
+    rows.sort(key=lambda row: (-(row.get("created") or 0), str(row["id"])))
+    return [str(row["id"]) for row in rows if not _NOT_CHAT.search(str(row["id"]))]
+
+
+def _get(client: httpx.Client, url: str, headers: dict[str, str]) -> dict[str, Any]:
+    try:
+        resp = client.get(url, headers=headers)
+    except httpx.HTTPError as exc:
+        raise AiError(f"Provider tidak bisa dihubungi: {exc}") from exc
+    if resp.status_code in (401, 403):
+        raise AiError(f"Provider menolak kredensial (HTTP {resp.status_code}). Periksa API key.")
+    if resp.status_code >= 400:
+        raise AiError(f"Provider tidak menyediakan daftar model (HTTP {resp.status_code}): isi nama model manual.")
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise AiError("Daftar model dari provider bukan JSON.") from exc
+
+
+def _anthropic_models(config: ProviderConfig) -> list[str]:
+    import anthropic
+
+    if not config.api_key:
+        raise AiError("Provider Claude butuh API key Anthropic.")
+    try:
+        models = list(_anthropic_client(config).models.list(limit=100))
+    except anthropic.AuthenticationError as exc:
+        raise AiError("Anthropic menolak API key.") from exc
+    except anthropic.APIError as exc:
+        raise AiError(f"Daftar model Anthropic tidak bisa diambil: {exc}") from exc
+    return [model.id for model in sorted(models, key=lambda model: model.created_at, reverse=True)]
 
 
 def _post(client: httpx.Client, url: str, body: dict[str, Any], headers: dict[str, str],

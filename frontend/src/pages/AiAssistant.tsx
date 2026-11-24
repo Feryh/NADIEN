@@ -317,7 +317,22 @@ function Providers({ data, reload }: { data: { editable: boolean; providers: Pro
 
 function ProviderForm({ draft, setDraft, onSaved }: { draft: Draft; setDraft: (d: Draft | null) => void; onSaved: (text: string) => void }) {
   const [error, setError] = useState<string | null>(null)
+  const [models, setModels] = useState<string[] | null>(null)
+  const [loadingModels, setLoadingModels] = useState(false)
   const set = (patch: Partial<Draft>) => setDraft({ ...draft, ...patch })
+  const loadModels = () => {
+    setLoadingModels(true)
+    setError(null)
+    api.post<{ models: string[] }>('/ai/models', {
+      kind: draft.kind, base_url: draft.base_url.trim() || null, api_key: draft.api_key || null, provider_id: draft.id ?? null,
+    })
+      .then((r) => {
+        setModels(r.models)
+        if (r.models.length && !r.models.includes(draft.model)) set({ model: r.models[0] })
+      })
+      .catch((err: Error) => setError(err.message))
+      .finally(() => setLoadingModels(false))
+  }
   const submit = (e: FormEvent) => {
     e.preventDefault()
     setError(null)
@@ -354,7 +369,22 @@ function ProviderForm({ draft, setDraft, onSaved }: { draft: Draft; setDraft: (d
                  placeholder={draft.kind === 'anthropic' ? 'kosong = api.anthropic.com' : 'http://host:port'} />
         </label>
         <label><span>{draft.kind === 'azure_openai' ? 'Deployment' : 'Model'}</span>
-          <input value={draft.model} onChange={(e) => set({ model: e.target.value })} maxLength={128} placeholder={draft.model_hint ?? ''} />
+          {models && models.length > 0 ? (
+            <select value={models.includes(draft.model) ? draft.model : ''} onChange={(e) => set({ model: e.target.value })}>
+              {!models.includes(draft.model) && <option value="">{draft.model ? `${draft.model} (tidak ada di daftar)` : 'Pilih model…'}</option>}
+              {models.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          ) : (
+            <input value={draft.model} onChange={(e) => set({ model: e.target.value })} maxLength={128} placeholder={draft.model_hint ?? ''} />
+          )}
+          {draft.kind !== 'azure_openai' && (
+            <span className="small">
+              <button type="button" className="link-button" onClick={loadModels} disabled={loadingModels}>
+                {loadingModels ? 'Mengambil daftar…' : models ? `Muat ulang (${models.length} model)` : 'Ambil daftar model dari provider'}
+              </button>
+              {models && <> · <button type="button" className="link-button" onClick={() => setModels(null)}>ketik manual</button></>}
+            </span>
+          )}
         </label>
         <label><span>API key {draft.has_api_key && '(tersimpan — kosongkan untuk tetap)'}</span>
           <input type="password" value={draft.api_key} onChange={(e) => set({ api_key: e.target.value })} maxLength={512} autoComplete="new-password" />

@@ -10,7 +10,7 @@ from .. import models as m
 from ..config import settings
 from ..database import get_db
 from ..services.ai import context as ai_context
-from ..services.ai.providers import KINDS, AiError, chat
+from ..services.ai.providers import KINDS, AiError, ProviderConfig, chat, list_models
 from ..services.ai.registry import PRESETS, as_dict, default_provider, seed_local, to_config
 from ..services.collector_settings import encrypt_secret
 
@@ -60,6 +60,14 @@ class ProviderPatch(BaseModel):
     timeout_s: int | None = Field(default=None, ge=5, le=900)
     enabled: bool | None = None
     is_default: bool | None = None
+
+
+class ModelsQuery(BaseModel):
+    """The provider form as typed: a saved provider's key is used when no new one is typed."""
+    kind: Literal["ollama", "openai", "azure_openai", "anthropic"]
+    base_url: str | None = Field(default=None, max_length=255)
+    api_key: str | None = Field(default=None, max_length=512)
+    provider_id: int | None = None
 
 
 class ChatMessage(BaseModel):
@@ -155,6 +163,25 @@ def test_provider(provider_id: int, db: Session = Depends(get_db)):
     except AiError as exc:
         raise HTTPException(502, str(exc)) from exc
     return {"ok": True, "reply": result.text[:200], "model": result.model, "duration_ms": result.duration_ms}
+
+
+@router.post("/models")
+def available_models(payload: ModelsQuery, db: Session = Depends(get_db)):
+    """The models the provider offers this key, for the provider form. POST: the body may carry an API key."""
+    base_url = (payload.base_url or "").strip() or None
+    api_key = (payload.api_key or "").strip() or None
+    if api_key is None and payload.provider_id is not None:
+        saved = _provider(db, payload.provider_id)
+        # The stored key only goes where it went before: otherwise anyone who can open the form could point the URL
+        # at their own server and receive it.
+        if (saved.base_url or None) != base_url or saved.kind != payload.kind:
+            raise HTTPException(422, "Endpoint atau jenis berubah: ketik API key lagi untuk mengambil daftar model")
+        api_key = to_config(db, saved).api_key
+    config = ProviderConfig(kind=payload.kind, model="", base_url=base_url, api_key=api_key)
+    try:
+        return {"models": list_models(config)}
+    except AiError as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 @router.post("/chat")
