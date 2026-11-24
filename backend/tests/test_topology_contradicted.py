@@ -475,6 +475,30 @@ def test_should_remove_a_known_link_once_its_port_has_been_down_past_the_lldp_ag
     assert discover_links(db).superseded == 1 and db.scalars(select(m.Link)).all() == []
 
 
+def test_should_judge_an_unreported_member_by_its_long_down_bundle_when_only_the_far_end_lists_it(db):
+    from datetime import datetime, timedelta, timezone
+
+    pop = m.Pop(code="SRG", name="Serang")
+    db.add(pop)
+    db.flush()
+    sw, olt = m.Device(hostname="SRG-NDC-SW1-NX93", pop_id=pop.id), m.Device(hostname="SRG-SRG-OLT1-ZTE", pop_id=pop.id)
+    db.add_all([sw, olt])
+    db.flush()
+    now = datetime.now(timezone.utc)
+    bundle = m.Interface(device_id=sw.id, name="port-channel14", if_type="bundle", oper_status="down",
+                         oper_changed_at=now - timedelta(days=477))
+    db.add(bundle)
+    db.flush()
+    db.add_all([m.Interface(device_id=sw.id, name="Ethernet1/5", parent_id=bundle.id, oper_status="up"),
+                m.Interface(device_id=olt.id, name="xgei-1/10/1", speed_gbps=10, oper_status="up",
+                            oper_changed_at=now - timedelta(days=21)),
+                m.LldpNeighbor(device_id=olt.id, local_interface="xgei-1/10/1", remote_system_name="SRG-NDC-SW1-NX93",
+                               remote_port_id="Ethernet1/5", collected_at=now)])
+    db.commit()
+    discover_links(db)
+    assert db.scalars(select(m.Link)).all() == []
+
+
 def test_should_not_draw_links_of_a_decommissioned_device_from_its_config(db):
     _network(db, "")
     links = discover_links(db).config_links
