@@ -219,9 +219,10 @@ NADIEN_GITWEB_DAILY_AT=02:30
 - menambahkan restart otomatis.
 
 Frontend dibuka di `127.0.0.1:8080` untuk dipasang di belakang reverse proxy HTTPS (langkah 5). Kalau tidak memakai
-reverse proxy dan servernya hanya bisa diakses dari jaringan internal, ganti menjadi `"80:8080"`.
+reverse proxy dan servernya hanya bisa diakses dari jaringan internal, ganti menjadi `"80:8080"`. Tetap pakai
+`!override`: `!reset` selalu mengosongkan daftar port dan mengabaikan isinya, sehingga frontend tidak terbuka sama sekali.
 
-> `!reset` butuh Docker Compose v2.24 atau lebih baru. Cek dengan `docker compose version`.
+> `!reset` dan `!override` butuh Docker Compose v2.24 atau lebih baru. Cek dengan `docker compose version`.
 
 Supaya tidak perlu mengetik `-f` setiap kali, tambahkan baris ini ke `/opt/nadien/.env`:
 

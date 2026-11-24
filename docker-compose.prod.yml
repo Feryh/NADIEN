@@ -1,6 +1,6 @@
 # Production override (Harvester VM or any Linux server): docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 # Or put COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml in .env next to this file.
-# Needs Docker Compose >= 2.24 (`!reset`). Secrets: POSTGRES_PASSWORD in ./.env, NADIEN_* in ./backend/.env.
+# Needs Docker Compose >= 2.24 (`!reset`, `!override`). Secrets: POSTGRES_PASSWORD in ./.env, NADIEN_* in ./backend/.env.
 services:
   db:
     environment:
@@ -33,5 +33,6 @@ services:
 
   frontend:
     # Behind the host reverse proxy (HTTPS). Use "80:8080" when the VM is only reachable internally.
-    ports: !reset ["127.0.0.1:8080:8080"]
+    # !override, not !reset: !reset always empties the list and ignores what follows, so nothing would be published.
+    ports: !override ["127.0.0.1:8080:8080"]
     restart: unless-stopped
