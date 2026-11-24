@@ -11,6 +11,7 @@ interface MappingResult {
   unmapped_city_pops: string[]
   area_conflict_count: number
   area_conflicts: { code: string; area: string; city: string; city_area: string }[]
+  sni_conflicts: { code: string; name: string; sni_regency: string; sni_capital: string; sni_province: string; reason: string }[]
   applied_area?: number
   applied_city?: number
 }
@@ -52,7 +53,10 @@ export default function PopLocationMapping({ onApplied }: { onApplied: () => voi
       <div className="toolbar">
         <div>
           <h2>Pemetaan Area &amp; Kota POP</h2>
-          <div className="muted small">Mengisi kolom kosong dari kode POP, nama, hostname perangkat, dan lokasi RANCID.</div>
+          <div className="muted small">
+            Mengisi kolom kosong dari kode POP, nama, hostname perangkat, dan lokasi RANCID. Kode yang belum dikenal
+            dicocokkan ke SNI 7657:2010 (Area dari provinsinya, Kota = ibu kota kabupaten/kota).
+          </div>
         </div>
         <div className="spacer" />
         <button onClick={() => void preview()} disabled={busy}>Periksa lagi</button>
@@ -84,6 +88,21 @@ export default function PopLocationMapping({ onApplied }: { onApplied: () => voi
             <div className="muted small pop-location-unmapped">
               Perlu cek konsistensi Area–Kota: {result.area_conflicts.map((item) => `${item.code} (${item.area} / ${item.city} → ${item.city_area})`).join(', ')}
             </div>
+          )}
+          {result.sni_conflicts?.length > 0 && (
+            <details className="muted small pop-location-unmapped">
+              <summary>
+                {result.sni_conflicts.length} kode SNI tidak dipakai karena beda arti (isi manual bila POP memang di sana)
+              </summary>
+              <ul>
+                {result.sni_conflicts.map((item) => (
+                  <li key={item.code}>
+                    <b>{item.code}</b> {item.name !== item.code && `(${item.name}) `}— SNI: {item.sni_regency},{' '}
+                    {item.sni_province}; {item.reason}
+                  </li>
+                ))}
+              </ul>
+            </details>
           )}
         </>
       )}
