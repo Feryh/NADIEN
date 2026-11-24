@@ -119,8 +119,10 @@ build-images:
 # managed here, on purpose: they hold passwords and are never committed, see deploy/k8s/README.md §2).
 deploy-production:
   stage: deploy
+  # kubectl + kustomize with a shell. Not bitnami/kubectl: Bitnami pulled its versioned tags from Docker Hub in 2025
+  # (`bitnami/kubectl:1.30: not found`), and its frozen bitnamilegacy copies get no fixes.
   image:
-    name: bitnami/kubectl:1.30
+    name: alpine/k8s:1.30.14
     entrypoint: [""]
   needs: [build-images]
   environment:
