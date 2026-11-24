@@ -426,6 +426,55 @@ def test_should_not_draw_a_link_from_the_lldp_table_of_a_box_observium_stopped_p
         "SRG-BNG-HW-M4:100GE0/5/1 <> SRG-SMY-ME1-M8:100GE0/2/0"]
 
 
+def _olt_behind_dead_port(db, down_days: float):
+    """SRG-NDC-SW1-NX93 Ethernet1/26: down since August 2025, yet Observium still lists the OLT on it, and the OLT's
+    own (up) port still names the switch."""
+    from datetime import datetime, timedelta, timezone
+
+    pop = m.Pop(code="SRG", name="Serang")
+    db.add(pop)
+    db.flush()
+    sw, olt = m.Device(hostname="SRG-NDC-SW1-NX93", pop_id=pop.id), m.Device(hostname="SRG-BTL-OLT1-ZTE", pop_id=pop.id)
+    db.add_all([sw, olt])
+    db.flush()
+    now = datetime.now(timezone.utc)
+    sw_port = m.Interface(device_id=sw.id, name="Ethernet1/26", speed_gbps=10, oper_status="down",
+                          oper_changed_at=now - timedelta(days=down_days))
+    olt_port = m.Interface(device_id=olt.id, name="xgei-1/11/1", speed_gbps=10, oper_status="up",
+                           oper_changed_at=now - timedelta(days=21))
+    db.add_all([sw_port, olt_port])
+    db.add_all([
+        m.LldpNeighbor(device_id=sw.id, local_interface="Ethernet1/26", remote_system_name="SRG-BTL-OLT1-ZTE",
+                       remote_port_id="xgei-1/11/1", collected_at=now),
+        m.LldpNeighbor(device_id=olt.id, local_interface="xgei-1/11/1", remote_system_name="SRG-NDC-SW1-NX93",
+                       remote_port_id="Ethernet1/26", collected_at=now),
+    ])
+    db.commit()
+    return sw_port
+
+
+def test_should_not_draw_an_lldp_link_on_a_port_down_past_the_lldp_age_limit(db):
+    _olt_behind_dead_port(db, down_days=477)
+    discover_links(db)
+    assert db.scalars(select(m.Link)).all() == []
+
+
+def test_should_keep_an_lldp_link_on_a_port_that_went_down_recently(db):
+    _olt_behind_dead_port(db, down_days=1)
+    discover_links(db)
+    assert len(db.scalars(select(m.Link)).all()) == 1
+
+
+def test_should_remove_a_known_link_once_its_port_has_been_down_past_the_lldp_age_limit(db):
+    from datetime import timedelta
+
+    port = _olt_behind_dead_port(db, down_days=1)
+    discover_links(db)
+    port.oper_changed_at -= timedelta(days=476)
+    db.commit()
+    assert discover_links(db).superseded == 1 and db.scalars(select(m.Link)).all() == []
+
+
 def test_should_not_draw_links_of_a_decommissioned_device_from_its_config(db):
     _network(db, "")
     links = discover_links(db).config_links

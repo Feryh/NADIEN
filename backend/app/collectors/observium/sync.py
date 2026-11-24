@@ -204,6 +204,7 @@ class _Writer:
         iface.mtu = rec.mtu if rec.mtu is not None else iface.mtu
         iface.admin_status = rec.admin_status
         iface.oper_status = rec.oper_status
+        iface.oper_changed_at = rec.oper_changed_at or iface.oper_changed_at
         iface.description = rec.description or iface.description
         self.ifaces[key] = iface
         return iface

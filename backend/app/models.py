@@ -159,6 +159,9 @@ class Interface(TimestampMixin, Base):
     mtu: Mapped[int | None] = mapped_column(Integer)
     admin_status: Mapped[str] = mapped_column(String(16), default="up")
     oper_status: Mapped[str] = mapped_column(String(16), default="down")
+    # When oper_status last changed (Observium ifLastChange): tells a port that went down this week from one dead for
+    # a year, whose LLDP neighbour the NMS still lists.
+    oper_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     description: Mapped[str | None] = mapped_column(String(512))
     ipv4_address: Mapped[str | None] = mapped_column(String(64))
     optic_type: Mapped[str | None] = mapped_column(String(64))
