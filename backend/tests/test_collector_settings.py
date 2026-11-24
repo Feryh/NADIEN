@@ -87,6 +87,8 @@ class _FakeObservium:
 
     def __init__(self, **kwargs):
         _FakeObservium.calls.append(kwargs)
+        self.base_url = kwargs["base_url"].rstrip("/")  # like the real client: the server that answered
+        self.failed_over = False
 
     def __enter__(self):
         return self
@@ -136,6 +138,21 @@ def test_should_test_saved_settings_when_the_form_is_unchanged(client, fake_obse
     client.put("/api/collectors/settings", json={"values": {"observium_url": "http://o.lab", "observium_token": "t1"}})
     client.post("/api/collectors/settings/test?target=observium")
     assert (fake_observium[0]["base_url"], fake_observium[0]["token"]) == ("http://o.lab", "t1")
+
+
+def test_should_name_the_standby_when_the_connection_test_fails_over(client, monkeypatch):
+    from app.routers import collectors
+
+    class FailedOver(_FakeObservium):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.base_url, self.failed_over = kwargs["standby_url"], True
+
+    monkeypatch.setattr(collectors, "ObserviumClient", FailedOver)
+    client.put("/api/collectors/settings", json={"values": {"observium_url": "http://o.lab", "observium_token": "t1",
+                                                            "observium_standby_url": "http://o-standby.lab"}})
+    detail = client.post("/api/collectors/settings/test?target=observium").json()["detail"]
+    assert detail.startswith("Terhubung ke http://o-standby.lab (standby; http://o.lab tidak menjawab)")
 
 
 def test_should_report_a_non_api_answer_instead_of_failing_with_500(client, monkeypatch):
