@@ -37,4 +37,11 @@ Log ada di `/data/nadien/deploy/release.log` dan `journalctl -u nadien-release`.
 | `/data/nadien/backups/` | backup aplikasi dan `nadien-secret.key` (kunci kredensial collector) |
 | `/data/nadien/deploy/` | script ini, override compose, dumps, log |
 
+## Jaringan Docker
+
+Observium dan RANCID ada di 172.17.x.x, jadi Docker tidak boleh memakai rentang bawaannya (172.17.0.0/16 dan
+seterusnya). Di server, `/etc/docker/daemon.json` berisi `"bip": "192.168.240.1/24"` dan `default-address-pools`
+192.168.241.0/24 + 192.168.242.0/23. Tanpa itu, server tidak bisa menjangkau Observium (`tracepath` berhenti di
+172.17.0.1). Pasang ini sebelum `docker compose up` pertama di server baru.
+
 Jam maintenance diubah di `nadien-release.timer`, lalu jalankan `deploy/server/release.sh --install` lagi.

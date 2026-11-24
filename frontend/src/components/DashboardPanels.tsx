@@ -4,7 +4,7 @@ import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Too
 import { api, CapacityResult } from '../api'
 import { BasemapShape, Box, declutter, LON0, loadBasemap } from './basemap'
 import { StatusBadge } from './ValidationReport'
-import { ColorBadge, fmtG, fmtMonths, Kpi, UtilBar } from './ui'
+import { CHART_TOOLTIP, ColorBadge, fmtG, fmtMonths, Kpi, UtilBar } from './ui'
 
 // Phase 8 — advanced dashboard panels, each backed by one /api/dashboard/* read model.
 
@@ -68,10 +68,10 @@ export function TrendsPanel() {
           <div style={{ height: 280 }}>
             <ResponsiveContainer>
               <LineChart data={node.series} margin={{ top: 10, right: 20, bottom: 0, left: 0 }}>
-                <CartesianGrid stroke="#334155" strokeDasharray="3 3" />
+                <CartesianGrid stroke="#64748b" strokeOpacity={0.35} strokeDasharray="3 3" />
                 <XAxis dataKey="day" stroke="#94a3b8" fontSize={11} />
                 <YAxis stroke="#94a3b8" fontSize={11} unit="G" />
-                <Tooltip contentStyle={{ background: '#0f172a', border: '1px solid #334155' }} />
+                <Tooltip contentStyle={CHART_TOOLTIP} />
                 <ReferenceLine y={node.capacity_gbps * 0.8} stroke="#eab308" strokeDasharray="4 4" label={{ value: 'ambang 80%', fill: '#eab308', fontSize: 11 }} />
                 <Line type="monotone" dataKey="peak_gbps" name="Puncak harian (Gbps)" stroke="#38bdf8" dot={false} />
               </LineChart>

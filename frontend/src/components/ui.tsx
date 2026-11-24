@@ -7,6 +7,9 @@ export const CAPACITY_HEX: Record<CapacityColor, string> = {
   red: '#ef4444',
 }
 
+/** Recharts tooltip box: theme colours, so it reads on the light and the dark page. */
+export const CHART_TOOLTIP = { background: 'var(--panel)', border: '1px solid var(--border)', color: 'var(--text)' }
+
 export function ColorBadge({ color, children }: { color: CapacityColor; children?: ReactNode }) {
   return (
     <span className="badge" style={{ background: `${CAPACITY_HEX[color]}22`, color: CAPACITY_HEX[color] }}>

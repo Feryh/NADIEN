@@ -42,6 +42,7 @@ def status(db: Session = Depends(get_db)):
     return {
         "observium": {
             "url": settings.observium_url,
+            "standby_url": settings.observium_standby_url,
             "configured": auth is not None,
             "auth": auth,
             "last_sync_at": source.last_sync_at if source else None,
@@ -125,10 +126,13 @@ def test_connection(target: str = Query(..., pattern="^(observium|observium_csr|
             url = cfg["observium_csr_url"] if target == "observium_csr" else cfg["observium_url"]
             if not url:
                 return {"ok": False, "detail": "URL belum diisi"}
+            standby = cfg["observium_standby_url"] if target == "observium" else None
             with ObserviumClient(base_url=url, token=cfg["observium_token"] or "", user=cfg["observium_user"] or "",
-                                 password=cfg["observium_password"] or "", verify=cfg["observium_verify_tls"]) as client:
+                                 password=cfg["observium_password"] or "", verify=cfg["observium_verify_tls"],
+                                 standby_url=standby) as client:
                 data = client._get("/devices/", {"pagesize": 1, "pageno": 1})
-            return {"ok": True, "detail": f"Terhubung ke {url}: {data.get('count', '?')} perangkat"}
+            note = f" (standby; {url} tidak menjawab)" if client.failed_over else ""
+            return {"ok": True, "detail": f"Terhubung ke {client.base_url}{note}: {data.get('count', '?')} perangkat"}
         client = GitwebClient(base_url=cfg["gitweb_url"], user=cfg["gitweb_user"] or "",
                               password=cfg["gitweb_password"] or "")
         try:

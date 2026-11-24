@@ -14,7 +14,7 @@ import {
 import { api, CapacityColor, CapacityResult, LinkCapacity, LinkCapacityDetail } from '../api'
 import { HotspotsPanel, NodeForecastPanel } from '../components/CapacityPanels'
 import { Pager, usePaged } from '../components/Pager'
-import { CAPACITY_HEX, ColorBadge, fmtG, fmtMonths, UtilBar } from '../components/ui'
+import { CAPACITY_HEX, CHART_TOOLTIP, ColorBadge, fmtG, fmtMonths, UtilBar } from '../components/ui'
 
 const GROWTH_SOURCE_LABEL = { manual: 'manual', trend: 'tren', input: 'input', none: '—' }
 const TREND_WINDOWS = ['7', '30', '90']
@@ -328,7 +328,7 @@ function LinkDetail({ linkId, onClose }: { linkId: number; onClose: () => void }
           <div style={{ height: 320 }}>
             <ResponsiveContainer>
               <ComposedChart data={chart} margin={{ top: 10, right: 20, bottom: 0, left: 0 }}>
-                <CartesianGrid stroke="#1e293b" />
+                <CartesianGrid stroke="#64748b" strokeOpacity={0.25} />
                 <XAxis
                   dataKey="t"
                   type="number"
@@ -340,7 +340,7 @@ function LinkDetail({ linkId, onClose }: { linkId: number; onClose: () => void }
                 />
                 <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} unit="G" />
                 <Tooltip
-                  contentStyle={{ background: '#0f172a', border: '1px solid #334155' }}
+                  contentStyle={CHART_TOOLTIP}
                   labelFormatter={(t) => new Date(Number(t)).toISOString().slice(0, 10)}
                   formatter={(v) => `${Number(v).toFixed(1)}G`}
                 />

@@ -4,18 +4,30 @@ Observium returns collections keyed by entity id, e.g. {"status": "ok", "devices
 `fetch()` normalises that to a plain list of rows and follows pagination where requested.
 """
 
+import logging
 from typing import Any
 
 import httpx
 
 from ...config import settings
 
+log = logging.getLogger("nadien.observium")
+
+PROBE_TIMEOUT_S = 10.0  # a standby that is down refuses at once; one that hangs must not stall every run
+
 
 class ObserviumError(RuntimeError):
     pass
 
 
+def _root(url: str) -> str:
+    return url.rstrip("/").removesuffix("/api/v0")
+
+
 class ObserviumClient:
+    """`base_url` None = the main Observium: `observium_url`, or `observium_standby_url` when that one does not
+    answer (an active/standby pair, only the active one serves). Which one answered is in `base_url`."""
+
     def __init__(
         self,
         base_url: str | None = None,
@@ -25,8 +37,10 @@ class ObserviumClient:
         verify: bool | None = None,
         timeout: float | None = None,
         transport: httpx.BaseTransport | None = None,  # injected by tests
+        standby_url: str | None = None,
     ):
-        base_url = (base_url or settings.observium_url).rstrip("/").removesuffix("/api/v0")
+        if not base_url:
+            base_url, standby_url = settings.observium_url, settings.observium_standby_url
         token = settings.observium_token if token is None else token
         user = settings.observium_user if user is None else user
         password = settings.observium_password if password is None else password
@@ -42,12 +56,31 @@ class ObserviumClient:
             timeout=timeout or settings.observium_timeout_s,
             transport=transport,
         )
-        self._http = httpx.Client(base_url=f"{base_url}/api/v0", **common)
-        # graph.php sits beside the API, not under /api/v0.
-        self._web = httpx.Client(base_url=base_url, **common)
+        self._open(_root(base_url), common)
+        self.failed_over = False
+        if standby_url and _root(standby_url) != self.base_url and not self._answers():
+            log.warning("Observium %s does not answer: using the standby %s", self.base_url, _root(standby_url))
+            self.close()
+            self._open(_root(standby_url), common)
+            self.failed_over = True
         # Response shape per entity (top-level keys, reported count, rows returned) — kept for
         # diagnostics, because Observium versions differ in what some endpoints return.
         self.meta: dict[str, dict[str, Any]] = {}
+
+    def _open(self, base_url: str, common: dict[str, Any]) -> None:
+        self.base_url = base_url
+        self._http = httpx.Client(base_url=f"{base_url}/api/v0", **common)
+        # graph.php sits beside the API, not under /api/v0.
+        self._web = httpx.Client(base_url=base_url, **common)
+
+    def _answers(self) -> bool:
+        """False only when the server is not serving (refused, unreachable, timed out, 5xx): a standby. A wrong
+        password still answers, and is reported by the real call with its own message."""
+        try:
+            resp = self._http.get("/devices/", params={"pagesize": 1, "pageno": 1}, timeout=PROBE_TIMEOUT_S)
+        except httpx.TransportError:
+            return False
+        return resp.status_code < 500
 
     def close(self) -> None:
         self._http.close()

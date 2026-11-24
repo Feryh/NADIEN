@@ -323,7 +323,7 @@ def sync_observium(
         _write_utilization(db, rates, report)
 
     report.diagnostics["observium_responses"] = client.meta
-    _record_source(db, report, source)
+    _record_source(db, report, source, getattr(client, "base_url", None))
     report.duration_s = time.monotonic() - started
     return report
 
@@ -501,17 +501,21 @@ def _write_utilization(db: Session, rates: dict[int, tuple[float | None, float |
     db.commit()
 
 
-def _record_source(db: Session, report: SyncReport, kind: str = "main") -> None:
+def _record_source(db: Session, report: SyncReport, kind: str = "main", used_url: str | None = None) -> None:
+    """`used_url`: the server that answered (the standby after a failover), shown with the last status."""
     name, url = (CSR_SOURCE_NAME, settings.observium_csr_url) if kind == "csr" else (SOURCE_NAME, settings.observium_url)
+    used_url = used_url or url
     source = db.scalar(select(m.IntegrationSource).where(m.IntegrationSource.name == name))
     if source is None:
         source = m.IntegrationSource(name=name, system_type="nms", target_entity="devices",
-                                     base_url=url, auth_type="basic", enabled=True)
+                                     base_url=used_url, auth_type="basic", enabled=True)
         db.add(source)
+    source.base_url = used_url
     c = report.counts
     source.last_sync_at = datetime.now(timezone.utc)
+    via_standby = f", via standby {used_url}" if used_url.rstrip("/") != (url or "").rstrip("/") else ""
     source.last_status = (
         f"ok: {c['devices_seen']} devices, {c['ports_seen']} ports, {c['neighbours']} neighbours, "
-        f"{c['utilization_samples']} samples, {c['warnings']} warnings"
+        f"{c['utilization_samples']} samples, {c['warnings']} warnings{via_standby}"
     )
     db.commit()
