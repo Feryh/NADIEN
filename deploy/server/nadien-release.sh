@@ -14,7 +14,7 @@
 #   backups/                           the app's own backups and secret key (bind-mounted at /backups)
 #   deploy/                            this script, the compose override, dumps/, release.log
 set -euo pipefail
-umask 077  # dumps and release .env files hold password hashes and the database password
+umask 077  # dumps and release .env files hold password hashes and the database password (source: see stage)
 
 ROOT=${NADIEN_ROOT:-/data/nadien}
 RELEASES=$ROOT/releases
@@ -72,7 +72,8 @@ stage() {
   local dir=$RELEASES/$release
   rm -r -f "$dir.tmp"
   mkdir -p "$dir.tmp"
-  tar -x -C "$dir.tmp"
+  # Source readable by all: it is copied into the images as is, and nginx there runs unprivileged.
+  (umask 022 && tar -x -C "$dir.tmp")
   cp "$DEPLOY/docker-compose.server.yml" "$dir.tmp/"
   write_release_env "$dir.tmp" "$release"
   rm -r -f "$dir"
