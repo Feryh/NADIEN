@@ -58,7 +58,8 @@ def _apply_pon_ports(db: Session, device: m.Device, cfg: ParsedConfig, index: di
             counts["pon_types_set"] += 1
 
 
-_SLOT_PORT_TAIL = re.compile(r"(\d+/\d+)/(\d+)$")
+# frame/slot/port (Huawei OLT `ethernet0/8/1`) or slot/port (Nexus `Ethernet1/49`); group 1 is the card.
+_SLOT_PORT_TAIL = re.compile(r"(\d+(?:/\d+)?)/(\d+)$")
 
 
 def _apply_card_ports(db: Session, device: m.Device, cfg: ParsedConfig, index: dict[str, m.Interface],
@@ -117,8 +118,9 @@ def apply_config(db: Session, device: m.Device, cfg: ParsedConfig, create_ports:
     _apply_pon_ports(db, device, cfg, index, counts)
     _apply_card_ports(db, device, cfg, index, counts)
     for p in cfg.interfaces.values():
-        # loopback/mgmt: on the device record; PON and card ports: handled above
-        if SKIP_PORT.match(p.name) or p.pon or p.card_port:
+        # loopback/mgmt: on the device record; PON ports and card ports the NMS names otherwise: handled above.
+        # Card ports in the index still take description/IP/MTU (a routed Nexus port).
+        if SKIP_PORT.match(p.name) or p.pon or (p.card_port and norm_if(p.name) not in index):
             continue
         known = norm_if(p.name) in index
         useful = p.description or p.ipv4 or p.bundle or p.is_bundle
