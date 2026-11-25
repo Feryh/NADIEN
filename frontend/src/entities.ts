@@ -70,6 +70,8 @@ export const ENTITIES: Entity[] = [
       { name: 'isis_net', label: 'IS-IS NET', hideInTable: true },
       { name: 'srv6_locator', label: 'SRv6 Locator' },
       { name: 'status', label: 'Status', type: 'select', options: ['active', 'planned', 'maintenance', 'decommissioned'] },
+      // Decommissioned or no longer polled since then; hidden with its links deleted after 7 days.
+      { name: 'gone_since', label: 'Hilang sejak', type: 'datetime', readonly: true },
     ],
   },
   {
