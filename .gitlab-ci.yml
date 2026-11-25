@@ -164,3 +164,22 @@ deploy-production:
     - kubectl apply -k .
     - kubectl -n nadien rollout status statefulset/nadien-db --timeout=180s
     - kubectl -n nadien rollout status deploy/nadien-api deploy/nadien-worker deploy/nadien-frontend --timeout=180s
+
+# Restart the app pods so they read changed secrets (after apply-secrets: NADIEN_SECRET_KEY, database password);
+# a running pod keeps the values it started with, and deploy-production restarts nothing when the image is unchanged.
+# Rolling: nadien-api keeps serving meanwhile.
+restart-app:
+  stage: deploy
+  image:
+    name: alpine/k8s:1.30.14
+    entrypoint: [""]
+  needs: []
+  environment:
+    name: production
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+  script:
+    - kubectl config use-context "$KUBE_AGENT_CONTEXT"
+    - kubectl -n nadien rollout restart deploy/nadien-api deploy/nadien-worker
+    - kubectl -n nadien rollout status deploy/nadien-api deploy/nadien-worker --timeout=300s
