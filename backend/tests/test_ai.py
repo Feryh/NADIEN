@@ -144,6 +144,23 @@ def test_should_seed_local_ollama_as_default_when_no_provider_exists(client):
     assert [(p["kind"], p["is_default"], p["external"]) for p in providers_] == [("ollama", True, False)]
 
 
+def test_should_repoint_the_untouched_seeded_ollama_when_the_deployment_sets_its_url(client, db, monkeypatch):
+    client.get("/api/ai/providers")  # seeds localhost:11434 + llama3.1:8b
+    monkeypatch.setattr(settings, "ai_ollama_url", "http://nadien-ollama:11434")
+    monkeypatch.setattr(settings, "ai_default_model", "qwen2.5:7b-instruct")
+    seeded = client.get("/api/ai/providers").json()["providers"][0]
+    assert (seeded["base_url"], seeded["model"]) == ("http://nadien-ollama:11434", "qwen2.5:7b-instruct")
+
+
+def test_should_keep_an_edited_seeded_ollama_when_the_deployment_sets_its_url(client, db, monkeypatch):
+    client.get("/api/ai/providers")
+    db.query(m.AiProvider).one().model = "mistral:7b"
+    db.commit()
+    monkeypatch.setattr(settings, "ai_ollama_url", "http://nadien-ollama:11434")
+    seeded = client.get("/api/ai/providers").json()["providers"][0]
+    assert (seeded["base_url"], seeded["model"]) == ("http://localhost:11434", "mistral:7b")
+
+
 def test_should_store_key_encrypted_and_move_default_when_provider_is_added(client, db):
     client.get("/api/ai/providers")
     res = client.post("/api/ai/providers", json={"name": "Claude", "kind": "anthropic", "model": "claude-opus-5-5",

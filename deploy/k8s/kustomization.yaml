@@ -11,6 +11,7 @@ resources:
   - ingress.yaml
   - traefik-middleware.yaml
   - cronjobs.yaml
+  - ollama.yaml
 images:
   - name: nadien-backend
     newName: registry.example.co.id/neteng/nadien-backend
@@ -28,3 +29,5 @@ configMapGenerator:
       - NADIEN_CACHE_TTL_S=60
       - NADIEN_SCHEDULE_TIMEZONE=Asia/Jakarta
       - NADIEN_CORS_ORIGINS=["https://nadien.example.co.id"]
+      - NADIEN_AI_OLLAMA_URL=http://nadien-ollama:11434
+      - NADIEN_AI_DEFAULT_MODEL=qwen2.5:7b-instruct

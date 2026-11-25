@@ -171,6 +171,23 @@ Observium. Pengaturan buatan tangan seperti POP dan kunci POP perlu dipindahkan 
 kubectl -n nadien exec deploy/nadien-worker -- python -m app.backup restore <nama-file>
 ```
 
+## AI Assistant
+
+- **Ollama lokal** (`ollama.yaml`): Qwen2.5 7B Instruct di CPU, service `nadien-ollama:11434`, hanya bisa diakses
+  `nadien-api`/`nadien-worker`. Saat start pertama pod mengunduh model (~4,7 GB) dari registry Ollama ke PVC
+  `nadien-ollama`, dan baru Ready setelah model ada. Butuh node dengan ±6 GB RAM bebas (limit 10 GB). Tanpa GPU
+  jawabannya beberapa token per detik, jadi timeout provider tetap 180 detik.
+  Provider "Ollama lokal" yang dibuat otomatis dan belum diubah ikut diarahkan ke `NADIEN_AI_OLLAMA_URL` /
+  `NADIEN_AI_DEFAULT_MODEL` dari `kustomization.yaml`.
+- **Gemini** (data dikirim ke Google): buat API key di Google AI Studio, lalu di NADIEN buka AI Assistant →
+  provider → tambah dengan preset "Gemini (endpoint OpenAI-compatible)", isi API key, pilih model dari daftar.
+  API key disimpan terenkripsi di database, tidak di manifest.
+
+```bash
+kubectl -n nadien logs deploy/nadien-ollama        # progres unduh model
+kubectl -n nadien exec deploy/nadien-ollama -- ollama list
+```
+
 ## Operasi
 
 | Kebutuhan | Perintah |

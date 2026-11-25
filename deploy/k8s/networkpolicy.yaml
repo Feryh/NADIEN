@@ -77,3 +77,19 @@ spec:
     # jadi NetworkPolicy tidak bisa dipakai membatasi by source IP di path ini (lihat komentar di
     # postgres.yaml) — kalau dikasih podSelector/ipBlock di sini, traffic NodePort malah ikut keblokir lagi.
     - ports: [{ port: 5432 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ollama-from-backend
+spec:
+  podSelector:
+    matchLabels: { app: nadien-ollama }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: nadien-api }
+        - podSelector:
+            matchLabels: { app: nadien-worker }
+      ports: [{ port: 11434 }]
