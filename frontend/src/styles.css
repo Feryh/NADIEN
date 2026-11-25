@@ -594,3 +594,10 @@ tbody tr.selected td { background: #0ea5e914; }
   background: none; border-color: transparent; color: var(--muted); text-align: left; }
 .theme-toggle:hover:not(:disabled) { color: var(--text); }
 .sidebar-collapsed .theme-toggle { justify-content: center; padding: 6px 0; }
+
+/* 7-day trend popover on the dashboard's busy-link table */
+.trend-cell { cursor: pointer; white-space: nowrap; }
+.trend-hint { font-size: 11px; opacity: 0.45; }
+.trend-cell:hover .trend-hint { opacity: 1; }
+.trend-pop { position: fixed; z-index: 60; padding: 10px 12px; box-shadow: 0 8px 24px #0006; }
+.trend-pop-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-bottom: 6px; font-size: 12px; }
