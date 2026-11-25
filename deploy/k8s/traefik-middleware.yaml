@@ -1,0 +1,23 @@
+# Traefik (kommander-traefik) ignores nginx.ingress.kubernetes.io/* annotations silently, so the access
+# restriction and HTTPS redirect that used to live as annotations on ingress.yaml are Middleware CRDs here
+# instead, wired in via traefik.ingress.kubernetes.io/router.middlewares. Needs the Middleware CRD
+# (traefik.io/v1alpha1) available in this cluster — confirm with the nkp-batam infra team if `kubectl get
+# middlewares` 404s.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: ip-allowlist
+spec:
+  ipAllowList:
+    sourceRange:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: https-redirect
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true

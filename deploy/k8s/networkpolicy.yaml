@@ -1,5 +1,5 @@
 # Inbound only: nothing reaches a pod except along the paths below. The backend still calls out to Observium, gitweb,
-# network devices and AI providers, so outbound stays open. Needs a CNI that enforces policies (RKE2's canal does).
+# network devices and AI providers, so outbound stays open. Needs a CNI that enforces policies.
 #
 # The backend trusts X-Forwarded-* from anything that reaches it (--forwarded-allow-ips='*'), so this is also what
 # keeps those headers honest: only the frontend nginx can talk to it.
@@ -23,8 +23,8 @@ spec:
     - from:
         - namespaceSelector:
             matchExpressions:
-              # RKE2 runs ingress-nginx in kube-system; a standard install has its own namespace.
-              - { key: kubernetes.io/metadata.name, operator: In, values: [kube-system, ingress-nginx] }
+              # Namespace tempat kommander-traefik jalan di nkp-batam.
+              - { key: kubernetes.io/metadata.name, operator: In, values: [batam01-nwp8n-4dwjt] }
       ports: [{ port: 8080 }]
 ---
 apiVersion: networking.k8s.io/v1

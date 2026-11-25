@@ -69,6 +69,6 @@ spec:
         name: data
       spec:
         accessModes: [ReadWriteOnce]
-        storageClassName: harvester
+        storageClassName: nutanix-volume
         resources:
           requests: { storage: 100Gi }

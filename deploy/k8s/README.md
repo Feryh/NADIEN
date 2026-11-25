@@ -1,8 +1,9 @@
 # NADIEN di Kubernetes
 
-Manifest untuk RKE2 di Harvester (ingress-nginx, storage class `harvester`). Di cluster lain, ganti `storageClassName`
-di `postgres.yaml` dan `backend.yaml`, `ingressClassName` di `ingress.yaml`, dan daftar namespace ingress controller di
-`networkpolicy.yaml`.
+Manifest untuk cluster Nutanix NKP (`nkp-batam`, storage class `nutanix-volume`). `ingressClassName` di `ingress.yaml`
+dan daftar namespace ingress controller di `networkpolicy.yaml` masih ditulis untuk RKE2/ingress-nginx default — cek
+dan sesuaikan ke setup ingress controller nyata di `nkp-batam` sebelum deploy pertama kali (lihat catatan di kedua
+file itu). Di cluster lain lagi, ganti juga `storageClassName` di `postgres.yaml` dan `backend.yaml`.
 
 | Komponen | Isi |
 |---|---|
@@ -143,8 +144,9 @@ Observium. Pengaturan buatan tangan seperti POP dan kunci POP perlu dipindahkan 
 ## Backup
 
 - `nadien-worker` membuat `pg_dump` sebelum setiap Full sync (15 terakhir disimpan di PVC `nadien-backups`).
-- **PVC berada di cluster yang sama dengan database.** Salin ke luar cluster: aktifkan Harvester Backup ke target
-  S3/NFS untuk volume `nadien-backups` dan `data-nadien-db-0`.
+- **PVC berada di cluster yang sama dengan database.** Salin ke luar cluster: pakai snapshot/backup volume Nutanix CSI
+  (atau cron `kubectl cp` ke storage eksternal) untuk volume `nadien-backups` dan `data-nadien-db-0`. Cek ke tim
+  infra `nkp-batam` mekanisme backup volume mana yang tersedia di cluster itu.
 - Coba restore secara berkala. Backup yang belum pernah dipulihkan belum terbukti.
 
 ```bash

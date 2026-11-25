@@ -1,6 +1,6 @@
 # Two backends from one image:
 #   nadien-api    — stateless, scaled out for users (reads, edits, discovery). No scheduler.
-#   nadien-worker — one pod with the backup volume (Harvester volumes are ReadWriteOnce): collector
+#   nadien-worker — one pod with the backup volume (Nutanix CSI volumes are ReadWriteOnce): collector
 #                   syncs, backups, pushes to devices (/api/collectors, /api/backups and /api/changes are routed
 #                   here by the frontend nginx), the daily gitweb schedule and pre-sync pg_dump backups.
 # Job state is in the database, so both agree on what is running.
@@ -138,7 +138,7 @@ metadata:
   name: nadien-backups
 spec:
   accessModes: [ReadWriteOnce]
-  storageClassName: harvester
+  storageClassName: nutanix-volume
   resources:
     requests: { storage: 100Gi }  # 15 pg_dump backups, device host keys
 ---

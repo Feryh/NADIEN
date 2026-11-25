@@ -1,17 +1,20 @@
-# RKE2 ships ingress-nginx. NADIEN has its own login; the source-range list keeps it reachable from internal networks
-# only. Replace nadien.example.co.id (here and in kustomization.yaml).
+# nkp-batam's ingress controller is Traefik (kommander-traefik). NADIEN has its own login; the IP allow-list
+# Middleware (traefik-middleware.yaml) keeps it reachable from internal networks only. Replace
+# nadien.example.co.id (here and in kustomization.yaml).
 # TLS secret: kubectl -n nadien create secret tls nadien-tls --cert=... --key=...
+#
+# Traefik's default max request body size is unlimited (unlike nginx's 1m default), so there's no
+# proxy-body-size equivalent needed here. There's no simple per-Ingress annotation for read/response
+# timeouts either (that's a Traefik entrypoint/ServersTransport-level setting) — confirm with the
+# nkp-batam infra team that the global timeout covers NADIEN's longest requests (large exports/syncs).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: nadien
   annotations:
-    nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8,172.16.0.0/12"
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    nginx.ingress.kubernetes.io/proxy-body-size: 50m
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    traefik.ingress.kubernetes.io/router.middlewares: nadien-ip-allowlist@kubernetescrd,nadien-https-redirect@kubernetescrd
 spec:
-  ingressClassName: nginx
+  ingressClassName: kommander-traefik
   tls:
     - hosts: [nadien.example.co.id]
       secretName: nadien-tls

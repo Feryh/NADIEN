@@ -1,4 +1,4 @@
-# NADIEN on Kubernetes (RKE2 guest cluster on Harvester, storage class "harvester"). Steps: README.md in this folder.
+# NADIEN on Kubernetes (Nutanix NKP cluster, storage class "nutanix-volume"). Steps: README.md in this folder.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: nadien
@@ -9,6 +9,7 @@ resources:
   - backend.yaml
   - frontend.yaml
   - ingress.yaml
+  - traefik-middleware.yaml
   - cronjobs.yaml
 images:
   - name: nadien-backend
