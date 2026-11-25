@@ -31,6 +31,8 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
   const bulk = entity.endpoint === '/devices'
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [notice, setNotice] = useState<string | null>(null)
+  // Devices gone for over 7 days are hidden (backend services/lifecycle.py) unless asked for.
+  const [showHidden, setShowHidden] = useState(false)
 
   const refKeys = useMemo(
     () => [...new Set(entity.fields.filter((f) => f.ref).map((f) => f.ref as string))],
@@ -43,7 +45,7 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
     setError(null)
     try {
       const search = serverQuery ? `&q=${encodeURIComponent(serverQuery)}` : ''
-      const fixed = entity.query ? `&${entity.query}` : ''
+      const fixed = (entity.query ? `&${entity.query}` : '') + (bulk && !showHidden ? '&hidden=false' : '')
       const [main, ...refRows] = await Promise.all([
         api.get<Row[]>(`${entity.endpoint}?limit=${FETCH_LIMIT}${fixed}${search}`),
         ...refKeys.map((k) => api.get<Row[]>(`${ENTITY_BY_KEY[k].endpoint}?limit=${FETCH_LIMIT}`)),
@@ -55,7 +57,7 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
     } finally {
       setLoading(false)
     }
-  }, [entity, refKeys, serverQuery])
+  }, [entity, refKeys, serverQuery, bulk, showHidden])
 
   useEffect(() => {
     setEditing(null)
@@ -128,6 +130,12 @@ export default function ResourceTable({ entity }: { entity: Entity }) {
           </span>
         )}
         <div className="spacer" />
+        {bulk && (
+          <label className="check" title="Perangkat decommissioned atau tidak di-poll Observium lebih dari 7 hari">
+            <input type="checkbox" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} />
+            Tampilkan perangkat tersembunyi
+          </label>
+        )}
         <input
           className="search"
           placeholder={truncated || serverQuery ? 'Cari (Enter = cari di server)…' : 'Cari…'}

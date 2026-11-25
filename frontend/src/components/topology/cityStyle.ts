@@ -80,6 +80,8 @@ export const CITY_STYLE = [
   },
   { selector: 'node[?center]', style: { 'border-color': '#facc15', 'border-width': 4, 'font-weight': 'bold' } },
   { selector: 'node[status="maintenance"], node[status="decommissioned"]', style: { opacity: 0.5 } },
+  // Gone (decommissioned / no longer polled), shown until it is hidden after 7 days.
+  { selector: 'node[?gone_since]', style: { opacity: 0.45, 'border-style': 'dashed', 'border-color': '#94a3b8', 'border-width': 2 } },
   {
     selector: 'edge',
     style: {

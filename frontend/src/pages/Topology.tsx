@@ -254,6 +254,7 @@ const STYLE = [
   { selector: 'node[?outside]', style: { opacity: 0.5, 'border-style': 'dashed', 'border-color': '#94a3b8', 'border-width': 2 } },
   { selector: 'node[?center]', style: { width: 40, height: 40, 'border-color': '#facc15', 'border-width': 4, 'font-weight': 'bold' } },
   { selector: 'node[status="maintenance"], node[status="decommissioned"]', style: { opacity: 0.5 } },
+  { selector: 'node[?gone_since]', style: { opacity: 0.45, 'border-style': 'dashed', 'border-color': '#94a3b8', 'border-width': 2 } },
   {
     selector: 'edge',
     style: {

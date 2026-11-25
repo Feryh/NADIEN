@@ -97,6 +97,8 @@ class DeviceRead(DeviceCreate, ORMRead):
     reachability: Literal["up", "down", "unknown"] = "unknown"
     uptime_s: int | None = None
     last_polled_at: datetime | None = None
+    gone_since: datetime | None = None  # decommissioned / no longer polled since; services/lifecycle.py
+    hidden: bool = False
 
 
 class DeviceBulkEditIn(BaseModel):
@@ -382,6 +384,12 @@ class DiscoveryResult(BaseModel):
     interfaces_created: int
     interfaces_removed: int = 0
     unresolved_neighbors: list[str]
+    # services/lifecycle.py: gone devices labelled / hidden / back, and what was deleted with them
+    devices_gone: int = 0
+    devices_hidden: int = 0
+    devices_back: int = 0
+    gone_links_deleted: int = 0
+    lldp_rows_deleted: int = 0
 
 
 # --------------------------------------------------------------------------- Capacity

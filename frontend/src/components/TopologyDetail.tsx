@@ -26,6 +26,21 @@ interface Props {
   onClose: () => void
 }
 
+const GONE_GRACE_DAYS = 7  // backend lldp_max_age_days: then its links go and the device is hidden
+
+function GoneNote({ status, since }: { status: string; since: string }) {
+  const start = new Date(since)
+  const hideOn = new Date(start.getTime() + GONE_GRACE_DAYS * 86_400_000)
+  const day = (d: Date) => d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
+  return (
+    <>
+      <dt>Hilang</dt>
+      <dd><span className="pill pill-warn">{status === 'decommissioned' ? 'decommissioned' : 'tidak di-poll'}</span>{' '}
+        sejak {day(start)}; link dihapus dan perangkat disembunyikan {day(hideOn)}</dd>
+    </>
+  )
+}
+
 function DeviceDetail({ device, view }: { device: CityDeviceNode; view: CityView }) {
   return (
     <dl>
@@ -37,6 +52,7 @@ function DeviceDetail({ device, view }: { device: CityDeviceNode; view: CityView
       <dt>Reachability</dt><dd>{device.reachability}</dd>
       <dt>Uptime</dt><dd>{formatUptime(device.uptime_s)}</dd>
       <dt>Last poll</dt><dd>{formatLastPoll(device.last_polled_at)}</dd>
+      {device.gone_since && <GoneNote status={device.status} since={device.gone_since} />}
       <dt>SPOF</dt><dd>{device.spof ? 'Ya' : 'Tidak'} <span className="muted">(berdasarkan link yang diketahui)</span></dd>
       <dt>Cluster</dt><dd>{clusterSummary(view.clusters, device.cluster_id)}</dd>
     </dl>

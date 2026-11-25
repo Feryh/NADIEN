@@ -53,6 +53,7 @@ export interface CityDeviceNode {
   reachability: 'up' | 'down' | 'unknown'
   uptime_s: number | null
   last_polled_at: string | null
+  gone_since?: string | null  // decommissioned / no longer polled since; hidden after 7 days
   cluster_id: string | null
   spof: boolean
   located?: boolean

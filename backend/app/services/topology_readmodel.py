@@ -71,7 +71,8 @@ def context(db: Session) -> Ctx:
         for r in db.execute(select(m.Device.id, m.Device.hostname, m.Device.pop_id, m.Device.role,
                                    m.Device.vendor_id, m.Device.status, m.Device.map_x, m.Device.map_y,
                                    m.Device.mgmt_ip, m.Device.reachability, m.Device.uptime_s,
-                                   m.Device.last_polled_at))
+                                   m.Device.last_polled_at, m.Device.gone_since)
+                           .where(m.Device.hidden.is_(False)))  # gone past the grace period: services/lifecycle.py
     }
     area_of_pop = {pid: area_for_pop(p.code, p.region, p.name) for pid, p in pops.items()}
     hostnames_by_pop: dict[int, list[str]] = defaultdict(list)
@@ -236,7 +237,7 @@ def device_node(ctx: Ctx, d: Any, center: bool = False) -> dict:
     code = ctx.pop_code(d.id)
     return {
         "mgmt_ip": d.mgmt_ip, "reachability": d.reachability, "uptime_s": d.uptime_s,
-        "last_polled_at": iso_utc(d.last_polled_at),
+        "last_polled_at": iso_utc(d.last_polled_at), "gone_since": iso_utc(d.gone_since),
         "id": f"dev:{d.id}", "kind": "device", "device_id": d.id, "label": d.hostname, "pop": code,
         "site": f"site:{site_for(d.hostname, code)}", "role": d.role, "category": category_for(d.role),
         "tier": ROLE_TIER.get(d.role, 4), "vendor": ctx.vendors.get(d.vendor_id or -1), "status": d.status,

@@ -121,6 +121,10 @@ class Device(TimestampMixin, Base):
     # POP chosen by hand (inventory edit, mapping import, "ikuti manual"): sync and the hostname rules never
     # move such a device to another POP.
     pop_locked: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # Gone from the network (decommissioned, or no longer polled) since then; cleared when it is polled again. After
+    # lldp_max_age_days its links and LLDP rows are deleted and it is `hidden` (services/lifecycle.py).
+    gone_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    hidden: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     pop: Mapped[Pop] = relationship(back_populates="devices")
     interfaces: Mapped[list["Interface"]] = relationship(

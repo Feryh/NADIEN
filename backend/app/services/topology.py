@@ -101,7 +101,8 @@ class _Discovery:
         self.stats: Counter[str] = Counter()
         # A decommissioned box (P1-NCS5504-BDL-KDT, SRG-SMY-ME1-FH820) keeps its last LLDP table, config and
         # addresses; none of them may draw a link any more.
-        self.devices = {d.id: d for d in db.scalars(select(Device).where(Device.status != "decommissioned"))}
+        self.devices = {d.id: d for d in db.scalars(select(Device).where(Device.status != "decommissioned",
+                                                                         Device.hidden.is_(False)))}
         self.by_host = {norm_host(d.hostname): d for d in self.devices.values()}
         self.by_host_key = {host_key(d.hostname): d for d in self.devices.values()}
         self._add_site_keys()
@@ -530,13 +531,16 @@ def _with_parents(run: _Discovery, port_ids: frozenset[int]) -> set[int]:
 def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> DiscoveryResult:
     """Rebuild links. `valid_iface_ids` (ports confirmed by the NMS this run) enables cleanup of
     phantom ports left by earlier runs; without it nothing is treated as phantom."""
+    from .lifecycle import run_lifecycle  # late: lifecycle imports models only, topology is imported early
+
+    now = datetime.now(timezone.utc)
+    lifecycle = run_lifecycle(db, now)
     run = _Discovery(db)
     unresolved = run.from_lldp()
     run.from_config()
     run.from_p2p()  # after the descriptions: a /30 may cross an L2 switch the description names as the far end
     run.from_approvals()
 
-    now = datetime.now(timezone.utc)
     existing = {
         frozenset((l.a_interface_id, l.b_interface_id)): l
         for l in db.scalars(select(Link))
@@ -550,6 +554,8 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
         a_dev, b_dev = run.devices[adj.a.device_id], run.devices[adj.b.device_id]
         cap = run.capacity(adj)
         up = all(run.ifaces[i].oper_status == "up" for i in key) if adj.source != "lldp" else True
+        # A device Observium no longer polls (lifecycle.py): what it last reported is not a live link.
+        up = up and a_dev.gone_since is None and b_dev.gone_since is None
         link = existing.get(key)
         if link is None:
             link = Link(
@@ -640,6 +646,11 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
         interfaces_created=run.stats["interfaces_created"],
         interfaces_removed=removed,
         unresolved_neighbors=unresolved,
+        devices_gone=lifecycle.devices_gone,
+        devices_hidden=lifecycle.devices_hidden,
+        devices_back=lifecycle.devices_back,
+        gone_links_deleted=lifecycle.links_deleted,
+        lldp_rows_deleted=lifecycle.lldp_rows_deleted,
     )
 
 
