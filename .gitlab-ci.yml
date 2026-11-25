@@ -183,3 +183,27 @@ restart-app:
     - kubectl config use-context "$KUBE_AGENT_CONTEXT"
     - kubectl -n nadien rollout restart deploy/nadien-api deploy/nadien-worker
     - kubectl -n nadien rollout status deploy/nadien-api deploy/nadien-worker --timeout=300s
+
+# Change the database password: set NADIEN_DB_PASSWORD (Settings > CI/CD > Variables, masked) to the new one, then run
+# this. POSTGRES_PASSWORD only applies when the database is first created, so the role is changed in the database
+# itself (inside the nadien-db pod over its local socket, the password sent on stdin), then the secret the app reads,
+# then the app is restarted. New connections fail for the minute between the two, existing ones keep working.
+rotate-db-password:
+  stage: deploy
+  image:
+    name: alpine/k8s:1.30.14
+    entrypoint: [""]
+  needs: []
+  environment:
+    name: production
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+  script:
+    - 'printf "%s" "$NADIEN_DB_PASSWORD" | grep -Eq "^[A-Za-z0-9]{24,}$" || { echo "NADIEN_DB_PASSWORD: minimal 24 huruf/angka"; exit 1; }'
+    - kubectl config use-context "$KUBE_AGENT_CONTEXT"
+    - DB=$(kubectl -n nadien get pod -l app=nadien-db -o jsonpath='{.items[0].metadata.name}')
+    - printf "ALTER ROLE nadien PASSWORD '%s';\n" "$NADIEN_DB_PASSWORD" | kubectl -n nadien exec -i "$DB" -- psql -U nadien -d nadien -v ON_ERROR_STOP=1 -q
+    - kubectl -n nadien create secret generic nadien-db --from-literal=POSTGRES_PASSWORD="${NADIEN_DB_PASSWORD}" --dry-run=client -o yaml | kubectl apply -f -
+    - kubectl -n nadien rollout restart deploy/nadien-api deploy/nadien-worker
+    - kubectl -n nadien rollout status deploy/nadien-api deploy/nadien-worker --timeout=300s
