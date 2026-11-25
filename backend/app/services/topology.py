@@ -179,11 +179,17 @@ class _Discovery:
         return self._ports_by_device.get(device_id, [])
 
     def add(self, a: Interface, b: Interface, source: str) -> None:
+        """Every source ends here, so a port down past the LLDP age limit links nothing, whichever source names it:
+        LLDP the NMS keeps, a description, a /30 still configured, an approval (kept: it applies again once the port
+        is back)."""
         member_pair = frozenset((a.id, b.id))
         if a.parent_id and b.parent_id:
             a, b, link_type = self.ifaces[a.parent_id], self.ifaces[b.parent_id], "bundle"
         else:
             link_type = "metro_e"
+        if any(self.long_down(i) for i in (a, b, *(self.ifaces[j] for j in member_pair if j in self.ifaces))):
+            self.stats[f"{source}_long_down"] += 1
+            return
         key = frozenset((a.id, b.id))
         adj = self.adjacencies.setdefault(key, _Adjacency(a, b, link_type, source))
         adj.member_pairs.add(member_pair)
@@ -226,11 +232,7 @@ class _Discovery:
                 # config, whose description may name the real port.
                 self.stats["lldp_logical_ports"] += 1
                 continue
-            a, b = self.iface(local, n.local_interface), self.iface(remote, n.remote_port_id)
-            if self.long_down(a) or self.long_down(b):
-                self.stats["lldp_long_down"] += 1
-                continue
-            self.add(a, b, "lldp")
+            self.add(self.iface(local, n.local_interface), self.iface(remote, n.remote_port_id), "lldp")
         self.drop_minority_bundles()
         return unresolved
 

@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { MouseEvent, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, HotspotLevel, Hotspots, OltCapacity } from '../api'
+import { CartesianGrid, Line, LineChart, ReferenceLine, Tooltip, XAxis, YAxis } from 'recharts'
+import { api, HotspotLevel, Hotspots, LinkCapacityDetail, OltCapacity } from '../api'
 import { Pager, usePaged } from './Pager'
-import { fmtG } from './ui'
+import { CHART_TOOLTIP, fmtG } from './ui'
 
 // Dashboard lists: links at or above the utilization threshold, and OLTs whose GPON ports or uplinks are.
 
@@ -17,11 +18,93 @@ function Device({ id, name }: { id: number | null; name: string }) {
   return id != null ? <Link to={`/devices/${id}`}>{name}</Link> : <>{name}</>
 }
 
+// ------------------------------------------------------------------ 7-day trend popover
+
+const TREND_DAYS = 7
+const POPOVER_WIDTH = 320
+
+interface TrendPoint { t: number; gbps: number; pct: number }
+
+// One request per link while the page is open: hovering back and forth must not refetch.
+const trendCache = new Map<number, Promise<TrendPoint[]>>()
+
+function loadTrend(linkId: number, capacityGbps: number): Promise<TrendPoint[]> {
+  let pending = trendCache.get(linkId)
+  if (!pending) {
+    const since = Date.now() - TREND_DAYS * 86_400_000
+    pending = api.get<LinkCapacityDetail>(`/capacity/links/${linkId}?months=1`).then((d) => d.history
+      .map((h) => ({ t: Date.parse(h.ts), gbps: Math.max(h.in_gbps, h.out_gbps) }))
+      .filter((p) => p.t >= since)
+      .sort((a, b) => a.t - b.t)
+      .map((p) => ({ ...p, pct: capacityGbps ? (p.gbps / capacityGbps) * 100 : 0 })))
+    pending.catch(() => trendCache.delete(linkId))  // a failed load is tried again on the next hover
+    trendCache.set(linkId, pending)
+  }
+  return pending
+}
+
+const dayLabel = (t: number) => new Date(t).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' })
+
+function TrendPopover({ linkId, capacityGbps, at, pinned, warningPct, criticalPct }: {
+  linkId: number; capacityGbps: number; at: DOMRect; pinned: boolean; warningPct: number; criticalPct: number
+}) {
+  const [points, setPoints] = useState<TrendPoint[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    setPoints(null)
+    setError(null)
+    loadTrend(linkId, capacityGbps).then(setPoints).catch((e: Error) => setError(e.message))
+  }, [linkId, capacityGbps])
+
+  // Fixed to the viewport: the table scrolls sideways and would clip a popover inside it.
+  const left = Math.max(8, Math.min(at.right - POPOVER_WIDTH, window.innerWidth - POPOVER_WIDTH - 8))
+  const below = at.bottom + 190 < window.innerHeight
+  const style = { left, width: POPOVER_WIDTH, ...(below ? { top: at.bottom + 4 } : { bottom: window.innerHeight - at.top + 4 }) }
+  const peak = points?.length ? points.reduce((a, b) => (b.pct > a.pct ? b : a)) : null
+  const yMax = Math.max(100, Math.ceil((peak?.pct ?? 0) / 10) * 10)
+  return (
+    <div className="trend-pop card" style={style} role="dialog" aria-label={`Tren utilisasi ${TREND_DAYS} hari`}>
+      <div className="trend-pop-head">
+        <b>Tren {TREND_DAYS} hari</b>
+        {peak && <span className="muted small">puncak {peak.pct.toFixed(1)}% ({fmtG(peak.gbps)}) · {dayLabel(peak.t)}</span>}
+        {pinned && <span className="muted small"> · klik lagi untuk menutup</span>}
+      </div>
+      {error && <div className="error-text small">{error}</div>}
+      {!points && !error && <div className="muted small">Memuat…</div>}
+      {points && !points.length && <div className="muted small">Belum ada histori {TREND_DAYS} hari terakhir untuk link ini.</div>}
+      {points && points.length > 0 && (
+        <LineChart width={POPOVER_WIDTH - 24} height={140} data={points} margin={{ top: 6, right: 8, bottom: 0, left: -18 }}>
+          <CartesianGrid stroke="#64748b" strokeOpacity={0.25} />
+          <XAxis dataKey="t" type="number" scale="time" domain={['dataMin', 'dataMax']} tickFormatter={dayLabel}
+            tick={{ fill: '#94a3b8', fontSize: 10 }} minTickGap={24} />
+          <YAxis domain={[0, yMax]} tick={{ fill: '#94a3b8', fontSize: 10 }} unit="%" />
+          <ReferenceLine y={warningPct} stroke="#eab308" strokeDasharray="4 4" />
+          <ReferenceLine y={criticalPct} stroke="#ef4444" strokeDasharray="4 4" />
+          <Tooltip contentStyle={CHART_TOOLTIP} labelFormatter={(t) => new Date(Number(t)).toLocaleString('id-ID')}
+            formatter={(_v, _n, item) => [`${(item.payload as TrendPoint).pct.toFixed(1)}% · ${fmtG((item.payload as TrendPoint).gbps)}`, 'Utilisasi']} />
+          <Line type="monotone" dataKey="pct" stroke="#38bdf8" dot={points.length <= 14} strokeWidth={2} isAnimationActive={false} />
+        </LineChart>
+      )}
+    </div>
+  )
+}
+
 export function LinkHotspotsPanel() {
   const [data, setData] = useState<Hotspots | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [kind, setKind] = useState<'' | 'bundle' | 'physical'>('')
   const [q, setQ] = useState('')
+  // Hover shows a link's 7-day trend; a click keeps it open (touch screens have no hover).
+  const [trend, setTrend] = useState<{ linkId: number; at: DOMRect; pinned: boolean } | null>(null)
+  const hoverTrend = (linkId: number, e: MouseEvent<HTMLElement>) => {
+    const at = e.currentTarget.getBoundingClientRect()
+    setTrend((t) => (t?.pinned ? t : { linkId, at, pinned: false }))
+  }
+  const leaveTrend = () => setTrend((t) => (t?.pinned ? t : null))
+  const pinTrend = (linkId: number, e: MouseEvent<HTMLElement>) => {
+    const at = e.currentTarget.getBoundingClientRect()
+    setTrend((t) => (t?.pinned && t.linkId === linkId ? null : { linkId, at, pinned: true }))
+  }
 
   useEffect(() => {
     api.get<Hotspots>('/capacity/hotspots?limit=2000').then(setData).catch((e: Error) => setError(e.message))
@@ -55,7 +138,8 @@ export function LinkHotspotsPanel() {
             <tr><th>Perangkat A</th><th>Interface A</th><th>Perangkat B</th><th>Interface B</th><th>Tipe</th>
               <th className="num">Kapasitas</th>
               <th className="num" title="Persentil 95 trafik kemarin (jam sibuk), dasar utilisasi dan forecast">Trafik p95</th>
-              <th className="num" title="Rate saat Full sync terakhir dari Observium, sisi port yang sama">Live</th><th>Utilisasi</th></tr>
+              <th className="num" title="Rate saat Full sync terakhir dari Observium, sisi port yang sama">Live</th>
+              <th title="Arahkan mouse atau klik untuk melihat tren 7 hari">Utilisasi</th></tr>
           </thead>
           <tbody>
             {paged.pageRows.map((r) => (
@@ -69,7 +153,10 @@ export function LinkHotspotsPanel() {
                 <td className="num">{fmtG(r.capacity_gbps)}</td>
                 <td className="num">{fmtG(r.current_gbps)}</td>
                 <td className="num muted">{r.live_gbps != null ? fmtG(r.live_gbps) : '–'}</td>
-                <td><Pct value={r.utilization_pct} level={r.level} /></td>
+                <td className="trend-cell" onMouseEnter={(e) => hoverTrend(r.link_id, e)} onMouseLeave={leaveTrend}
+                  onClick={(e) => pinTrend(r.link_id, e)}>
+                  <Pct value={r.utilization_pct} level={r.level} /> <span className="trend-hint" aria-hidden="true">📈</span>
+                </td>
               </tr>
             ))}
             {data && !rows.length && <tr><td colSpan={9} className="empty">Tidak ada link di atas threshold untuk filter ini</td></tr>}
@@ -78,6 +165,11 @@ export function LinkHotspotsPanel() {
         </table>
       </div>
       <Pager paged={paged} unit="link" />
+      {trend && data && (() => {
+        const row = data.links.rows.find((r) => r.link_id === trend.linkId)
+        return row ? <TrendPopover linkId={row.link_id} capacityGbps={row.capacity_gbps} at={trend.at} pinned={trend.pinned}
+          warningPct={data.thresholds.warning_pct} criticalPct={data.thresholds.critical_pct} /> : null
+      })()}
     </div>
   )
 }
