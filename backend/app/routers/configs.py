@@ -10,9 +10,9 @@ from .. import models as m
 from ..database import get_db
 from ..services import running_config
 from ..services.access_ports import access_ports
-from ..services.configgen import (AddressError, Addressing, as_text, check_vc_ids, dialect_of, generate, parse_cidr,
-                                  parse_peer, parse_vc_ids, parse_vlans)
-from ..services.l2vpn_peers import neighbours, vpls_instances
+from ..services.configgen import (MAX_VLANS, AddressError, Addressing, as_text, check_vc_ids, dialect_of, generate,
+                                  parse_b_join, parse_cidr, parse_peer, parse_vc_ids, parse_vlans)
+from ..services.l2vpn_peers import VPLS_DIALECTS, neighbours, vpls_instances
 from ..services.network_change_gen import NetworkChangeError, NetworkChangeIn, generate_network_change, network_change_hints
 from ..services.transport_gen import TransportError, TransportIn, generate_transport
 
@@ -56,7 +56,9 @@ def addressing_params(
     vc_ids: str | None = Query(None, max_length=1200, description="VC id per VLAN bila bentrok, mis. 1480:9001,1481:9002"),
     a_peer: str | None = Query(None, max_length=15, description="L2VPN: neighbour di site A (loopback PE B), default dari inventory"),
     b_peer: str | None = Query(None, max_length=15, description="L2VPN: neighbour di site B (loopback PE A), default dari inventory"),
-    b_vpls: str | None = Query(None, max_length=200, description="L2VPN: site B gabung ke VPLS existing (key dari /l2vpn/vpls), tanpa port akses"),
+    b_no_port: bool = Query(False, description="L2VPN: site B tanpa port akses, hanya VSI/VPLS dengan peer loopback PE A"),
+    b_join: list[str] = Query([], max_length=MAX_VLANS, description="L2VPN: VLAN=key VPLS existing di PE B (dari /l2vpn/vpls) "
+                              "yang ditambah peer PE A; VLAN lain mendapat VSI/VPLS baru tanpa port"),
     signaling: Literal["martini", "kompella"] = Query("martini", description="L2VPN: martini (LDP) atau kompella (BGP)"),
     l2_rd: str | None = Query(None, max_length=32, pattern=r"^\d+:\d+$", description="Kompella: RD dan RT (ASN:N); default ASN:VC id"),
 ) -> Addressing:
@@ -68,10 +70,11 @@ def addressing_params(
         vc_id_map = parse_vc_ids(vc_ids)
         check_vc_ids(vlan_list, vc_id_map)
         peers = [parse_peer(a_peer), parse_peer(b_peer)]
+        joins = parse_b_join(b_join, vlan_list)
     except AddressError as exc:
         raise HTTPException(422, str(exc)) from exc
     return Addressing(a_ip or None, b_ip or None, vc_id, bgp_asn, policer, vlan_list, vc_id_map, *peers,
-                      b_vpls=(b_vpls or "").strip() or None, signaling=signaling, l2_rd=l2_rd or None)
+                      b_no_port=b_no_port or bool(joins), b_join=joins, signaling=signaling, l2_rd=l2_rd or None)
 
 
 def _service(db: Session, service_id: int) -> m.Service:
@@ -126,14 +129,15 @@ def l2vpn_neighbours(device_id: int, db: Session = Depends(get_db)):
 
 @router.get("/l2vpn/vpls")
 def l2vpn_vpls(device_id: int, db: Session = Depends(get_db)):
-    """VPLS instances already on the PE (RANCID running config) that site B can join with one more neighbour
-    instead of a new access port. IOS-XR only for now; `supported` is false for other dialects."""
+    """VPLS instances already on the PE (RANCID running config: Huawei VSI, ZTE VPLS, IOS-XR bridge-domain / VFI,
+    FiberHome VFI) that site B can join with one more peer instead of a new access port; `supported` is false for
+    other dialects."""
     device = db.get(m.Device, device_id)
     if device is None:
         raise HTTPException(404, "Device not found")
     dialect = dialect_of(db, device_id)
-    out = {"device_id": device.id, "hostname": device.hostname, "dialect": dialect, "supported": dialect == "iosxr",
-           "instances": [], "error": None}
+    out = {"device_id": device.id, "hostname": device.hostname, "dialect": dialect,
+           "supported": dialect in VPLS_DIALECTS, "instances": [], "error": None}
     if not out["supported"]:
         return out
     try:
