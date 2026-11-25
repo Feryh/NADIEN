@@ -499,6 +499,33 @@ def test_should_judge_an_unreported_member_by_its_long_down_bundle_when_only_the
     assert db.scalars(select(m.Link)).all() == []
 
 
+def _pair_with_one_dead_port(db, **dead_port: object):
+    """Two boxes whose ports still share a /30, one of the ports down since 2025."""
+    from datetime import datetime, timedelta, timezone
+
+    pop = m.Pop(code="SMG", name="Semarang")
+    db.add(pop)
+    db.flush()
+    sw, olt = m.Device(hostname="SMG-GMK-SW1-NX93", pop_id=pop.id), m.Device(hostname="SMG-MJN-OLT1-HW", pop_id=pop.id)
+    db.add_all([sw, olt])
+    db.flush()
+    now = datetime.now(timezone.utc)
+    db.add_all([
+        m.Interface(device_id=sw.id, name="Ethernet1/28", speed_gbps=10, oper_status="down",
+                    oper_changed_at=now - timedelta(days=440), **dead_port),
+        m.Interface(device_id=olt.id, name="ethernet0/9/0", speed_gbps=10, oper_status="up",
+                    oper_changed_at=now - timedelta(days=28), description="to SMG-GMK-SW1-NX93 Ethernet1/28",
+                    ipv4_address=dead_port.get("ipv4_address") and "10.9.9.2/30"),
+    ])
+    db.commit()
+
+
+def test_should_not_link_a_slash_30_whose_port_has_been_down_past_the_lldp_age_limit(db):
+    _pair_with_one_dead_port(db, ipv4_address="10.9.9.1/30")
+    discover_links(db)
+    assert db.scalars(select(m.Link)).all() == []
+
+
 def test_should_not_draw_links_of_a_decommissioned_device_from_its_config(db):
     _network(db, "")
     links = discover_links(db).config_links
