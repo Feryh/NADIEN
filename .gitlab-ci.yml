@@ -113,10 +113,33 @@ build-images:
       --destination "${CI_REGISTRY_IMAGE}/nadien-${COMPONENT}:${NADIEN_IMAGE_TAG}"
       --destination "${CI_REGISTRY_IMAGE}/nadien-${COMPONENT}:latest"
 
+# Renders nadien-env from deploy/k8s/nadien.env.template and (re)creates nadien-env/nadien-db from
+# masked+protected CI/CD variables (NADIEN_SECRET_KEY, NADIEN_JOB_TOKEN, NADIEN_ADMIN_PASSWORD,
+# NADIEN_OBSERVIUM_USER, NADIEN_OBSERVIUM_PASSWORD, NADIEN_DB_PASSWORD). `kubectl apply` instead of
+# `create` so re-runs are idempotent. nadien-tls and gitlab-registry stay out-of-band, created manually
+# per deploy/k8s/README.md §2 (TLS material and the registry deploy token aren't CI/CD variables here).
+apply-secrets:
+  stage: deploy
+  image:
+    name: alpine/k8s:1.30.14
+    entrypoint: [""]
+  needs: []
+  environment:
+    name: production
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+  script:
+    - apk add --no-cache gettext
+    - kubectl config use-context "$KUBE_AGENT_CONTEXT"
+    - envsubst < deploy/k8s/nadien.env.template > /tmp/nadien.env
+    - kubectl -n nadien create secret generic nadien-env --from-env-file=/tmp/nadien.env --dry-run=client -o yaml | kubectl apply -f -
+    - rm -f /tmp/nadien.env
+    - kubectl -n nadien create secret generic nadien-db --from-literal=POSTGRES_PASSWORD="${NADIEN_DB_PASSWORD}" --dry-run=client -o yaml | kubectl apply -f -
+
 # Applies deploy/k8s with kustomize through the GitLab Kubernetes agent tunnel (see deploy/k8s/README.md).
-# Needs this project allow-listed under `ci_access` in the nkp-batam agent's config.yaml, and the
-# nadien-db/nadien-env/nadien-tls/gitlab-registry secrets already created in the target namespace (not
-# managed here, on purpose: they hold passwords and are never committed, see deploy/k8s/README.md §2).
+# Needs this project allow-listed under `ci_access` in the nkp-batam agent's config.yaml, and
+# nadien-tls/gitlab-registry already created in the target namespace (see deploy/k8s/README.md §2).
 deploy-production:
   stage: deploy
   # kubectl + kustomize with a shell. Not bitnami/kubectl: Bitnami pulled its versioned tags from Docker Hub in 2025
@@ -124,7 +147,7 @@ deploy-production:
   image:
     name: alpine/k8s:1.30.14
     entrypoint: [""]
-  needs: [build-images]
+  needs: [build-images, apply-secrets]
   environment:
     name: production
   rules:
