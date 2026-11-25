@@ -32,7 +32,7 @@ read from the RD and addresses stay placeholders.
 
 import ipaddress
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from collections.abc import Callable
 from typing import Any, Literal
 
@@ -41,11 +41,12 @@ from sqlalchemy.orm import Session
 
 from .. import models as m
 from . import running_config
-from .l2vpn_peers import pw_usage, vpls_instances
+from .l2vpn_peers import VPLS_DIALECTS, pw_usage, vpls_instances
 from .vendors import DIALECT_LABELS, dialect_for
 
 VC_ID_BASE = 100000  # services without a VLAN: 100000 + service id
 DEFAULT_XR_BRIDGE_GROUP = "Corporate"  # when the running config cannot be read
+DEFAULT_XR_PW_CLASS = "MPLS-CONTROL-WORD"
 MAX_VLANS = 64
 L2_MTU = 2000
 SYNTAX_WARNING = "Template mengikuti config layanan di backup RANCID; tetap cocokkan dengan versi software perangkat."
@@ -66,8 +67,10 @@ class Addressing:
     # neighbour picked from the running config, or a new destination typed in.
     a_peer: str | None = None
     b_peer: str | None = None
-    # Site B joins a VPLS already on its PE instead of getting an access port: vpls_key() of the instance.
-    b_vpls: str | None = None
+    # Site B without an access port: only the VPLS instance with PE A's loopback as LDP peer. Per VLAN either a
+    # new instance, or (b_join: VLAN -> key from vpls_instances) one more peer on an instance already on PE B.
+    b_no_port: bool = False
+    b_join: dict[int, str] | None = None
     # L2VPN signalling: "martini" (LDP pseudowire) or "kompella" (BGP auto-discovery and signalling).
     signaling: Literal["martini", "kompella"] = "martini"
     l2_rd: str | None = None  # Kompella RD and RT (ASN:N); default ASN:VC id
@@ -100,6 +103,9 @@ class _Ctx:
     remote_site: int = 2
     l2_rd: str = "<asn>:<id>"  # Kompella RD and RT
     bridge_group: str = DEFAULT_XR_BRIDGE_GROUP  # IOS-XR: the group the box already uses most
+    access: bool = True  # False: L2 instance only, no attachment circuit (site B without an access port)
+    join: dict | None = None  # existing VPLS instance (vpls_instances row) that gets one more peer
+    skip: bool = False  # the peer is already on the joined instance: nothing to write for this VLAN
 
     @property
     def mbps(self) -> int:
@@ -170,6 +176,24 @@ def parse_vc_ids(value: str | None) -> dict[int, int] | None:
     return vc_ids
 
 
+def parse_b_join(values: list[str], vlans: list[int] | None) -> dict[int, str] | None:
+    """["3=vsi|BBT_1490", …] -> {3: "vsi|BBT_1490"}: per VLAN the existing VPLS instance site B joins."""
+    joins: dict[int, str] = {}
+    for value in values:
+        vlan_text, _, key = value.partition("=")
+        if not vlan_text.strip().isdigit() or not key.strip() or len(key) > 200:
+            raise AddressError(f"VPLS existing per VLAN tidak valid: {value} (contoh 1480=vsi|OXY_1480)")
+        vlan = int(vlan_text)
+        if vlan not in (vlans or []):
+            raise AddressError(f"VPLS existing dipilih untuk VLAN {vlan} yang tidak ada di daftar VLAN")
+        joins[vlan] = key.strip()
+    keys = list(joins.values())
+    shared = sorted({key.split("|", 1)[-1] for key in keys if keys.count(key) > 1})
+    if shared:
+        raise AddressError(f"VPLS {', '.join(shared)} dipilih untuk lebih dari satu VLAN: satu VLAN per VPLS")
+    return joins or None
+
+
 def check_vc_ids(vlans: list[int] | None, vc_ids: dict[int, int] | None) -> None:
     """Overrides must name VLANs of the batch, and no two VLANs may end up on the same VC id."""
     if not vc_ids:
@@ -202,6 +226,8 @@ def generate(db: Session, service: m.Service, addressing: Addressing | None = No
     }
     dialects = {label: _dialect(db, device_id) for label, (device_id, *_rest) in ends.items()}
     vlans = _vlans(service, addressing)
+    joins, join_warnings = _b_joins(service, addressing, dialects["B"], config_source)
+    addressing = _join_vc_ids(addressing, joins, dialects["B"])
     result: dict[str, Any] = {"service_id": service.id, "circuit_id": service.circuit_id,
                               "service_type": service.service_type, "vlans": vlans,
                               "vc_id": vc_id_for(service, addressing, vlans[0] if vlans else None),
@@ -209,8 +235,41 @@ def generate(db: Session, service: m.Service, addressing: Addressing | None = No
     for label, (device_id, port, peer_id, ip, peer_ip) in ends.items():
         peer_dialect = dialects["B" if label == "A" else "A"]
         result["endpoints"][label] = _endpoint(db, service, customer, label, device_id, port, peer_id, ip, peer_ip,
-                                               addressing, peer_dialect, vlans, config_source)
+                                               addressing, peer_dialect, vlans, config_source,
+                                               (joins, join_warnings) if label == "B" else ({}, []))
     return result
+
+
+def _b_joins(service: m.Service, addressing: Addressing, dialect: str | None,
+             config_source: ConfigSource) -> tuple[dict[int, dict], list[str]]:
+    """VLAN -> the existing VPLS instance on PE B it joins (b_join keys resolved against B's RANCID config)."""
+    if not addressing.b_join or _kind(service.service_type) != "l2vpn" or not service.b_device_id:
+        return {}, []
+    if dialect not in VPLS_DIALECTS:
+        return {}, ["Gabung ke VPLS existing hanya untuk Huawei VRP, ZTE, Cisco IOS-XR dan FiberHome."]
+    try:
+        text = config_source(service.b_device_id)
+    except running_config.RunningConfigError as exc:
+        return {}, [f"VPLS existing tidak bisa dibaca: {exc}"]
+    by_key = {row["key"]: row for row in vpls_instances(text, dialect)}
+    missing = sorted({key for key in addressing.b_join.values() if key not in by_key})
+    if missing:
+        return {}, [f"VPLS {', '.join(k.split('|', 1)[-1] for k in missing)} tidak ada di config RANCID PE B: pilih ulang."]
+    return {vlan: by_key[key] for vlan, key in addressing.b_join.items()}, []
+
+
+def _join_vc_ids(addressing: Addressing, joins: dict[int, dict], dialect: str | None) -> Addressing:
+    """Huawei and FiberHome signal a VSI's peers with its vsi-id: a VLAN joining one defaults to that id, on both
+    sites, so A's pseudowire matches without `negotiation-vc-id`. An id the user typed still wins."""
+    if dialect not in ("vrp", "fiberhome"):
+        return addressing
+    single_manual = addressing.vc_id and (not addressing.vlans or len(addressing.vlans) == 1)
+    given = set(addressing.vc_ids or {})
+    defaults = {vlan: row["vsi_id"] for vlan, row in joins.items()
+                if row["vsi_id"] and vlan not in given and not single_manual}
+    if not defaults:
+        return addressing
+    return replace(addressing, vc_ids={**defaults, **(addressing.vc_ids or {})})
 
 
 def _vlans(service: m.Service, addressing: Addressing) -> list[int]:
@@ -243,7 +302,8 @@ def _dialect(db: Session, device_id: int | None) -> str | None:
 
 def _endpoint(db: Session, service: m.Service, customer: m.Customer | None, label: str, device_id: int | None,
               port: str | None, peer_id: int | None, ip: str | None, peer_ip: str | None, addressing: Addressing,
-              peer_dialect: str | None, vlans: list[int], config_source: ConfigSource) -> dict[str, Any]:
+              peer_dialect: str | None, vlans: list[int], config_source: ConfigSource,
+              b_joins: tuple[dict[int, dict], list[str]]) -> dict[str, Any]:
     device = db.get(m.Device, device_id) if device_id else None
     out: dict[str, Any] = {"label": label, "device_id": device_id, "device": device.hostname if device else None,
                            "dialect": None, "dialect_label": "Vendor tidak dikenali", "config": [], "rollback": [],
@@ -257,18 +317,20 @@ def _endpoint(db: Session, service: m.Service, customer: m.Customer | None, labe
         out["warnings"].append("Vendor/OS perangkat tidak didukung generator (VRP, ZTE, IOS-XR, FiberHome); tulis manual.")
         return out
     out["dialect_label"] = DIALECT_LABELS[dialect]
-    kompella = _kind(service.service_type) == "l2vpn" and addressing.signaling == "kompella"
-    join = addressing.b_vpls if label == "B" and _kind(service.service_type) == "l2vpn" else None
-    if join and kompella:
-        out["warnings"].append("Gabung ke VPLS existing hanya untuk signaling Martini (LDP).")
-        return out
-    if join:
-        _join_vpls(db, service, device, dialect, join, peer_id, peer_ip, addressing, vlans, config_source, out)
-        return out
-    if not port:
-        out["warnings"].append(f"Site {label} belum punya port akses: pilih port, atau gabungkan ke VPLS yang sudah ada.")
-        return out
     kind = _kind(service.service_type)
+    kompella = kind == "l2vpn" and addressing.signaling == "kompella"
+    joins, join_warnings = b_joins
+    portless = label == "B" and kind == "l2vpn" and (addressing.b_no_port or bool(addressing.b_join))
+    if portless and kompella:
+        out["warnings"].append("Site B tanpa port akses hanya untuk signaling Martini (LDP).")
+        return out
+    if join_warnings:
+        out["warnings"] += join_warnings
+        return out
+    if not port and not portless:
+        out["warnings"].append(f"Site {label} belum punya port akses: pilih port, atau buat site B tanpa port akses "
+                               "(VSI/VPLS baru atau gabung ke yang sudah ada).")
+        return out
     template = KOMPELLA.get(dialect) if kompella else TEMPLATES[dialect].get(kind)
     if kompella and template is None:
         out["warnings"].append(f"Signaling Kompella (BGP) tidak dibuat untuk {DIALECT_LABELS[dialect]}: backup RANCID "
@@ -278,10 +340,12 @@ def _endpoint(db: Session, service: m.Service, customer: m.Customer | None, labe
         out["warnings"].append(f"{service.service_type.upper()} tidak dibuat untuk {DIALECT_LABELS[dialect]}: perangkat "
                                "jenis ini di jaringan hanya membawa L2 (VPLS), tidak ada contoh konfigurasinya.")
         return out
-    contexts = [_context(db, service, customer, device, port, peer_id, ip, peer_ip, addressing, vlan, first=i == 0,
-                         label=label)
+    contexts = [_context(db, service, customer, device, "" if portless else port or "", peer_id, ip, peer_ip,
+                         addressing, vlan, first=i == 0, label=label, access=not portless)
                 for i, vlan in enumerate(vlans or [None])]
     warnings: list[str] = []
+    if portless:
+        _plan_portless(contexts, joins, addressing, out["notes"], warnings)
     if kompella and peer_dialect and (dialect == "zte") != (peer_dialect == "zte"):
         warnings.append("Kompella di ZTE berbentuk VPWS (vpws-community), di Huawei/IOS-XR berbentuk VPLS (vsi / vfi): "
                         "pastikan RR meneruskan signaling vpls dan vpws, dan site/CE id kedua ujung saling cocok.")
@@ -294,89 +358,67 @@ def _endpoint(db: Session, service: m.Service, customer: m.Customer | None, labe
         _check_kompella(contexts, addressing, config_source, device.id, dialect, out["notes"], warnings)
     elif kind == "l2vpn":
         _check_running_config(contexts, config_source, device.id, dialect, out["notes"], warnings)
-    config: list[str] = []
-    rollback: list[str] = []
-    for ctx in contexts:
-        part_config, part_rollback = template(ctx)
-        # The entry command (system-view / configure …) opens the script once for the whole batch.
-        config += part_config if ctx.first else part_config[1:]
-        rollback += part_rollback if ctx.first else part_rollback[1:]
-        warnings += ctx.warnings
+    config, rollback = _assemble(contexts, template, JOIN_TEMPLATES[dialect], warnings)
     unique = list(dict.fromkeys(warnings + [SYNTAX_WARNING]))
-    out.update(config=config, rollback=rollback, commit=COMMIT[dialect], warnings=unique)
+    out.update(config=config, rollback=rollback, commit=COMMIT[dialect] if config else [], warnings=unique)
     if kind == "l2vpn":
         out["vc_ids"] = [{"vlan": ctx.vlan, "vc_id": ctx.vc_id, "pw": ctx.pw, "conflicts": ctx.vc_conflicts}
                          for ctx in contexts]
         out["signaling"] = addressing.signaling
+        if portless:
+            out["vpls"] = [_vpls_plan(ctx) for ctx in contexts]
         if kompella:
             out["kompella"] = [{"vlan": ctx.vlan, "rd": ctx.l2_rd, "site": ctx.site, "remote_site": ctx.remote_site}
                                for ctx in contexts]
     return out
 
 
-DEFAULT_XR_PW_CLASS = "MPLS-CONTROL-WORD"
+Template = Callable[["_Ctx"], tuple[list[str], list[str]]]
 
 
-def _join_vpls(db: Session, service: m.Service, device: m.Device, dialect: str, key: str, peer_id: int | None,
-               peer_ip: str | None, addressing: Addressing, vlans: list[int], config_source: ConfigSource,
-               out: dict[str, Any]) -> None:
-    """Site B adds one neighbour (PE A's loopback, A's PW id) to a VPLS already on its PE; no access port."""
-    warnings: list[str] = out["warnings"]
-    if dialect != "iosxr":
-        warnings.append(f"Gabung ke VPLS existing baru tersedia untuk Cisco IOS-XR, belum untuk {DIALECT_LABELS[dialect]}.")
-        return
-    if len(vlans) > 1:
-        warnings.append("Gabung ke VPLS existing hanya untuk satu VLAN: satu VPLS menerima satu pseudowire dari site A.")
-        return
-    try:
-        text = config_source(device.id)
-    except running_config.RunningConfigError as exc:
-        warnings.append(f"VPLS existing tidak bisa dibaca: {exc}")
-        return
-    instance = next((row for row in vpls_instances(text, dialect) if row["key"] == key), None)
-    if instance is None:
-        warnings.append("VPLS yang dipilih tidak ada di config RANCID perangkat ini: pilih ulang.")
-        return
-    peer = db.get(m.Device, peer_id) if peer_id else None
-    peer_loopback = peer_ip or (peer.loopback_ipv4 if peer else None)
-    vlan = vlans[0] if vlans else None
-    vc_id = vc_id_for(service, addressing, vlan)
-    conflicts: list[str] = []
-    if not peer_loopback:
-        warnings.append("Loopback PE A belum diketahui: pilih neighbour atau isi <loopback-peer> secara manual.")
-    elif any(n["ip"] == peer_loopback for n in instance["neighbours"]):
-        conflicts.append(f"neighbour {peer_loopback} sudah ada di VPLS ini")
-        warnings.append(f"Neighbour {peer_loopback} sudah ada di VPLS ini: tidak perlu ditambah lagi.")
-    elif (peer_loopback, vc_id) in set(pw_usage(text, dialect)):
-        conflicts.append(f"sudah ada di config RANCID (neighbour {peer_loopback})")
-        warnings.append(f"pw-id {vc_id} ke neighbour {peer_loopback} sudah dipakai di config perangkat: isi VC id lain.")
-    others = [pw for pw in instance["pw_ids"] if pw != vc_id]
-    if others:
-        warnings.append(f"Neighbour lain di VPLS ini memakai pw-id {', '.join(map(str, others[:6]))}: pastikan site A "
-                        f"memakai pw-id {vc_id} yang sama dengan neighbour ini.")
-    classes = [n["pw_class"] for n in instance["neighbours"] if n["pw_class"]]
-    pw_class = max(set(classes), key=classes.count) if classes else DEFAULT_XR_PW_CLASS
-    out.update(_xr_join_vpls(instance, peer_loopback or "<loopback-peer>", vc_id, pw_class))
-    out["commit"] = COMMIT[dialect]
-    out["vpls"] = {name: instance[name] for name in ("key", "bridge_group", "bridge_domain", "vfi", "interfaces", "pw_ids")}
-    out["vc_ids"] = [{"vlan": vlan, "vc_id": vc_id, "pw": None, "conflicts": conflicts}]
-    where = f"bridge-domain {instance['bridge_domain']}" + (f" vfi {instance['vfi']}" if instance["vfi"] else "")
-    out["notes"].append(f"Site B tanpa port akses: hanya menambah neighbour {peer_loopback or '<loopback-peer>'} "
-                        f"pw-id {vc_id} ke {where} ({len(instance['neighbours'])} neighbour, interface "
-                        f"{', '.join(instance['interfaces'][:4]) or '-'}).")
-    warnings.append(SYNTAX_WARNING)
+def _assemble(contexts: list["_Ctx"], template: Template, join_template: Template,
+              warnings: list[str]) -> tuple[list[str], list[str]]:
+    """Config and rollback of the whole batch; the entry command (system-view / configure …) opens it once."""
+    config: list[str] = []
+    rollback: list[str] = []
+    for ctx in contexts:
+        if ctx.skip:
+            continue
+        part_config, part_rollback = join_template(ctx) if ctx.join else template(ctx)
+        config += part_config if not config else part_config[1:]
+        rollback += part_rollback if not rollback else part_rollback[1:]
+        warnings += ctx.warnings
+    return config, rollback
 
 
-def _xr_join_vpls(instance: dict, peer: str, vc_id: int, pw_class: str) -> dict[str, list[str]]:
-    """Same form as the ASR9K's own VFI neighbours: `neighbor IP pw-id N` + its pw-class, no `ipv4` keyword."""
-    path = ["l2vpn", f" bridge group {instance['bridge_group']}", f"  bridge-domain {instance['bridge_domain']}"]
-    indent = "   "
-    if instance["vfi"]:
-        path.append(f"   vfi {instance['vfi']}")
-        indent = "    "
-    config = ["configure", *path, f"{indent}neighbor {peer} pw-id {vc_id}", f"{indent} pw-class {pw_class}", "root"]
-    rollback = ["configure", *path, f"{indent}no neighbor {peer} pw-id {vc_id}", "root"]
-    return {"config": config, "rollback": rollback}
+def _plan_portless(contexts: list["_Ctx"], joins: dict[int, dict], addressing: Addressing, notes: list[str],
+                   warnings: list[str]) -> None:
+    """Site B without an access port: per VLAN a new instance, one more peer on an existing one, or nothing when PE A
+    is already a peer of the chosen instance."""
+    if addressing.policer:
+        warnings.append("Policer tidak dibuat di site B tanpa port akses: pasang di port pelanggan saat di-bind.")
+    for ctx in contexts:
+        instance = joins.get(ctx.vlan) if ctx.vlan is not None else None
+        if instance is None:
+            notes.append(f"VLAN {ctx.vlan or '-'}: instance baru {ctx.name} tanpa port akses, peer {ctx.peer_loopback} "
+                         f"VC id {ctx.vc_id}; port pelanggan di-bind belakangan.")
+            continue
+        ctx.join = instance
+        peers = [n["ip"] for n in instance["neighbours"]]
+        if ctx.peer_loopback in peers:
+            ctx.skip = True
+            notes.append(f"VLAN {ctx.vlan}: peer {ctx.peer_loopback} sudah ada di {instance['name']}: tidak ditambah.")
+            continue
+        notes.append(f"VLAN {ctx.vlan}: tambah peer {ctx.peer_loopback} VC id {ctx.vc_id} ke {instance['name']} "
+                     f"({len(peers)} peer, interface {', '.join(instance['interfaces'][:4]) or '-'}).")
+
+
+def _vpls_plan(ctx: "_Ctx") -> dict[str, Any]:
+    action = "skip" if ctx.skip else "join" if ctx.join else "new"
+    return {"vlan": ctx.vlan, "action": action, "name": ctx.join["name"] if ctx.join else ctx.name,
+            "key": ctx.join["key"] if ctx.join else None, "vc_id": ctx.vc_id}
+
+
 
 
 _ZTE_PW = re.compile(r"^pw (\S+)\s*$", re.M)
@@ -415,7 +457,7 @@ def _check_running_config(contexts: list[_Ctx], config_source: ConfigSource, dev
     _set_bridge_group(contexts, text, dialect, notes)
     in_use = set(pw_usage(text, dialect))
     for ctx in contexts:
-        if (ctx.peer_loopback, ctx.vc_id) in in_use:
+        if not ctx.skip and (ctx.peer_loopback, ctx.vc_id) in in_use:
             ctx.vc_conflicts.append(f"sudah ada di config RANCID (neighbour {ctx.peer_loopback})")
             warnings.append(f"vcid {ctx.vc_id} ke neighbour {ctx.peer_loopback} sudah ada di config perangkat: "
                             "isi VC id lain.")
@@ -479,12 +521,14 @@ def _check_kompella(contexts: list[_Ctx], addressing: Addressing, config_source:
 
 def _allocate_zte_pw(contexts: list[_Ctx], text: str, notes: list[str], warnings: list[str]) -> None:
     used, _vcids = zte_pw_usage(text)
-    for ctx, pw in zip(contexts, allocate_pw(used, len(contexts))):
+    needing = [ctx for ctx in contexts if not ctx.skip]
+    for ctx, pw in zip(needing, allocate_pw(used, len(needing))):
         ctx.pw = pw
-        if re.search(rf"^interface {re.escape(ctx.sub)}\s*$", text, re.M):
+        if ctx.access and re.search(rf"^interface {re.escape(ctx.sub)}\s*$", text, re.M):
             warnings.append(f"Sub-interface {ctx.sub} sudah ada di config perangkat.")
-    notes.append(f"{len(used)} pw sudah terpakai di config RANCID; dialokasikan: "
-                 + ", ".join(f"VLAN {c.vlan or '-'} → {c.pw}" for c in contexts))
+    if needing:
+        notes.append(f"{len(used)} pw sudah terpakai di config RANCID; dialokasikan: "
+                     + ", ".join(f"VLAN {c.vlan or '-'} → {c.pw}" for c in needing))
 
 
 def _kind(service_type: str) -> str:
@@ -514,12 +558,12 @@ def _vc_clash(db: Session, service: m.Service, vc_id: int) -> str | None:
 
 def _context(db: Session, service: m.Service, customer: m.Customer | None, device: m.Device, port: str,
              peer_id: int | None, ip: str | None, peer_ip: str | None, addressing: Addressing, vlan: int | None,
-             first: bool, label: str = "A") -> _Ctx:
+             first: bool, label: str = "A", access: bool = True) -> _Ctx:
     warnings: list[str] = []
-    sub = f"{port}.{vlan}" if vlan else port
-    if not vlan:
+    sub = (f"{port}.{vlan}" if vlan else port) if access else ""
+    if access and not vlan:
         warnings.append("VLAN belum diisi: konfigurasi memakai port fisik tanpa sub-interface.")
-    elif db.scalar(select(m.Interface.id).where(m.Interface.device_id == device.id, m.Interface.name == sub)):
+    elif access and db.scalar(select(m.Interface.id).where(m.Interface.device_id == device.id, m.Interface.name == sub)):
         warnings.append(f"Sub-interface {sub} sudah ada di inventory: pastikan tidak dipakai layanan lain.")
     peer = db.get(m.Device, peer_id) if peer_id else None
     peer_loopback = peer_ip or (peer.loopback_ipv4 if peer else None)
@@ -561,7 +605,7 @@ def _context(db: Session, service: m.Service, customer: m.Customer | None, devic
         ip=parsed[0] if parsed else None, mask=parsed[1] if parsed else None,
         vrf=service.vrf_name or "<vrf>", rd=rd or "<rd>", rt=rts or ["<rt>"], asn=asn or "<asn>",
         vrf_exists=vrf_exists, warnings=warnings, vc_conflicts=vc_conflicts, first=first,
-        site=1 if label == "A" else 2, remote_site=2 if label == "A" else 1,
+        site=1 if label == "A" else 2, remote_site=2 if label == "A" else 1, access=access,
     )
 
 
@@ -595,9 +639,24 @@ def _vrp_sub(ctx: _Ctx) -> list[str]:
 
 def _vrp_l2vpn(ctx: _Ctx) -> tuple[list[str], list[str]]:
     config = ["system-view", f"vsi {ctx.name}", " pwsignal ldp", f"  vsi-id {ctx.vc_id}", "  control-word enable",
-              f"  peer {ctx.peer_loopback}", "  quit", f" mtu {L2_MTU}", " encapsulation ethernet", " quit",
-              *_vrp_sub(ctx), f" l2 binding vsi {ctx.name}", *_vrp_car(ctx), " quit"]
+              f"  peer {ctx.peer_loopback}", "  quit", f" mtu {L2_MTU}", " encapsulation ethernet", " quit"]
+    if not ctx.access:
+        return config, ["system-view", f"undo vsi {ctx.name}"]
+    config += [*_vrp_sub(ctx), f" l2 binding vsi {ctx.name}", *_vrp_car(ctx), " quit"]
     return config, ["system-view", f"undo interface {ctx.sub}", f"undo vsi {ctx.name}"]
+
+
+def _vrp_join(ctx: _Ctx) -> tuple[list[str], list[str]]:
+    """One more LDP peer on an existing VSI. Its peers signal the vsi-id; another VC id needs negotiation-vc-id."""
+    instance = ctx.join or {}
+    vsi_id = instance.get("vsi_id")
+    negotiation = f" negotiation-vc-id {ctx.vc_id}" if vsi_id != ctx.vc_id else ""
+    if negotiation:
+        ctx.warnings.append(f"VC id {ctx.vc_id} berbeda dengan vsi-id {vsi_id} di VSI {instance.get('name')}: "
+                            "peer ditulis dengan negotiation-vc-id.")
+    path = ["system-view", f"vsi {instance.get('name')}", " pwsignal ldp"]
+    return ([*path, f"  peer {ctx.peer_loopback}{negotiation}", "  quit", " quit"],
+            [*path, f"  undo peer {ctx.peer_loopback}{negotiation}", "  quit", " quit"])
 
 
 def _vrp_kompella(ctx: _Ctx) -> tuple[list[str], list[str]]:
@@ -653,19 +712,36 @@ def _xr_ac(ctx: _Ctx) -> list[str]:
 
 
 def _xr_bridge_domain(ctx: _Ctx) -> list[str]:
-    return ["l2vpn", f" bridge group {ctx.bridge_group}", f"  bridge-domain {ctx.name}", f"   mtu {L2_MTU}",
-            f"   interface {ctx.sub}", "   exit"]
+    lines = ["l2vpn", f" bridge group {ctx.bridge_group}", f"  bridge-domain {ctx.name}", f"   mtu {L2_MTU}"]
+    return lines + ([f"   interface {ctx.sub}", "   exit"] if ctx.access else [])
 
 
 def _xr_rollback(ctx: _Ctx) -> list[str]:
-    return ["configure", f"no l2vpn bridge group {ctx.bridge_group} bridge-domain {ctx.name}", f"no interface {ctx.sub}"]
+    lines = ["configure", f"no l2vpn bridge group {ctx.bridge_group} bridge-domain {ctx.name}"]
+    return lines + ([f"no interface {ctx.sub}"] if ctx.access else [])
 
 
 def _xr_l2vpn(ctx: _Ctx) -> tuple[list[str], list[str]]:
-    config = [*_xr_ac(ctx), *_xr_bridge_domain(ctx), f"   neighbor {ctx.peer_loopback} pw-id {ctx.vc_id}",
+    head = _xr_ac(ctx) if ctx.access else ["configure"]
+    config = [*head, *_xr_bridge_domain(ctx), f"   neighbor {ctx.peer_loopback} pw-id {ctx.vc_id}",
               "    pw-class MPLS-CONTROL-WORD", "root"]
     ctx.warnings.append("pw-class MPLS-CONTROL-WORD harus sudah ada di perangkat (dipakai di metro Cisco).")
     return config, _xr_rollback(ctx)
+
+
+def _xr_join(ctx: _Ctx) -> tuple[list[str], list[str]]:
+    """Same form as the ASR9K's own VFI neighbours: `neighbor IP pw-id N` + the VFI's usual pw-class."""
+    instance = ctx.join or {}
+    classes = [n["pw_class"] for n in instance.get("neighbours", []) if n["pw_class"]]
+    pw_class = max(set(classes), key=classes.count) if classes else DEFAULT_XR_PW_CLASS
+    path = ["l2vpn", f" bridge group {instance.get('bridge_group')}", f"  bridge-domain {instance.get('bridge_domain')}"]
+    indent = "   "
+    if instance.get("vfi"):
+        path.append(f"   vfi {instance['vfi']}")
+        indent = "    "
+    neighbour = f"neighbor {ctx.peer_loopback} pw-id {ctx.vc_id}"
+    return (["configure", *path, f"{indent}{neighbour}", f"{indent} pw-class {pw_class}", "root"],
+            ["configure", *path, f"{indent}no {neighbour}", "root"])
 
 
 def _xr_kompella(ctx: _Ctx) -> tuple[list[str], list[str]]:
@@ -728,10 +804,24 @@ def _zte_qos(ctx: _Ctx) -> list[str]:
 
 def _zte_l2vpn(ctx: _Ctx) -> tuple[list[str], list[str]]:
     pw = ctx.pw or f"pw{ctx.vc_id}"
-    config = ["configure terminal", *_zte_sections(ctx, []), f"pw {pw}", f"vpls {ctx.name}", f"  mtu {L2_MTU}",
-              f"  access-point {ctx.sub}", "    access-params ethernet", "    $", "  $", f"  pseudo-wire {pw}",
-              f"    neighbour {ctx.peer_loopback} vcid {ctx.vc_id} cw-preferred", "    $", "  $", "$", *_zte_qos(ctx)]
-    rollback = ["configure terminal", f"no vpls {ctx.name}", f"no pw {pw}", f"no interface {ctx.sub}"]
+    access = [f"  access-point {ctx.sub}", "    access-params ethernet", "    $", "  $"] if ctx.access else []
+    config = ["configure terminal", *(_zte_sections(ctx, []) if ctx.access else []), f"pw {pw}", f"vpls {ctx.name}",
+              f"  mtu {L2_MTU}", *access, f"  pseudo-wire {pw}",
+              f"    neighbour {ctx.peer_loopback} vcid {ctx.vc_id} cw-preferred", "    $", "  $", "$",
+              *(_zte_qos(ctx) if ctx.access else [])]
+    rollback = ["configure terminal", f"no vpls {ctx.name}", f"no pw {pw}"]
+    return config, rollback + ([f"no interface {ctx.sub}"] if ctx.access else [])
+
+
+def _zte_join(ctx: _Ctx) -> tuple[list[str], list[str]]:
+    """A new pw on an existing VPLS, with the split-horizon scope its other pseudo-wires use."""
+    instance = ctx.join or {}
+    pw = ctx.pw or f"pw{ctx.vc_id}"
+    options = [n["options"] for n in instance.get("neighbours", []) if n.get("options")]
+    suffix = f" {max(set(options), key=options.count)}" if options else ""
+    config = ["configure terminal", f"pw {pw}", f"vpls {instance.get('name')}", f"  pseudo-wire {pw}{suffix}",
+              f"    neighbour {ctx.peer_loopback} vcid {ctx.vc_id} cw-preferred", "    $", "  $", "$"]
+    rollback = ["configure terminal", f"vpls {instance.get('name')}", f"  no pseudo-wire {pw}", "$", f"no pw {pw}"]
     return config, rollback
 
 
@@ -776,16 +866,32 @@ def fiberhome_name(port: str) -> str:
 
 def _fh_l2vpn(ctx: _Ctx) -> tuple[list[str], list[str]]:
     sub = fiberhome_name(ctx.sub)
+    vfi = [f"vfi {ctx.name}", f" vsi-id {ctx.vc_id}", f" mtu {L2_MTU}"]
+    peer = [f" peer {ctx.peer_loopback} encapsulation raw", "  exit", " exit"]
+    if not ctx.access:
+        return ["configure terminal", *vfi, *peer], ["configure terminal", f"no vfi {ctx.name}"]
     config = ["configure terminal", f"interface {sub}", " l2transport", f" description {ctx.description}",
               f" mtu {L2_MTU}"]
     if ctx.vlan:
         config += [" encapsulation dot1q", f" vlan-type dot1q {ctx.vlan}"]
-    config += [" exit", f"vfi {ctx.name}", f" vsi-id {ctx.vc_id}", f" mtu {L2_MTU}", f" interface {sub}", "  exit",
-               f" peer {ctx.peer_loopback} encapsulation raw", "  exit", " exit"]
+    config += [" exit", *vfi, f" interface {sub}", "  exit", *peer]
     if ctx.policer:
         ctx.warnings.append("Policer tidak dibuat di FiberHome: backup FiberHome metro tidak memuat contoh QoS; batasi "
                             "bandwidth di ujung lain atau sesuai standar FiberHome.")
     return config, ["configure terminal", f"no vfi {ctx.name}", f"no interface {sub}"]
+
+
+def _fh_join(ctx: _Ctx) -> tuple[list[str], list[str]]:
+    """One more peer on an existing VFI. FiberHome signals its peers with the vsi-id, so site A must use it too."""
+    instance = ctx.join or {}
+    vsi_id = instance.get("vsi_id")
+    if vsi_id is not None and vsi_id != ctx.vc_id:
+        ctx.vc_conflicts.append(f"VFI {instance.get('name')} memakai vsi-id {vsi_id}")
+        ctx.warnings.append(f"VFI {instance.get('name')} memberi sinyal PW dengan vsi-id {vsi_id}: kosongkan VC id "
+                            f"VLAN {ctx.vlan} atau isi {vsi_id} agar site A cocok.")
+    path = ["configure terminal", f"vfi {instance.get('name')}"]
+    return ([*path, f" peer {ctx.peer_loopback} encapsulation raw", "  exit", " exit"],
+            [*path, f" no peer {ctx.peer_loopback}", " exit"])
 
 
 TEMPLATES = {
@@ -796,6 +902,8 @@ TEMPLATES = {
 }
 # L2VPN with Kompella (BGP) signalling; FiberHome has none in the backups.
 KOMPELLA = {"vrp": _vrp_kompella, "iosxr": _xr_kompella, "zte": _zte_kompella}
+# Site B without an access port, joining a VPLS instance already on the PE (Martini only).
+JOIN_TEMPLATES = {"vrp": _vrp_join, "iosxr": _xr_join, "zte": _zte_join, "fiberhome": _fh_join}
 
 # Saving is a commit on every platform here; no write/save.
 COMMIT: dict[str, list[str]] = {"vrp": ["commit", "return"], "zte": ["commit", "end"], "fiberhome": ["commit", "end"],
