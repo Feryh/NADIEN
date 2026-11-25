@@ -28,6 +28,7 @@ from ..services.capacity import (
     shared_ports,
     spike_indexes,
     wide_end_excluded,
+    wider_end_unmeasured,
 )
 from ..services.olt import (PonUsage, is_management_port, is_pon_port, olt_layout, onts_online, pon_level,
                             pon_port_occupancy)
@@ -35,6 +36,7 @@ from ..services.olt import (PonUsage, is_management_port, is_pon_port, olt_layou
 router = APIRouter(prefix="/capacity", tags=["Capacity Planning"])
 
 TREND_WINDOWS = (7, 30, 90)
+UNMEASURED_RECENT_SAMPLES = 7  # the last week of daily peaks: one old overshoot does not condemn a link
 
 
 def _window(series: list[tuple[float, float]], days: int) -> list[tuple[float, float]]:
@@ -72,6 +74,11 @@ def _link_capacity(link, samples, devices, pops, on_wider_end: bool = False) -> 
     # re-paired to the right far end) and would otherwise rank a dead 10M pairing as the busiest link.
     carries = link.status != "down"
     samples = sorted(samples, key=lambda x: x.ts) if carries else []  # same order as peak_series: indexes line up
+    # Read on a wider end that carried more than this link ever could: none of it is known to be this link's.
+    recent = [max(x.in_gbps, x.out_gbps) for x in samples[-UNMEASURED_RECENT_SAMPLES:]]
+    unmeasured = on_wider_end and carries and wider_end_unmeasured(link.capacity_gbps, [link.current_gbps, *recent])
+    if unmeasured:
+        carries, samples = False, []
     spikes = spike_indexes(peak_series(samples), link.capacity_gbps)
     series = peak_series([x for k, x in enumerate(samples) if k not in spikes])
     fits = _trend_fits(series)
@@ -93,7 +100,8 @@ def _link_capacity(link, samples, devices, pops, on_wider_end: bool = False) -> 
         samples_days=round(series[-1][0] - series[0][0]) if len(series) >= 2 else 0,
         spike_days=[samples[k].ts for k in sorted(spikes)],
         measured_on_wider_end=on_wider_end,
-        level=hotspot_level(result.utilization_pct, on_wider_end),
+        unmeasured=unmeasured,
+        level="suspect" if unmeasured else hotspot_level(result.utilization_pct, on_wider_end),
     )
 
 

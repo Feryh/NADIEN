@@ -460,6 +460,9 @@ class LinkCapacity(CapacityResult):
     spike_days: list[datetime] = []
     # Traffic read on the wider end because the narrower one cannot be (services/capacity.read_on_wider_end).
     measured_on_wider_end: bool = False
+    # That wider end carried more than this link could (services/capacity.wider_end_unmeasured): traffic, trend and
+    # forecast are left empty rather than showing the bundle's traffic as this link's.
+    unmeasured: bool = False
     level: Literal["critical", "warning", "normal", "suspect"] = "normal"
 
 

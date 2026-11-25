@@ -174,6 +174,31 @@ def test_should_mark_link_suspect_when_traffic_above_capacity_is_read_only_on_th
     assert (row["measured_on_wider_end"], row["level"]) == (True, "suspect")
 
 
+def _vmx_behind_a_bundle(db):
+    """CGW-BRAS-CORP-NIX-JKT ae1 <> NEW-VMX-ROUTE-INJECTOR-JKT-NIX ge-0/0/0: a 1G vMX port Observium does not watch,
+    so the link's traffic was read on ae1, 17.8 Gbps of which almost none goes to the vMX."""
+    link = _network(db, [17.9, 17.6, 17.8], capacity=1.0)
+    narrow = m.Interface(device_id=link.b_device_id, name="ge-0/0/0", speed_gbps=1.0)
+    wide = m.Interface(device_id=link.a_device_id, name="ae1", if_type="bundle", speed_gbps=40.0, in_gbps=17.8)
+    db.add_all([narrow, wide])
+    db.flush()
+    link.a_interface_id, link.b_interface_id = wide.id, narrow.id
+    db.add(m.ObserviumPort(interface_id=wide.id, observium_port_id=3, observium_hostname="cgw", source="main"))
+    db.commit()
+
+
+def test_should_report_a_link_unmeasured_when_its_wider_end_carries_more_than_the_link_could(db, client):
+    _vmx_behind_a_bundle(db)
+    row = client.get("/api/capacity/links").json()[0]
+    assert (row["unmeasured"], row["level"], row["current_gbps"], row["utilization_pct"]) == (True, "suspect", 0.0, 0.0)
+    assert row["exhaustion_date"] is None and row["growth_trends"]["7"] is None
+
+
+def test_should_keep_an_unmeasured_link_out_of_the_dashboard_health_colours(db, client):
+    _vmx_behind_a_bundle(db)
+    assert client.get("/api/dashboard/summary").json()["link_colors"] == {}
+
+
 def test_should_keep_link_critical_when_its_narrower_end_is_monitored(db, client):
     _bundle_link(db, narrow_monitored=True)
     assert client.get("/api/capacity/links").json()[0]["level"] == "critical"
