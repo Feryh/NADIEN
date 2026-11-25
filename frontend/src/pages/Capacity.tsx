@@ -17,6 +17,8 @@ import { Pager, usePaged } from '../components/Pager'
 import { CAPACITY_HEX, CHART_TOOLTIP, ColorBadge, fmtG, fmtMonths, UtilBar } from '../components/ui'
 
 const GROWTH_SOURCE_LABEL = { manual: 'manual', trend: 'tren', input: 'input', none: '—' }
+const UNMEASURED_HINT = 'Ujung yang lebih kecil tidak dimonitor Observium; ujung yang lebih lebar (bundle) membawa lebih ' +
+  'dari kapasitas link ini, jadi trafiknya bukan milik link ini. Utilisasi, tren dan forecast tidak dihitung.'
 const TREND_WINDOWS = ['7', '30', '90']
 
 function fmtTrend(v: number | null | undefined) {
@@ -131,12 +133,14 @@ function LinkTable({ selectedId, onOpen }: { selectedId: number | null; onOpen: 
                   onClick={() => onOpen(l.link_id)}
                 >
                   <td>
-                    <ColorBadge color={l.color}>{l.committed_pct.toFixed(0)}%</ColorBadge>
+                    {l.unmeasured
+                      ? <span className="pill pill-muted" title={UNMEASURED_HINT}>tidak terukur</span>
+                      : <ColorBadge color={l.color}>{l.committed_pct.toFixed(0)}%</ColorBadge>}
                   </td>
                   <td>
                     {l.a_device} ↔ {l.b_device}
                     {l.status === 'down' && <span className="pill pill-bad">down</span>}
-                    {l.level === 'suspect' && (
+                    {l.level === 'suspect' && !l.unmeasured && (
                       <span className="pill pill-muted" title={l.measured_on_wider_end
                         ? 'Trafik dibaca di ujung yang lebih lebar (bundle yang juga membawa trafik lain), karena ujung yang lebih kecil tidak dimonitor Observium atau counternya nol'
                         : 'Utilisasi jauh di atas 100%: kapasitas port dari SNMP kemungkinan salah'}>cek data</span>
@@ -145,10 +149,10 @@ function LinkTable({ selectedId, onOpen }: { selectedId: number | null; onOpen: 
                   </td>
                   <td>{l.a_pop === l.b_pop ? l.a_pop : `${l.a_pop}–${l.b_pop}`}</td>
                   <td className="num">{fmtG(l.capacity_gbps)}</td>
-                  <td className="num">{fmtG(l.current_gbps)}</td>
+                  <td className="num">{l.unmeasured ? '—' : fmtG(l.current_gbps)}</td>
                   <td className="num">{fmtG(l.reserved_gbps)}</td>
-                  <td className="num">{fmtG(l.available_gbps)}</td>
-                  <td className="num">{l.utilization_pct.toFixed(1)}%</td>
+                  <td className="num">{l.unmeasured ? '—' : fmtG(l.available_gbps)}</td>
+                  <td className="num">{l.unmeasured ? '—' : `${l.utilization_pct.toFixed(1)}%`}</td>
                   <TrendCells link={l} />
                   <td className="num">
                     {l.growth_gbps_per_month != null ? `${l.growth_gbps_per_month.toFixed(1)}G` : '—'}
@@ -295,7 +299,9 @@ function LinkDetail({ linkId, onClose }: { linkId: number; onClose: () => void }
     <div className="card">
       <div className="toolbar">
         <h2>{detail ? `${detail.a_device} ↔ ${detail.b_device}` : `Link #${linkId}`}</h2>
-        {detail && <ColorBadge color={detail.color}>{detail.committed_pct.toFixed(1)}% committed</ColorBadge>}
+        {detail && (detail.unmeasured
+          ? <span className="pill pill-muted" title={UNMEASURED_HINT}>tidak terukur</span>
+          : <ColorBadge color={detail.color}>{detail.committed_pct.toFixed(1)}% committed</ColorBadge>)}
         <div className="spacer" />
         <button onClick={onClose}>Tutup</button>
       </div>

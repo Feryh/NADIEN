@@ -277,6 +277,16 @@ def wide_end_excluded(narrow_speed: float | None, wide_speed: float | None, wide
     return wide_shared and is_narrower(narrow_speed, wide_speed)
 
 
+WIDER_END_SLACK = 1.5  # as parsers.RATE_SLACK: polling jitter overshoots line rate a little, never by half
+
+
+def wider_end_unmeasured(capacity_gbps: float | None, readings_gbps: Iterable[float]) -> bool:
+    """A reading taken on the wider end that the link itself could never carry: that end's traffic is mostly not
+    this link's (CGW-BRAS-CORP-NIX-JKT ae1 at 17.8 Gbps for a 1G vMX port behind it), so the link is unmeasured,
+    not 1777 % full."""
+    return bool(capacity_gbps) and any(r > capacity_gbps * WIDER_END_SLACK for r in readings_gbps)
+
+
 def read_on_wider_end(speeds: tuple[float | None, float | None], rates: tuple[float | None, float | None],
                       monitored: tuple[bool, bool], shared: tuple[bool, bool] = (False, False)) -> bool:
     """Whether a link's traffic can only come from its wider end: the narrower end (whose speed is the link's

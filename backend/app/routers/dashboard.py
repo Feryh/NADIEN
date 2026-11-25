@@ -66,7 +66,8 @@ def _summary(db: Session) -> dict:
             "available_gbps": round(max(total_cap - total_cur - total_res, 0), 1),
             "utilization_pct": round(total_cur / total_cap * 100, 1) if total_cap else 0,
         },
-        "link_colors": dict(Counter(l.color for l in links)),
+        # An unmeasured link (traffic only on a wider end that carries more) has no health to count.
+        "link_colors": dict(Counter(l.color for l in links if not l.unmeasured)),
         "links_down": sum(1 for l in links if l.status == "down"),
         "services_by_type": dict(Counter(sv.service_type for sv in services)),
         "bandwidth_by_type_mbps": {

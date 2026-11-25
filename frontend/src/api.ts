@@ -181,6 +181,8 @@ export interface LinkCapacity extends CapacityResult {
   spike_days: string[]
   /** Traffic read on the wider end (a bundle that may carry more) because the narrower end cannot be read. */
   measured_on_wider_end: boolean
+  /** That wider end carried more than this link could: traffic, trend and forecast are unknown, not zero. */
+  unmeasured?: boolean
   level: HotspotLevel
 }
 
