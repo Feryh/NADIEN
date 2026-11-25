@@ -55,10 +55,30 @@ def default_provider(db: Session) -> m.AiProvider | None:
     return enabled[0] if enabled else None
 
 
+SEED_NAME = "Ollama lokal"
+# What seed_local wrote before NADIEN_AI_OLLAMA_URL / NADIEN_AI_DEFAULT_MODEL were set for a deployment.
+_FIRST_SEED = (DEFAULT_BASE_URL["ollama"], "llama3.1:8b")
+
+
 def seed_local(db: Session) -> None:
-    """First start: a local Ollama provider as the default, so the assistant works without any hosted service."""
-    if not settings.ai_seed_local or db.scalar(select(m.AiProvider.id).limit(1)) is not None:
+    """First start: a local Ollama provider as the default, so the assistant works without any hosted service.
+
+    A seeded provider nobody edited, still on the built-in localhost URL and model, follows the deployment's
+    Ollama settings once they are set (Kubernetes runs Ollama as its own service, not on localhost)."""
+    if not settings.ai_seed_local:
         return
-    db.add(m.AiProvider(name="Ollama lokal", kind="ollama", base_url=settings.ai_ollama_url,
-                        model=settings.ai_default_model, is_default=True, enabled=True, timeout_s=180))
-    db.commit()
+    if db.scalar(select(m.AiProvider.id).limit(1)) is None:
+        db.add(m.AiProvider(name=SEED_NAME, kind="ollama", base_url=settings.ai_ollama_url,
+                            model=settings.ai_default_model, is_default=True, enabled=True, timeout_s=180))
+        db.commit()
+        return
+    configured = (settings.ai_ollama_url, settings.ai_default_model)
+    if configured == _FIRST_SEED:
+        return
+    untouched = db.scalars(select(m.AiProvider).where(
+        m.AiProvider.name == SEED_NAME, m.AiProvider.kind == "ollama",
+        m.AiProvider.base_url == _FIRST_SEED[0], m.AiProvider.model == _FIRST_SEED[1])).all()
+    for provider in untouched:
+        provider.base_url, provider.model = configured
+    if untouched:
+        db.commit()
