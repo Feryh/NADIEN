@@ -36,18 +36,20 @@ export const MAP_DRAGGABLE = '[kind="device"], [kind="external_pop"]'
  * user dragged and saved (`pinned`), which stay exactly where they were put.
  */
 export function ringExternal(
-  nodes: { id: string; kind: string }[],
+  nodes: { id: string; kind: string; outside?: boolean }[],
   home: Map<string, Pos>,
   pinned: ReadonlySet<string>,
 ): void {
-  const local = nodes.filter((n) => n.kind === 'device').map((n) => home.get(n.id)!)
+  // Far-end devices of links leaving the view are as far away as the POPs they stand in for.
+  const beyond = (n: { kind: string; outside?: boolean }) => n.kind === 'external_pop' || n.outside === true
+  const local = nodes.filter((n) => n.kind === 'device' && !beyond(n)).map((n) => home.get(n.id)!)
   if (!local.length) return
   const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]
   const center = { x: median(local.map((p) => p.x)), y: median(local.map((p) => p.y)) }
   const distances = local.map((p) => Math.hypot(p.x - center.x, p.y - center.y)).sort((a, b) => a - b)
   const radius = Math.max(300, distances[Math.floor(distances.length * 0.9)] ?? 0) * 1.35
   for (const n of nodes) {
-    if (n.kind !== 'external_pop' || pinned.has(n.id)) continue
+    if (!beyond(n) || pinned.has(n.id)) continue
     const spot = home.get(n.id)!
     const angle = Math.atan2(spot.y - center.y, spot.x - center.x) || 0
     home.set(n.id, { x: center.x + radius * Math.cos(angle), y: center.y + radius * Math.sin(angle) })

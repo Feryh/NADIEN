@@ -25,7 +25,6 @@ from .topology_readmodel import (
     pair,
     path_fields,
     place_devices,
-    pop_labels,
     segments_of,
     topology_links,
 )
@@ -156,13 +155,12 @@ def _summary_nodes(ctx: Ctx, summarized: dict[int, list[int]]) -> tuple[list[dic
     return nodes, described
 
 
-def _external_nodes(ctx: Ctx, remote: dict[str, set[int]]) -> list[dict]:
-    by_code = {p.code: p for p in ctx.pops.values()}
-    labels = pop_labels(ctx, {by_code[code].id for code in remote if code in by_code})
-    return [{"id": f"pop:{code}", "kind": "external_pop", "code": code, "devices": len(devices),
-             "label": labels.get(by_code[code].id, code) if code in by_code else code,
-             **(path_fields(ctx.path_of_pop(by_code[code].id)) if code in by_code else {})}
-            for code, devices in sorted(remote.items())]
+def _outside_nodes(ctx: Ctx, remote: set[int], structure: Structure) -> list[dict]:
+    """The far-end devices of links leaving the city, drawn themselves (marked `outside`) instead of a box for
+    their POP: the reader sees which device the link really reaches; where it sits is in its fields."""
+    return [{**device_node(ctx, d), "outside": True, "city": ctx.path_of_pop(d.pop_id)[2], "cluster_id": None,
+             "spof": d.id in structure.spof_devices, **path_fields(ctx.path_of_pop(d.pop_id))}
+            for d in sorted((ctx.devices[i] for i in remote), key=lambda d: (ROLE_TIER.get(d.role, 4), d.hostname))]
 
 
 def _pop_entries(ctx: Ctx, pop_ids: set[int], local: dict[int, Any]) -> list[dict]:
@@ -175,12 +173,12 @@ def _pop_entries(ctx: Ctx, pop_ids: set[int], local: dict[int, Any]) -> list[dic
 
 
 def _collect_links(links: list[Any], ctx: Ctx, local: dict[int, Any], node_of: Callable[[int], str]) -> tuple[
-        set[int], dict[tuple[str, str, str], Agg], dict[str, Agg], dict[str, set[int]]]:
-    """Ids of every link with an end in the city, aggregates for edges/segments and the far-end devices per POP."""
+        set[int], dict[tuple[str, str, str], Agg], dict[str, Agg], set[int]]:
+    """Ids of every link with an end in the city, aggregates for edges/segments and the far-end devices."""
     link_ids: set[int] = set()
     edges: dict[tuple[str, str, str], Agg] = defaultdict(Agg)
     totals: dict[str, Agg] = defaultdict(Agg)
-    remote: dict[str, set[int]] = defaultdict(set)
+    remote: set[int] = set()
     for link in links:
         if link.a_device_id not in ctx.devices or link.b_device_id not in ctx.devices:
             continue
@@ -194,7 +192,7 @@ def _collect_links(links: list[Any], ctx: Ctx, local: dict[int, Any], node_of: C
             edges[(*pair(source, target), segment)].add(link)
         for device_id in (link.a_device_id, link.b_device_id):
             if device_id not in local:
-                remote[ctx.pop_code(device_id)].add(device_id)
+                remote.add(device_id)
     return link_ids, edges, totals, remote
 
 
@@ -213,15 +211,13 @@ def city_view(db: Session, ctx: Ctx, area: str, province: str, regency: str, inc
     structure = network_structure(topology)
 
     def node_of(device_id: int) -> str:
-        if device_id not in local:
-            return f"pop:{ctx.pop_code(device_id)}"
         return f"summary:{ctx.pop_code(device_id)}" if device_id in hidden else f"dev:{device_id}"
 
     link_ids, edges, totals, remote = _collect_links(topology.shown, ctx, local, node_of)
     clusters = _clusters(ctx, structure, local, hidden)
     nodes = _device_nodes(ctx, local, hidden, structure, clusters)
     summary_nodes, described = _summary_nodes(ctx, summarized)
-    nodes += summary_nodes + _external_nodes(ctx, remote)
+    nodes += summary_nodes + _outside_nodes(ctx, remote, structure)
     place_devices(ctx, nodes)
     return {"level": "city", **path_fields(path), "nodes": nodes, "pops": _pop_entries(ctx, pop_ids, local),
             "clusters": clusters, "links": link_entries(db, ctx, link_ids, node_of, structure),

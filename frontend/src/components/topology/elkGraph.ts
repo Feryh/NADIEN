@@ -22,9 +22,10 @@ const COMPOUND_PADDING = '[top=28,left=14,bottom=14,right=14]'
 
 const PARTITION_KEY = 'elk.partitioning.partition'
 
-// Partition 0 is reserved for POPs of other cities, so tier n (0 = Core) becomes n + 1.
+// Partition 0 is reserved for what lies beyond the city — another city's POP, or the far-end device of a link
+// leaving it — so tier n (0 = Core) becomes n + 1.
 function partitionOf(node: CityNode): string {
-  if (node.kind === 'external_pop') return '0'
+  if (node.kind === 'external_pop' || (node.kind === 'device' && node.outside)) return '0'
   return String(node.tier + 1)
 }
 
@@ -80,7 +81,8 @@ export function buildElkGraph(view: CityView, sizeOf: (n: CityNode) => { width: 
   for (const node of view.nodes) {
     knownIds.add(node.id)
     const leaf: ElkNode = { id: node.id, ...sizeOf(node), layoutOptions: { [PARTITION_KEY]: partitionOf(node) } }
-    if (node.kind === 'external_pop') {
+    // Beyond the city: drawn on its own, without a box for its POP.
+    if (node.kind === 'external_pop' || (node.kind === 'device' && node.outside)) {
       appendChild(top, leaf)
       continue
     }

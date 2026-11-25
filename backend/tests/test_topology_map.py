@@ -68,7 +68,8 @@ def test_should_place_device_at_its_own_site_and_others_around_their_pop(client,
     assert (own["lat"], own["lon"], own["located"], own["estimated"]) == (-2.93, 104.70, True, False)
     assert ringed["located"] is False and ringed["estimated"] is True
     assert abs(ringed["lat"] - -2.95) < 0.02 and abs(ringed["lon"] - 104.73) < 0.02  # near the POP point
-    assert nodes["XQA"]["kind"] == "external_pop" and nodes["XQA"].get("lat") is None  # no coordinates, no city
+    far = nodes["XQA-XQA-ME1"]  # the far device itself, its POP without coordinates and not a known city
+    assert far["outside"] is True and far.get("lat") is None
 
 
 def test_should_have_every_city_centre_inside_its_own_area():

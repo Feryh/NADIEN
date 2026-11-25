@@ -76,6 +76,13 @@ describe('ringExternal', () => {
     expect(Math.abs(positions.get('pop:YGK')!.y)).toBeLessThan(1000)
   })
 
+  it('should pull a far-end device outside the view onto the ring and leave local devices where they are', () => {
+    const positions = new Map([...home(), ['dev:9', { x: 0, y: -60000 }]])
+    ringExternal([...nodes, { id: 'dev:9', kind: 'device', outside: true }], positions, new Set())
+    expect(Math.abs(positions.get('dev:9')!.y)).toBeLessThan(1000)
+    expect(positions.get('dev:2')).toEqual({ x: 100, y: 0 })
+  })
+
   it('should keep saved external POP spot when ring places other POPs', () => {
     const positions = home()
     ringExternal(nodes, positions, new Set(['pop:SMG']))
