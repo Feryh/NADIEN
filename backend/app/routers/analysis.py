@@ -499,7 +499,7 @@ def topology_view(
     regency: str | None = None,
     pop: str | None = None,
     device_id: int | None = None,
-    depth: int = Query(1, ge=1, le=2),
+    depth: int = Query(1, ge=1, le=3),  # the walk stops at MAX_NEIGHBOR_NODES whatever the depth
     include_hidden: bool = False,
     db: Session = Depends(get_db),
 ):
@@ -830,33 +830,21 @@ def _device_level(ctx: _Ctx, links: _TopologyLinks, pop_code: str) -> dict:
     local = {d.id: d for d in ctx.devices.values() if d.pop_id == pop.id}
     edges: dict[tuple[str, str, str], _Agg] = defaultdict(_Agg)
     totals: dict[str, _Agg] = defaultdict(_Agg)
-    external: dict[str, set[int]] = defaultdict(set)
+    outside: set[int] = set()
     for link in links.shown:
         a_in, b_in = link.a_device_id in local, link.b_device_id in local
         if not (a_in or b_in) or link.a_device_id not in ctx.devices or link.b_device_id not in ctx.devices:
             continue
         segment = _segment_of(ctx, link)
         totals[segment].add(link)
-        if a_in and b_in:
-            edges[(*_pair(f"dev:{link.a_device_id}", f"dev:{link.b_device_id}"), segment)].add(link)
-        else:
-            mine, theirs = (link.a_device_id, link.b_device_id) if a_in else (link.b_device_id, link.a_device_id)
-            remote_pop = ctx.pop_code(theirs)
-            edges[(*_pair(f"dev:{mine}", f"pop:{remote_pop}"), segment)].add(link)
-            external[remote_pop].add(theirs)
+        # A link leaving the POP ends on the far device itself (marked `outside`), not on a box for its POP.
+        edges[(*_pair(f"dev:{link.a_device_id}", f"dev:{link.b_device_id}"), segment)].add(link)
+        outside.update(d for d, inside in ((link.a_device_id, a_in), (link.b_device_id, b_in)) if not inside)
 
-    nodes = [_device_node(ctx, d)
-             for d in sorted(local.values(), key=lambda d: (ROLE_TIER.get(d.role, 4), d.hostname))]
-    by_code = {p.code: p for p in ctx.pops.values()}
-    remote_ids = {by_code[code].id for code in external if code in by_code}
-    labels = _pop_labels(ctx, remote_ids)
-    for code, remote_devices in sorted(external.items()):
-        rp = by_code.get(code)
-        nodes.append({
-            "id": f"pop:{code}", "kind": "external_pop", "label": labels.get(rp.id, code) if rp else code, "code": code,
-            **(_path_fields(ctx.path_of_pop(rp.id)) if rp else {"area": UNMAPPED_AREA}),
-            "devices": len(remote_devices),
-        })
+    by_tier = lambda d: (ROLE_TIER.get(d.role, 4), d.hostname)  # noqa: E731
+    nodes = [_device_node(ctx, d) for d in sorted(local.values(), key=by_tier)]
+    for d in sorted((ctx.devices[i] for i in outside), key=by_tier):
+        nodes.append({**_device_node(ctx, d), "outside": True, **_path_fields(ctx.path_of_pop(d.pop_id))})
     _place_devices(ctx, nodes)
     return {"level": "device", "pop": pop.code, "pop_name": pop.name, "pop_id": pop.id, "region": pop.region,
             "city": ctx.place_of_pop[pop.id].city, **_path_fields(ctx.path_of_pop(pop.id)), "nodes": nodes,

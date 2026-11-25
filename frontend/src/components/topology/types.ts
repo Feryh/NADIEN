@@ -56,6 +56,10 @@ export interface CityDeviceNode {
   gone_since?: string | null  // decommissioned / no longer polled since; hidden after 7 days
   cluster_id: string | null
   spof: boolean
+  outside?: boolean  // far end of a link leaving the city: drawn itself, without a box for its POP
+  area?: string
+  province?: string
+  regency?: string
   located?: boolean
   estimated?: boolean
   lat?: number | null

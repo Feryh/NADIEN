@@ -2,7 +2,7 @@ import cytoscape, { Core, ElementDefinition } from 'cytoscape'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link as RouterLink, useSearchParams } from 'react-router-dom'
 import { api, CapacityColor, DiscoveryResult } from '../api'
-import { BasemapShape, Box, declutter, loadBasemap, project } from '../components/basemap'
+import { BasemapShape, Box, declutter, fanOut, loadBasemap, project } from '../components/basemap'
 import { NamingStandard, TopologyChanges, UnknownLldpPeers } from '../components/TopologyInsights'
 import TopologyLegend from '../components/TopologyLegend'
 import ZoomControls from '../components/topology/ZoomControls'
@@ -547,6 +547,10 @@ const MAP_SCALE: Partial<Record<Level, { pxPerDegree: number; markerScale: numbe
 
 // Spacing never moves a node more than this many node heights from its place on the map.
 const MAX_SHIFT_HEIGHTS = 3
+// Above this many nodes the map fans devices out around their spot instead of decluttering every label (O(n²) per
+// pass, and labels that cannot all fit at the zoom showing them anyway).
+const DECLUTTER_MAX_NODES = 400
+const DEVICE_FAN_SPACING = 14  // on-screen px between devices of one spot at the fitted zoom
 
 /** Normal (zoom 1) size of a node, before the map's marker scale. */
 function nodeSize(n: { kind: string; w?: number }): { width: number; height: number } {
@@ -597,6 +601,27 @@ function mapLayout(cy: Core, view: View, keep?: Map<string, Pos>) {
   if (view.level === 'device' || view.level === 'neighbors' || view.level === 'city') {
     ringExternal(view.nodes, home, new Set(Object.keys(view.map_layout ?? {})))
   }
+  // The zoom that fits these points on screen: nodes keep a fixed size on screen, so it sets their size on the map.
+  const fitZoom = (points: Iterable<Pos>) => {
+    const list = [...points]
+    const xs = list.map((p) => p.x)
+    const ys = list.map((p) => p.y)
+    return Math.max(0.01, Math.min(cy.width() / (Math.max(...xs) - Math.min(...xs) + 1),
+                                   cy.height() / (Math.max(...ys) - Math.min(...ys) + 1)) * 0.8)
+  }
+  if (view.nodes.length > DECLUTTER_MAX_NODES) {
+    // A whole area (1,350 Jabodetabek devices): at the zoom that shows it all nearly every label overlaps another,
+    // and declutter ran its 4 × 80 all-pairs passes for 13 s without settling. The devices of one spot fan out
+    // around it instead; zooming into a city separates them.
+    const spacing = DEVICE_FAN_SPACING * (markerScale / fitZoom(home.values()))
+    const spread = fanOut(new Map([...home].filter(([id]) => !view.map_layout?.[id])), spacing)
+    cy.layout({
+      name: 'preset',
+      padding: 40,
+      positions: (n: cytoscape.NodeSingular) => keep?.get(n.id()) ?? spread.get(n.id()) ?? home.get(n.id()) ?? { x: 0, y: 0 },
+    } as cytoscape.LayoutOptions).run()
+    return
+  }
   const elements = buildElements(view, { bands: false, colorMode: 'utilization', labelMode: 'full' })
   const widthOf = new Map(elements.filter((e) => !e.data.source).map((e) => [e.data.id as string, e.data.w as number]))
   // Nodes keep a fixed size on screen, so how much they overlap depends on the zoom the view fits at,
@@ -604,11 +629,7 @@ function mapLayout(cy: Core, view: View, keep?: Map<string, Pos>) {
   let boxes = new Map<string, Box>()
   for (let round = 0; round < 4; round++) {
     const source = round === 0 ? home : new Map([...boxes].map(([id, b]) => [id, { x: b.x, y: b.y }]))
-    const xs = [...source.values()].map((p) => p.x)
-    const ys = [...source.values()].map((p) => p.y)
-    const zoom = Math.max(0.01, Math.min(cy.width() / (Math.max(...xs) - Math.min(...xs) + 1),
-                                         cy.height() / (Math.max(...ys) - Math.min(...ys) + 1)) * 0.8)
-    const toModel = markerScale / zoom
+    const toModel = markerScale / fitZoom(source.values())
     boxes = new Map()
     for (const n of view.nodes) {
       const { width, height } = nodeSize({ kind: n.kind, w: widthOf.get(n.id) })
@@ -900,8 +921,11 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
   // A province/regency holding a single group comes back one level deeper: the URL follows it, and the
   // view already fetched is used for that new URL instead of being fetched again.
   const deeperRef = useRef<View | null>(null)
+  // Only this flag, not the scope rows: their arrival after a filtered view was asked for must not fetch and lay
+  // out the same view a second time (1,350 Jabodetabek devices were drawn twice on every open).
+  const awaitingScope = unfiltered && scopeRows?.length !== 0
   const load = useCallback(async () => {
-    if (unfiltered && scopeRows?.length !== 0) return  // the first filter choice is on its way (effect above)
+    if (awaitingScope) return  // the first filter choice is on its way (effect above)
     setLoading(true)
     setSelected(null)
     setMoved(0)
@@ -925,7 +949,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
     } finally {
       setLoading(false)
     }
-  }, [viewPath, level, area, province, regency, go, show, unfiltered, scopeRows])
+  }, [viewPath, level, area, province, regency, go, show, awaitingScope])
 
   useEffect(() => {
     load()
@@ -1531,7 +1555,7 @@ function TopologyMap({ dirtyRef }: { dirtyRef: React.MutableRefObject<boolean> }
         <TopologySearchBox onPick={openHit} />
         {level === 'neighbors' && (
           <div className="segmented">
-            {[1, 2].map((d) => (
+            {[1, 2, 3].map((d) => (
               <button key={d} className={depth === String(d) ? 'active' : ''} onClick={() => go({ level: 'neighbors', device_id: Number(deviceId), depth: d })}>
                 {d} hop
               </button>

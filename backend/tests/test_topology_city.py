@@ -104,18 +104,20 @@ def test_should_keep_parallel_links_separate_when_two_links_join_same_devices(cl
     assert len({(e["source"], e["target"]) for e in parallel}) == 1
 
 
-def test_should_point_to_external_pop_when_link_leaves_city(client, network):
+def test_should_end_on_far_device_itself_when_link_leaves_city(client, network):
     d = network["devices"]
     entry = next(e for e in _view(client)["links"] if d["kbm"].hostname in (e["a_device"], e["b_device"]))
-    assert entry["target"] == "pop:KBM"
+    assert entry["target"] == f"dev:{d['kbm'].id}"
     assert entry["b_device"] == d["kbm"].hostname
     assert entry["b_interface"] == "Hu0/0/0/9"
 
 
-def test_should_list_external_pop_once_when_several_links_reach_it(client, network):
-    ids = [n["id"] for n in _view(client)["nodes"]]
-    assert len(ids) == len(set(ids))
-    assert ids.count("pop:KBM") == 1
+def test_should_draw_far_device_once_marked_outside_when_several_links_reach_it(client, network):
+    d = network["devices"]
+    nodes = _view(client)["nodes"]
+    far = [n for n in nodes if n["id"] == f"dev:{d['kbm'].id}"]
+    assert len(far) == 1 and far[0]["outside"] is True and far[0]["pop"] == "KBM"
+    assert not any(n["kind"] == "external_pop" for n in nodes)
 
 
 def test_should_group_agg_ring_when_three_agg_devices_form_cycle(client, network):
@@ -188,6 +190,14 @@ def _neighbors(client, device, depth=1) -> dict:
     response = client.get("/api/topology/view", params={"level": "neighbors", "device_id": device.id, "depth": depth})
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def test_should_reach_devices_three_hops_away_when_level_neighbors_depth_is_3(client, network):
+    d = network["devices"]
+    two = {n["device_id"] for n in _neighbors(client, d["olt1"], depth=2)["nodes"]}
+    three = {n["device_id"] for n in _neighbors(client, d["olt1"], depth=3)["nodes"]}
+    assert d["pe2"].id not in two  # OLT1 -> AGG1 -> PE1 -> PE2
+    assert {d["pe2"].id, d["olt2"].id} <= three and d["kbm"].id not in three  # KBM is a fourth hop
 
 
 def test_should_list_both_parallel_links_when_level_neighbors(client, network):

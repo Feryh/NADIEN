@@ -163,9 +163,10 @@ def test_pop_level(net):
 def test_device_level(net):
     api, d = net
     view = api.get("/api/topology/view", params={"level": "device", "pop": "JKT"}).json()
-    kinds = {n["id"]: n["kind"] for n in view["nodes"]}
-    assert kinds["pop:BKS"] == "external_pop"
-    devs = [n for n in view["nodes"] if n["kind"] == "device"]
+    far = next(n for n in view["nodes"] if n["label"] == "BKS-LBJ-PE1-HW")
+    assert far["kind"] == "device" and far["outside"] is True and far["pop"] == "BKS"
+    assert not any(n["kind"] == "external_pop" for n in view["nodes"])
+    devs = [n for n in view["nodes"] if n["kind"] == "device" and not n.get("outside")]
     assert devs[0]["label"] == "JKT-ABW-P1-NCS" and devs[0]["tier"] == 0  # core first
     assert {d["site"] for d in devs} == {"site:ABW", "site:CSF"} and devs[0]["pop"] == "JKT"
     red = next(e for e in view["edges"] if e["capacity_gbps"] == 10 and e["current_gbps"] == 9)

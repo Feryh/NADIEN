@@ -106,6 +106,14 @@ describe('buildElkGraph', () => {
     expect(partitionOf('dev:2')).toBe('4')
   })
 
+  it('should draw a far-end device in the top row and outside every POP box when it is outside the city', () => {
+    const far: CityNode = { ...device(9, 'BGR', 1), outside: true }
+    const graph = buildElkGraph(view([device(1, 'P', 0), far], [link(1, 'dev:1', 'dev:9')]), sizeOf)
+    expect(find(graph, 'dev:9')?.layoutOptions?.['elk.partitioning.partition']).toBe('0')
+    expect(parentOf(graph, 'dev:9')?.id).toBe('city')
+    expect(find(graph, 'pop:BGR')?.children ?? []).toEqual([])
+  })
+
   it('should omit city compound when level is neighbors', () => {
     const graph = buildElkGraph(view([device(1, 'P', 0)], [], [], 'neighbors'), sizeOf)
     expect(find(graph, 'city')).toBeUndefined()

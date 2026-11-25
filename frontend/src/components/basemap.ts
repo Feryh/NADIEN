@@ -69,27 +69,85 @@ export interface Box {
   fixed?: boolean  // placed by hand: never moved, the others are pushed around it
 }
 
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5))
+
+/**
+ * Points that share one spot (the devices of one POP, all on its coordinates) spread in a sunflower around it, each
+ * `spacing` from its neighbours; a point alone on its spot stays. Linear: the map of a whole area (1,350 devices
+ * whose labels overlap at the zoom that shows them all) uses it instead of declutter, which never settles there.
+ */
+export function fanOut(points: Map<string, { x: number; y: number }>, spacing: number): Map<string, { x: number; y: number }> {
+  const bySpot = new Map<string, string[]>()
+  for (const [id, p] of points) {
+    const spot = `${p.x},${p.y}`
+    const ids = bySpot.get(spot)
+    if (ids) ids.push(id)
+    else bySpot.set(spot, [id])
+  }
+  const out = new Map<string, { x: number; y: number }>()
+  for (const ids of bySpot.values()) {
+    const { x, y } = points.get(ids[0])!
+    ids.forEach((id, k) => {
+      const r = spacing * Math.sqrt(k)
+      out.set(id, { x: x + r * Math.cos(k * GOLDEN_ANGLE), y: y + r * Math.sin(k * GOLDEN_ANGLE) })
+    })
+  }
+  return out
+}
+
+/**
+ * Boxes near each box, by index, from a grid built where the boxes stand: two boxes can only overlap when they are
+ * closer than the two biggest boxes plus the gap, so each one is checked against its own cell and the eight around it.
+ */
+function neighbourIndexes(list: Box[], gap: number): number[][] {
+  const cellW = Math.max(1e-9, 2 * Math.max(...list.map((b) => b.hw)) + gap)
+  const cellH = Math.max(1e-9, 2 * Math.max(...list.map((b) => b.hh)) + gap)
+  const cells = new Map<string, number[]>()
+  const cellOf = list.map((b, k) => {
+    const cx = Math.floor(b.x / cellW)
+    const cy = Math.floor(b.y / cellH)
+    const key = `${cx},${cy}`
+    const members = cells.get(key)
+    if (members) members.push(k)
+    else cells.set(key, [k])
+    return [cx, cy]
+  })
+  return list.map((_, i) => {
+    const [cx, cy] = cellOf[i]
+    const near: number[] = []
+    for (let x = cx - 1; x <= cx + 1; x++) {
+      for (let y = cy - 1; y <= cy + 1; y++) {
+        for (const j of cells.get(`${x},${y}`) ?? []) if (j > i) near.push(j)
+      }
+    }
+    return near.sort((p, q) => p - q)  // the order the all-pairs loop used, so the same pushes happen
+  })
+}
+
 /**
  * Nudge labelled boxes that overlap (several POPs in one city, the five Java areas) just far enough apart
  * to read them. Each overlapping pair moves along the axis where it overlaps least — mostly north/south
- * for wide labels — so the west-to-east order of the map is kept. O(n²) per pass, fine for ≤ ~400 nodes.
+ * for wide labels — so the west-to-east order of the map is kept. Each pass only checks boxes near each other
+ * (neighbourIndexes): comparing every pair froze the page 13 s for the 1,350 devices of Jabodetabek on the map.
  */
 export function declutter(boxes: Map<string, Box>, gap: number, maxShift = Infinity, passes = 80) {
   const ids = [...boxes.keys()]
-  const home = new Map(ids.map((id) => [id, { x: boxes.get(id)!.x, y: boxes.get(id)!.y }]))
+  const list = ids.map((id) => boxes.get(id)!)
+  const home = list.map((b) => ({ x: b.x, y: b.y }))
   // A crowded cluster may stay partly overlapped rather than drift away from where it is on the map.
-  const clamp = (id: string) => {
-    const b = boxes.get(id)!
-    const h = home.get(id)!
+  const clamp = (k: number) => {
+    const b = list[k]
+    const h = home[k]
     b.x = Math.min(h.x + maxShift, Math.max(h.x - maxShift, b.x))
     b.y = Math.min(h.y + maxShift, Math.max(h.y - maxShift, b.y))
   }
-  for (let pass = 0; pass < passes; pass++) {
+  for (let pass = 0; pass < passes && list.length > 1; pass++) {
     let moved = false
-    for (let i = 0; i < ids.length; i++) {
-      for (let j = i + 1; j < ids.length; j++) {
-        const a = boxes.get(ids[i])!
-        const b = boxes.get(ids[j])!
+    const near = neighbourIndexes(list, gap)  // rebuilt every pass: boxes moved in the last one
+    for (let i = 0; i < list.length; i++) {
+      for (const j of near[i]) {
+        const a = list[i]
+        const b = list[j]
         const dx = b.x - a.x
         const dy = b.y - a.y
         const overlapX = a.hw + b.hw + gap - Math.abs(dx)
@@ -109,8 +167,8 @@ export function declutter(boxes: Map<string, Box>, gap: number, maxShift = Infin
           a.x -= dir * push * shareA
           b.x += dir * push * shareB
         }
-        clamp(ids[i])
-        clamp(ids[j])
+        clamp(i)
+        clamp(j)
         moved = true
       }
     }

@@ -36,6 +36,8 @@ export const CITY_STYLE = [
       'text-wrap': 'ellipsis',
     },
   },
+  // A far-end device outside the city: drawn itself, dimmed and dashed, its city told in the details.
+  { selector: 'node[?outside]', style: { opacity: 0.6, 'border-style': 'dashed' } },
   { selector: 'node[kind="summary"]', style: { 'border-style': 'dashed', 'border-color': '#94a3b8', 'background-color': '#1e293b' } },
   {
     selector: 'node[kind="external_pop"]',
