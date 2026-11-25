@@ -6,6 +6,25 @@ spec:
   selector: { app: nadien-db }
   ports: [{ port: 5432 }]
 ---
+# Akses langsung dari luar cluster (migrasi data, DBA): NodePort di setiap IP node, port tetap 30543 (fixed,
+# bukan auto-assign, biar gak berubah kalau Service ini pernah kehapus-kebuat ulang). Pod boleh pindah node
+# bebas (externalTrafficPolicy default Cluster) supaya tidak nambah titik gagal baru di nadien-db.
+#
+# Konsekuensi keamanan: traffic policy Cluster berarti kube-proxy SNAT paket masuk, jadi dari sudut pandang
+# pod semua koneksi keliatan datang dari IP node (bukan IP client asli) — NetworkPolicy *tidak bisa* membatasi
+# by source IP lagi untuk Service ini (makanya rule ipBlock di networkpolicy.yaml dicabut, biar gak
+# kelihatan membatasi padahal tidak). Pembatasan akses sekarang murni: (1) siapa yang bisa routing ke IP
+# node sama sekali (tanya tim infra nkp-batam soal firewall/segmentasi jaringan node), dan (2) password
+# Postgres di secret nadien-db — pastikan tetap random & kuat.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nadien-db-external
+spec:
+  type: NodePort
+  selector: { app: nadien-db }
+  ports: [{ port: 5432, targetPort: 5432, nodePort: 30543 }]
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:

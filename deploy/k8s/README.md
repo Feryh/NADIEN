@@ -122,6 +122,24 @@ kubectl -n nadien exec deploy/nadien-worker -- python -m app.collectors.run rrd 
 kubectl -n nadien exec deploy/nadien-worker -- python -m app.collectors.run rrd-csr --days 90
 ```
 
+## Akses DB langsung dari luar cluster
+
+`nadien-db-external` (NodePort 30543, `postgres.yaml`) membuka Postgres di **IP node manapun** di `nkp-batam`
+(pod boleh pindah node bebas, jadi semua IP node adalah entry point yang valid dan tetap — bukan 1 IP
+tunggal seperti LoadBalancer). Dapatkan daftar IP node:
+
+```bash
+kubectl get nodes -o wide
+```
+
+Lalu konek ke salah satu (`psql -h <ip-node> -p 30543 -U nadien -d nadien`, password di secret `nadien-db`).
+
+**Catatan keamanan:** karena NodePort di sini pakai `externalTrafficPolicy: Cluster`, source IP client di-SNAT
+jadi IP node — artinya **NetworkPolicy tidak membatasi siapa yang boleh connect** lagi (beda dari rencana
+awal pakai ipBlock CIDR). Pembatasan akses sekarang bergantung penuh ke: (1) siapa yang bisa routing ke IP
+node sama sekali di level jaringan/firewall nkp-batam (cek ke tim infra), dan (2) password Postgres —
+pastikan tetap random/kuat dan jangan diturunkan ke nilai yang gampang ditebak.
+
 ## Pindah data dari server yang sudah berjalan
 
 Di server PostgreSQL lama:

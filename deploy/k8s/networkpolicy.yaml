@@ -72,3 +72,6 @@ spec:
         - podSelector:
             matchLabels: { app: nadien-worker }
       ports: [{ port: 5432 }]
+    # Akses langsung untuk migrasi/DBA sekarang lewat NodePort nadien-db-external (postgres.yaml), yang
+    # pakai externalTrafficPolicy: Cluster (SNAT) — source IP yang sampai ke pod selalu IP node, bukan IP
+    # client asli, jadi NetworkPolicy tidak bisa dipakai membatasi path itu (lihat komentar di postgres.yaml).
