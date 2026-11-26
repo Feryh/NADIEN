@@ -61,8 +61,10 @@ def is_external(kind: str, base_url: str | None) -> bool:
         return True
     url = base_url or DEFAULT_BASE_URL.get(kind, "")
     host = (urlparse(url).hostname or "").lower()
-    if host in ("localhost", "host.docker.internal") or host.endswith((".local", ".internal", ".lan")):
+    if host in ("localhost", "host.docker.internal") or host.endswith((".local", ".internal", ".lan", ".svc")):
         return False
+    if host and "." not in host:
+        return False  # a single-label name (Kubernetes service, compose service) only resolves inside the network
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
