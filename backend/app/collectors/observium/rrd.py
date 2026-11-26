@@ -28,6 +28,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from ... import models as m
+from ...services import nni
 from ...config import settings
 from ...services.capacity import (SPIKE_WINDOW_DAYS, peak_series, planning_current, read_narrow_end, shared_ports,
                                   wide_end_excluded)
@@ -387,7 +388,50 @@ def sync_rrd(db: Session, source: RrdSource, days: int = 90,
             db.flush()
             report["spikes_ignored"] += settle_current(db, stored)
             db.commit()
+    report["nni_ports_with_history"] = _sync_nni_ports(db, source, server, days, backfill_days, report)
     return report
+
+
+@dataclass
+class _PortKey:
+    """Stands in for a link in a Target so an NNI port goes through the same fetch: sources only use its id."""
+
+    id: str
+    name: str
+    capacity_gbps: float | None
+
+
+def _sync_nni_ports(db: Session, source: RrdSource, server: str, days: int, backfill_days: int | None,
+                    report: dict[str, Any]) -> int:
+    """Daily peaks of carrier NNI ports this server monitors (services/nni), for planning them as one object."""
+    nnis = nni.nni_ports(db)
+    refs = {r.interface_id: r for r in db.scalars(select(m.ObserviumPort).where(
+        m.ObserviumPort.source == server, m.ObserviumPort.interface_id.in_(list(nnis))))}
+    old = datetime.now(timezone.utc) - timedelta(days=days + 1)
+    with_history = set(db.scalars(select(m.PortSample.interface_id).where(m.PortSample.ts < old).distinct()))
+    windows: dict[int, list[Target]] = {}
+    for iface_id, port in nnis.items():
+        ref = refs.get(iface_id)
+        if ref is None or not source.usable(ref):
+            continue
+        key = _PortKey(f"port-{iface_id}", f"{port.device} {port.port}", port.speed_gbps)
+        window = rrd_window_days(iface_id in with_history, days, backfill_days)
+        windows.setdefault(window, []).append(Target(key, ref, False))  # type: ignore[arg-type]
+    stored = 0
+    for window, group in windows.items():
+        for start in range(0, len(group), source.chunk_size):
+            chunk = group[start:start + source.chunk_size]
+            parsed = source.fetch(chunk, window)
+            for t in chunk:
+                got = parsed.get(str(t.link.id))
+                if not isinstance(got, list) or not got:
+                    continue
+                first_day = min(min(ts for ts, _, _ in got), (datetime.now(timezone.utc) - timedelta(
+                    days=window - 1)).replace(hour=0, minute=0, second=0, microsecond=0))
+                nni.replace_history(db, int(t.link.id.removeprefix("port-")), got, first_day)
+                stored += 1
+            db.commit()
+    return stored
 
 
 def settle_current(db: Session, links: list[m.Link]) -> int:

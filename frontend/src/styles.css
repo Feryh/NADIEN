@@ -620,3 +620,4 @@ tbody tr.selected td { background: #0ea5e914; }
 .ipv6-plan .mono { font-family: ui-monospace, Consolas, monospace; }
 .ipv6-plan tr.row-bad td { background: #ef444414; }
 .ipv6-plan label.button { cursor: pointer; }
+.capacity tr.sub-row td { background: var(--panel-2); padding-top: 3px; padding-bottom: 3px; }

@@ -28,6 +28,7 @@ from ... import models as m
 from ...config import settings
 from ...services.areas import FUNCTION_TOKENS, csr_parts, is_city_code
 from ...services.capacity import read_narrow_end, shared_ports, wide_end_excluded
+from ...services import nni
 from ...services.topology import discover_links, legacy_host_key, norm_host, norm_if
 from .client import ObserviumClient
 from .parsers import (
@@ -499,6 +500,8 @@ def _write_utilization(db: Session, rates: dict[int, tuple[float | None, float |
         db.add(m.UtilizationSample(link_id=link.id, ts=now, in_gbps=in_g, out_gbps=out_g))
         link.current_gbps = round(max(in_g, out_g), 3)
         report.counts["utilization_samples"] += 1
+    # Carrier NNI ports are never read for one site's link above: their own traffic is kept for planning them.
+    report.counts["nni_samples"] += nni.record_live(db, rates, now)
     db.commit()
 
 

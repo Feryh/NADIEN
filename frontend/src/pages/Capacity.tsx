@@ -13,6 +13,7 @@ import {
 } from 'recharts'
 import { api, CapacityColor, CapacityResult, LinkCapacity, LinkCapacityDetail } from '../api'
 import { HotspotsPanel, NodeForecastPanel } from '../components/CapacityPanels'
+import NniPanel from '../components/NniPanel'
 import { Pager, usePaged } from '../components/Pager'
 import { CAPACITY_HEX, CHART_TOOLTIP, ColorBadge, fmtG, fmtMonths, UtilBar } from '../components/ui'
 
@@ -42,8 +43,8 @@ function TrendCells({ link }: { link: LinkCapacity }) {
   )
 }
 
-type Tab = 'links' | 'hotspots' | 'nodes'
-const TABS: [Tab, string][] = [['links', 'Link & forecast'], ['hotspots', 'Hotspot'], ['nodes', 'Forecast per node']]
+type Tab = 'links' | 'nnis' | 'hotspots' | 'nodes'
+const TABS: [Tab, string][] = [['links', 'Link & forecast'], ['nnis', 'NNI & port bersama'], ['hotspots', 'Hotspot'], ['nodes', 'Forecast per node']]
 
 export default function Capacity() {
   const [params, setParams] = useSearchParams()
@@ -65,6 +66,7 @@ export default function Capacity() {
           ))}
         </div>
         {tab === 'links' && <LinkTable selectedId={selectedId} onOpen={openLink} />}
+        {tab === 'nnis' && <NniPanel onOpenLink={openLink} />}
         {tab === 'hotspots' && <HotspotsPanel onOpenLink={openLink} />}
         {tab === 'nodes' && <NodeForecastPanel />}
       </div>
@@ -145,7 +147,7 @@ function LinkTable({ selectedId, onOpen }: { selectedId: number | null; onOpen: 
                         ? 'Trafik dibaca di ujung yang lebih lebar (bundle yang juga membawa trafik lain), karena ujung yang lebih kecil tidak dimonitor Observium atau counternya nol'
                         : 'Utilisasi jauh di atas 100%: kapasitas port dari SNMP kemungkinan salah'}>cek data</span>
                     )}
-                    <div className="muted small">{l.link_type}</div>
+                    <div className="muted small">{l.link_type}{l.via_nni && <> · via NNI {l.via_nni}</>}</div>
                   </td>
                   <td>{l.a_pop === l.b_pop ? l.a_pop : `${l.a_pop}–${l.b_pop}`}</td>
                   <td className="num">{fmtG(l.capacity_gbps)}</td>

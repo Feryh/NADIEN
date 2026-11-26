@@ -27,6 +27,7 @@ async def lifespan(_: FastAPI):
         with SessionLocal() as db:
             ensure_admin(db)
     collector_settings.refresh()  # values saved in Pengaturan Collector override backend/.env
+    capacity.warm_capacity_cache()  # computed in the background: the capacity page never opens cold
     scheduler = Scheduler(runner) if settings.scheduler_enabled else None
     if scheduler:
         scheduler.start()

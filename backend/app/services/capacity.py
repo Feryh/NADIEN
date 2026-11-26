@@ -112,6 +112,8 @@ def spike_indexes(series: Sequence[tuple[float, float]], capacity_gbps: float | 
     days = [day for day, _ in series]
     spikes = set()
     for k, (day, peak) in enumerate(series):
+        if peak < min_rise:  # a spike rises min_rise above a baseline that is >= 0: most days stop here
+            continue
         lo, hi = bisect_left(days, day - SPIKE_WINDOW_DAYS), bisect_right(days, day + SPIKE_WINDOW_DAYS)
         neighbours = [series[j][1] for j in range(lo, hi) if j != k]
         if len(neighbours) < SPIKE_MIN_NEIGHBOURS:

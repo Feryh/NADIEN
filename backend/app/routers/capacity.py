@@ -1,3 +1,5 @@
+import logging
+import threading
 from bisect import bisect_left
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -11,7 +13,7 @@ from .. import models as m
 from .. import schemas as s
 from ..config import settings
 from ..database import get_db
-from ..services import cache
+from ..services import cache, nni
 from ..services.areas import bucket_sort_key, port_bucket
 from ..services.capacity import (
     MIN_TREND_DAYS,
@@ -73,14 +75,17 @@ def _link_capacity(link, samples, devices, pops, on_wider_end: bool = False) -> 
     # A down link carries nothing now. Its history usually belongs to the link that replaced it (the same port,
     # re-paired to the right far end) and would otherwise rank a dead 10M pairing as the busiest link.
     carries = link.status != "down"
-    samples = sorted(samples, key=lambda x: x.ts) if carries else []  # same order as peak_series: indexes line up
+    # _samples_by_link returns them oldest first (ORDER BY ts): no re-sort, and spike indexes line up with samples.
+    samples = samples if carries else []
     # Read on a wider end that carried more than this link ever could: none of it is known to be this link's.
     recent = [max(x.in_gbps, x.out_gbps) for x in samples[-UNMEASURED_RECENT_SAMPLES:]]
     unmeasured = on_wider_end and carries and wider_end_unmeasured(link.capacity_gbps, [link.current_gbps, *recent])
     if unmeasured:
         carries, samples = False, []
-    spikes = spike_indexes(peak_series(samples), link.capacity_gbps)
-    series = peak_series([x for k, x in enumerate(samples) if k not in spikes])
+    # One conversion per link (9k links x 90 days): the kept series is the full one minus the spike days.
+    full = [(x.ts.timestamp() / 86400, max(x.in_gbps or 0, x.out_gbps or 0)) for x in samples]
+    spikes = spike_indexes(full, link.capacity_gbps)
+    series = [point for k, point in enumerate(full) if k not in spikes] if spikes else full
     fits = _trend_fits(series)
     growth, source, trend = _forecast_inputs(link.growth_gbps_per_month, fits[settings.trend_window_days])
     result = calculate(link.capacity_gbps, link.current_gbps if carries else 0.0, link.reserved_gbps, growth_abs=growth,
@@ -160,14 +165,20 @@ def _link_rows(db: Session):
                              m.Link.growth_gbps_per_month)).all()
 
 
-def all_link_capacity(db: Session) -> list[s.LinkCapacity]:
-    def compute() -> list[s.LinkCapacity]:
-        devices, pops = _context(db)
-        samples = _samples_by_link(db)
-        wider = _wider_end_links(db)
-        return [_link_capacity(l, samples.get(l.id, []), devices, pops, l.id in wider) for l in _link_rows(db)]
+def _all_link_capacity(db: Session) -> list[s.LinkCapacity]:
+    devices, pops = _context(db)
+    samples = _samples_by_link(db)
+    wider = _wider_end_links(db)
+    via = nni.nni_of_links(db)
+    rows = [_link_capacity(l, samples.get(l.id, []), devices, pops, l.id in wider) for l in _link_rows(db)]
+    for row in rows:
+        row.via_nni = via.get(row.link_id)
+    return rows
 
-    return cache.cached(("capacity", "links"), compute)
+
+def all_link_capacity(db: Session) -> list[s.LinkCapacity]:
+    # Recomputed in the background after each sync: the capacity page never waits on it once warm.
+    return cache.cached_in_background(("capacity", "links"), _all_link_capacity, db)
 
 
 @router.post("/calculate", response_model=s.CapacityResult)
@@ -227,7 +238,7 @@ def ingest_samples(samples: list[s.SampleIn], db: Session = Depends(get_db)):
 @router.get("/pops")
 def pop_utilization(db: Session = Depends(get_db)):
     """Aggregate capacity of all links touching each POP (inter-POP links count for both ends)."""
-    return cache.cached(("capacity", "pops"), lambda: _pop_utilization(db))
+    return cache.cached_in_background(("capacity", "pops"), _pop_utilization, db)
 
 
 def _pop_utilization(db: Session) -> list[dict[str, Any]]:
@@ -320,7 +331,7 @@ def node_forecast(
 ):
     """Forecast per device or per POP: total daily peak traffic of all its links over the last
     NADIEN_TREND_WINDOW_DAYS days, least-squares trend, months until the threshold/full."""
-    rows = cache.cached(("capacity", "nodes", level), lambda: _node_rows(db, level))
+    rows = cache.cached_in_background(("capacity", "nodes", level), lambda session: _node_rows(session, level), db)
     needle = (q or "").strip().lower()
     if needle:
         rows = [r for r in rows if needle in r["label"].lower() or needle in (r["pop"] or "").lower()]
@@ -393,10 +404,17 @@ def _live_rate(a: Any, b: Any, a_shared: bool = False, b_shared: bool = False) -
     return None
 
 
+@router.get("/nnis")
+def nni_capacity(db: Session = Depends(get_db)):
+    """Carrier NNI ports (described "NNI", or shared by several site links) planned as one object each: their own
+    traffic history, trend and forecast, and the sites behind them. Site links are never read on these ports."""
+    return cache.cached_in_background(("capacity", "nnis"), lambda session: nni.nni_capacity(session, _since()), db)
+
+
 @router.get("/hotspots")
 def hotspots(limit: int = Query(100, ge=1, le=2000), db: Session = Depends(get_db)):
     """Busiest links by utilization (warning ≥ 70%, critical ≥ 90%) and devices by port occupancy."""
-    return cache.cached(("capacity", "hotspots", limit), lambda: _hotspots(db, limit))
+    return cache.cached_in_background(("capacity", "hotspots", limit), lambda session: _hotspots(session, limit), db)
 
 
 def _hotspots(db: Session, limit: int) -> dict[str, Any]:
@@ -500,7 +518,7 @@ def olt_capacity(only_hotspots: bool = True, limit: int = Query(200, ge=1, le=50
     """Per OLT: GPON utilization (online ONTs over NADIEN_PON_MAX_ONTS per PON port, the fullest port and how many
     PON ports are past the threshold) and uplink utilization. `only_hotspots`: OLTs where either reaches the warning
     threshold (NADIEN_HOTSPOT_WARNING_PCT); uplinks with suspect capacity data do not count."""
-    rows = cache.cached(("capacity", "olts"), lambda: _olt_rows(db))
+    rows = cache.cached_in_background(("capacity", "olts"), _olt_rows, db)
     hot = ("warning", "critical")
     if only_hotspots:
         # The whole GPON filling up, the uplink, or a single PON port past the threshold (move ONTs or split it).
@@ -603,3 +621,30 @@ def _port_row(i: m.Interface, on_olt: bool, link: dict[str, Any] | None) -> dict
             "utilization_level": hotspot_level(bandwidth_pct) if bandwidth_pct is not None else None,
             "pon": is_pon, "onts_online": onts, "pon_occupancy_pct": pon_pct,
             "pon_level": pon_level(pon_pct) if pon_pct is not None else None, "link": link}
+
+
+def warm_capacity_cache() -> None:
+    """At process start, one after another in one background thread (parallel threads only fight over the GIL):
+    the link list every capacity view, the dashboard and the AI context build on, then what the capacity page asks
+    for. A request arriving meanwhile waits for the key being computed instead of computing it too."""
+    if settings.cache_ttl_s <= 0:
+        return
+    views = [
+        (("capacity", "links"), _all_link_capacity),
+        (("capacity", "hotspots", 2000), lambda session: _hotspots(session, 2000)),
+        (("capacity", "olts"), _olt_rows),
+        (("capacity", "nodes", "device"), lambda session: _node_rows(session, "device")),
+        (("capacity", "nnis"), lambda session: nni.nni_capacity(session, _since())),
+    ]
+
+    def run() -> None:
+        from ..database import SessionLocal  # late: imported for its current binding (tests rebind it)
+
+        for key, compute in views:
+            try:
+                with SessionLocal() as session:
+                    cache.cached_in_background(key, compute, session)
+            except Exception:  # noqa: BLE001 - a failed warm-up leaves the key to the first request
+                logging.getLogger("nadien.cache").exception("warming %s failed", key)
+
+    threading.Thread(target=run, name="capacity-warm", daemon=True).start()
