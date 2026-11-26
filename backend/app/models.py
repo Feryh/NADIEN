@@ -422,6 +422,20 @@ class UtilizationSample(Base):
     out_gbps: Mapped[float] = mapped_column(Float, default=0)
 
 
+class PortSample(Base):
+    """Traffic of a carrier NNI port (or any port several links share), planned as one object: per-link samples never
+    read such a port, since it carries every site behind it. Filled by the utilization sync and the RRD import."""
+
+    __tablename__ = "port_samples"
+    __table_args__ = (Index("ix_port_samples_iface_ts", "interface_id", "ts"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    interface_id: Mapped[int] = mapped_column(ForeignKey("interfaces.id", ondelete="CASCADE"))
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    in_gbps: Mapped[float] = mapped_column(Float, default=0)
+    out_gbps: Mapped[float] = mapped_column(Float, default=0)
+
+
 # --------------------------------------------------------------------------- Customer database
 
 

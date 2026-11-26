@@ -12,11 +12,12 @@ recomputation just because the TTL ran out. After a write there is no old value 
 is gone and requests wait for the new one.
 """
 
+import logging
 import threading
 import time
 from collections.abc import Callable, Hashable
 from enum import Enum
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from sqlalchemy import update
 from sqlalchemy.exc import SQLAlchemyError
@@ -139,3 +140,84 @@ def cached(key: Hashable, compute: Callable[[], T]) -> T:
         return result
     finally:
         key_lock.release()
+
+
+# --------------------------------------------------------------------------- heavy derived views
+
+# Kept across invalidations (unlike _entries): key -> (computed at, generation, value).
+_lasting: dict[Hashable, tuple[float, int, object]] = {}
+_background_locks: dict[Hashable, threading.Lock] = {}
+# An outdated value is served while its refresh runs, but never older than this.
+MAX_OUTDATED_S = 900.0
+
+
+def cached_in_background(key: Hashable, compute: Callable[[Any], T], db: Any) -> T:
+    """For heavy views derived from synced data (capacity lists): after a write or past the TTL, keep serving the
+    previous value while one background thread computes the new one with its own session. Only a process's first
+    request for a key, or one whose value is older than MAX_OUTDATED_S, waits.
+
+    Plain `cached` drops entries on every write so an edit shows at once; these views change with each 10-minute
+    utilization sync, so waiting ~10 s for each recomputation would hit whoever opens the page next."""
+    ttl = settings.cache_ttl_s
+    if ttl <= 0:
+        return compute(db)
+    _follow_other_processes()
+    now = time.monotonic()
+    with _lock:
+        hit = _lasting.get(key)
+        generation = _generation
+    if hit is not None and now - hit[0] < MAX_OUTDATED_S:
+        computed_at, seen_generation, value = hit
+        if seen_generation != generation or now >= computed_at + ttl:
+            _refresh_in_background(key, compute)
+        return value  # type: ignore[return-value]
+    key_lock = _background_lock(key)
+    with key_lock:  # first request (or a value too old): compute here, once
+        with _lock:
+            hit = _lasting.get(key)
+        if hit is not None and time.monotonic() - hit[0] < MAX_OUTDATED_S:
+            return hit[2]  # type: ignore[return-value]
+        return _compute_and_keep(key, compute, db)
+
+
+def _compute_and_keep(key: Hashable, compute: Callable[[Any], T], db: Any) -> T:
+    with _lock:
+        generation = _generation
+    value = compute(db)
+    with _lock:
+        # Stamped with the generation it started from: a write during the computation triggers another refresh.
+        _lasting[key] = (time.monotonic(), generation, value)
+        while len(_lasting) > MAX_ENTRIES:
+            del _lasting[min(_lasting, key=lambda k: _lasting[k][0])]
+    return value
+
+
+def _refresh_in_background(key: Hashable, compute: Callable[[Any], T]) -> None:
+    key_lock = _background_lock(key)
+    if not key_lock.acquire(blocking=False):
+        return  # already being refreshed
+
+    def run() -> None:
+        from ..database import SessionLocal  # late: the database layer imports settings
+
+        try:
+            with SessionLocal() as session:
+                _compute_and_keep(key, compute, session)
+        except Exception:  # noqa: BLE001 - a failed refresh keeps the old value; the next request retries
+            logging.getLogger("nadien.cache").exception("background refresh of %s failed", key)
+        finally:
+            key_lock.release()
+
+    threading.Thread(target=run, name=f"cache-refresh-{key}", daemon=True).start()
+
+
+def _background_lock(key: Hashable) -> threading.Lock:
+    with _lock:  # separate from _key_locks, which _store prunes by _entries
+        return _background_locks.setdefault(key, threading.Lock())
+
+
+def warm_in_background(key: Hashable, compute: Callable[[Any], T]) -> None:
+    """Start computing a cached_in_background key now (process start), so the first visitor finds it ready; a request
+    arriving meanwhile waits for this computation instead of starting its own."""
+    if settings.cache_ttl_s > 0:
+        _refresh_in_background(key, compute)

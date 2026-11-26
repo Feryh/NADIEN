@@ -183,6 +183,8 @@ export interface LinkCapacity extends CapacityResult {
   measured_on_wider_end: boolean
   /** That wider end carried more than this link could: traffic, trend and forecast are unknown, not zero. */
   unmeasured?: boolean
+  /** "DEVICE PORT" of the carrier NNI this site link rides; the NNI is planned in the NNI tab. */
+  via_nni?: string | null
   level: HotspotLevel
 }
 

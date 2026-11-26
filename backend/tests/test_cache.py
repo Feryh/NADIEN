@@ -118,3 +118,63 @@ def test_should_drop_cache_when_a_write_succeeds(client, monkeypatch):
     monkeypatch.setattr(cache, "clear", lambda: cleared.append(1))
     assert client.put("/api/topology/positions", json=[]).status_code == 204
     assert cleared == [1]
+
+
+# --------------------------------------------------------------------------- cached_in_background
+
+
+def _wait_for(predicate, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+@pytest.fixture
+def lasting(shared_db, monkeypatch):
+    monkeypatch.setattr(cache, "_lasting", {})
+    monkeypatch.setattr(cache, "_background_locks", {})
+    return shared_db
+
+
+def test_should_compute_on_the_first_request_for_a_background_key(lasting):
+    assert cache.cached_in_background("bg", lambda session: "v1", lasting) == "v1"
+
+
+def test_should_serve_the_previous_value_after_a_write_while_refreshing_in_background(lasting):
+    cache.cached_in_background("bg", lambda session: "old", lasting)
+    cache.clear()  # a write: plain entries are gone, this one is only outdated
+    release = threading.Event()
+
+    def slow(session):
+        release.wait(5)
+        return "new"
+
+    assert cache.cached_in_background("bg", slow, lasting) == "old"
+    release.set()
+    _wait_for(lambda: cache._lasting["bg"][2] == "new")
+    assert cache.cached_in_background("bg", slow, lasting) == "new"
+
+
+def test_should_compute_here_when_the_kept_value_is_too_old(lasting):
+    cache.cached_in_background("bg", lambda session: "old", lasting)
+    at, generation, value = cache._lasting["bg"]
+    cache._lasting["bg"] = (at - cache.MAX_OUTDATED_S - 1, generation, value)
+    assert cache.cached_in_background("bg", lambda session: "new", lasting) == "new"
+
+
+def test_should_keep_the_old_value_when_a_background_refresh_fails(lasting):
+    cache.cached_in_background("bg", lambda session: "old", lasting)
+    cache.clear()
+
+    def broken(session):
+        raise RuntimeError("db gone")
+
+    assert cache.cached_in_background("bg", broken, lasting) == "old"
+    _wait_for(lambda: not cache._background_lock("bg").locked())
+    assert cache._lasting["bg"][2] == "old"
+
+
+def test_should_serve_the_warmed_value_without_computing_again(lasting):
+    cache.warm_in_background("bg", lambda session: "warm")
+    _wait_for(lambda: "bg" in cache._lasting)
+    assert cache.cached_in_background("bg", lambda session: "cold", lasting) == "warm"

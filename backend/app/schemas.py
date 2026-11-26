@@ -463,6 +463,8 @@ class LinkCapacity(CapacityResult):
     # That wider end carried more than this link could (services/capacity.wider_end_unmeasured): traffic, trend and
     # forecast are left empty rather than showing the bundle's traffic as this link's.
     unmeasured: bool = False
+    # The carrier NNI this site link rides ("DEVICE PORT"): planned as its own object at /capacity/nnis.
+    via_nni: str | None = None
     level: Literal["critical", "warning", "normal", "suspect"] = "normal"
 
 
