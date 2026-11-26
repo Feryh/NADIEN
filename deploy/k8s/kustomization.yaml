@@ -31,3 +31,6 @@ configMapGenerator:
       - NADIEN_CORS_ORIGINS=["https://nadien.example.co.id"]
       - NADIEN_AI_OLLAMA_URL=http://nadien-ollama:11434
       - NADIEN_AI_DEFAULT_MODEL=qwen2.5:7b-instruct
+      # Expected runs shown under Collectors → Jadwal sync; keep in step with cronjobs.yaml (checked by a test).
+      # "cronjob:<name>" in source names the CronJob; the worker's own daily sync-all is "worker".
+      - 'NADIEN_SYNC_SCHEDULES=[{"key":"utilization","label":"Utilisasi Observium","kinds":["observium-utilization"],"every_minutes":10,"source":"cronjob:nadien-utilization"},{"key":"observium-full","label":"Observium utama (full)","kinds":["observium"],"daily_at":"01:00","source":"cronjob:nadien-observium-full"},{"key":"observium-csr","label":"Observium CSR","kinds":["observium-csr"],"daily_at":"01:30","source":"cronjob:nadien-observium-csr"},{"key":"sync-all","label":"Sync semua (worker)","kinds":["sync-all-scheduled"],"daily_at":"02:30","grace_minutes":180,"source":"worker"},{"key":"rrd","label":"Histori RRD","kinds":["observium-rrd"],"daily_at":"04:30","source":"cronjob:nadien-rrd"},{"key":"rrd-csr","label":"Histori RRD CSR","kinds":["observium-csr-rrd"],"daily_at":"05:30","source":"cronjob:nadien-rrd-csr"}]'
