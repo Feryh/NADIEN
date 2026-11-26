@@ -73,6 +73,12 @@ def test_should_name_the_sync_that_held_the_runner_when_a_run_was_missed(db, sch
     assert _row(db)["last"]["blocked_by"]["id"] == "fullsync"
 
 
+def test_should_name_the_sync_that_won_the_same_minute_race_when_a_run_was_missed(db, schedules):
+    schedules(DAILY_CSR)
+    _job(db, "observium-utilization", datetime(2026, 11, 26, 1, 30, 4, tzinfo=WIB), minutes=4, job_id="util0130")
+    assert _row(db)["last"]["blocked_by"]["id"] == "util0130"
+
+
 def test_should_report_failed_when_the_matching_job_failed(db, schedules):
     schedules(DAILY_CSR)
     _job(db, "observium-csr", datetime(2026, 11, 26, 1, 30, 5, tzinfo=WIB), status="failed")
@@ -159,3 +165,15 @@ def test_should_declare_every_active_k8s_cronjob_in_the_expected_schedules():
         expected = _cron_to_spec(job["spec"]["schedule"])
         assert {k: spec.get(k) for k in expected} == expected, job["metadata"]["name"]
     assert len(declared) == len(cronjobs) + 1 and by_source["worker"]["kinds"] == ["sync-all-scheduled"]
+
+
+def test_should_retry_daily_cronjobs_on_409_within_their_deadline():
+    for job in yaml.safe_load_all((K8S / "cronjobs.yaml").read_text(encoding="utf-8")):
+        if not job or job.get("kind") != "CronJob" or job["spec"]["schedule"].startswith("*/"):
+            continue
+        spec = job["spec"]["jobTemplate"]["spec"]
+        script = spec["template"]["spec"]["containers"][0]["command"][-1]
+        attempts = int(re.search(r"seq 1 (\d+)", script).group(1))
+        sleep = int(re.search(r"sleep (\d+)", script).group(1))
+        assert '[ "$code" = 409 ] || break' in script and script.rstrip().endswith('[ "$code" = 202 ]'), job["metadata"]["name"]
+        assert spec["activeDeadlineSeconds"] > attempts * sleep, job["metadata"]["name"]

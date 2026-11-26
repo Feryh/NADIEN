@@ -118,10 +118,11 @@ def _job_view(job: m.CollectorJob | None) -> dict[str, Any] | None:
 
 
 def _blocking(jobs: list[m.CollectorJob], due: datetime, now: datetime) -> m.CollectorJob | None:
-    """The sync that held the runner at the due time, if any."""
+    """The sync that held the runner at the due time, if any: one already running, or one that won the race when two
+    CronJobs fire in the same minute (it starts a few seconds after the due time)."""
     for job in jobs:
         started, finished = _aware(job.started_at), _aware(job.finished_at) or now
-        if started and started <= due <= finished:
+        if started and started <= due + EARLY and finished >= due:
             return job
     return None
 

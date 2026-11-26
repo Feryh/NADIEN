@@ -63,7 +63,7 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 0
-      activeDeadlineSeconds: 120
+      activeDeadlineSeconds: 1500
       ttlSecondsAfterFinished: 86400
       template:
         metadata:
@@ -83,9 +83,15 @@ spec:
                 - sh
                 - -c
                 - |
-                  code=$(curl -sS --max-time 20 --retry 6 --retry-delay 5 --retry-connrefused -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $NADIEN_JOB_TOKEN" "http://nadien-worker:8000/api/collectors/observium/sync")
-                  echo "POST /api/collectors/observium/sync -> $code"
-                  [ "$code" = 202 ] || [ "$code" = 409 ]
+                  # A 409 means another sync holds the runner (e.g. the */10 utilization run fired at the same minute):
+                  # retry every 30 s for up to 20 min, then fail so the skipped run shows in the Job history too.
+                  for attempt in $(seq 1 40); do
+                    code=$(curl -sS --max-time 20 --retry 6 --retry-delay 5 --retry-connrefused -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $NADIEN_JOB_TOKEN" "http://nadien-worker:8000/api/collectors/observium/sync")
+                    echo "POST /api/collectors/observium/sync -> $code (attempt $attempt)"
+                    [ "$code" = 409 ] || break
+                    sleep 30
+                  done
+                  [ "$code" = 202 ]
               env:
                 - name: NADIEN_JOB_TOKEN
                   valueFrom: { secretKeyRef: { name: nadien-env, key: NADIEN_JOB_TOKEN } }
@@ -110,7 +116,7 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 0
-      activeDeadlineSeconds: 120
+      activeDeadlineSeconds: 1500
       ttlSecondsAfterFinished: 86400
       template:
         metadata:
@@ -130,9 +136,15 @@ spec:
                 - sh
                 - -c
                 - |
-                  code=$(curl -sS --max-time 20 --retry 6 --retry-delay 5 --retry-connrefused -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $NADIEN_JOB_TOKEN" "http://nadien-worker:8000/api/collectors/observium-csr/sync")
-                  echo "POST /api/collectors/observium-csr/sync -> $code"
-                  [ "$code" = 202 ] || [ "$code" = 409 ]
+                  # A 409 means another sync holds the runner (e.g. the */10 utilization run fired at the same minute):
+                  # retry every 30 s for up to 20 min, then fail so the skipped run shows in the Job history too.
+                  for attempt in $(seq 1 40); do
+                    code=$(curl -sS --max-time 20 --retry 6 --retry-delay 5 --retry-connrefused -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $NADIEN_JOB_TOKEN" "http://nadien-worker:8000/api/collectors/observium-csr/sync")
+                    echo "POST /api/collectors/observium-csr/sync -> $code (attempt $attempt)"
+                    [ "$code" = 409 ] || break
+                    sleep 30
+                  done
+                  [ "$code" = 202 ]
               env:
                 - name: NADIEN_JOB_TOKEN
                   valueFrom: { secretKeyRef: { name: nadien-env, key: NADIEN_JOB_TOKEN } }
@@ -157,7 +169,7 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 0
-      activeDeadlineSeconds: 120
+      activeDeadlineSeconds: 1500
       ttlSecondsAfterFinished: 86400
       template:
         metadata:
@@ -177,9 +189,15 @@ spec:
                 - sh
                 - -c
                 - |
-                  code=$(curl -sS --max-time 20 --retry 6 --retry-delay 5 --retry-connrefused -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $NADIEN_JOB_TOKEN" "http://nadien-worker:8000/api/collectors/observium/rrd?days=7")
-                  echo "POST /api/collectors/observium/rrd?days=7 -> $code"
-                  [ "$code" = 202 ] || [ "$code" = 409 ]
+                  # A 409 means another sync holds the runner (e.g. the */10 utilization run fired at the same minute):
+                  # retry every 30 s for up to 20 min, then fail so the skipped run shows in the Job history too.
+                  for attempt in $(seq 1 40); do
+                    code=$(curl -sS --max-time 20 --retry 6 --retry-delay 5 --retry-connrefused -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $NADIEN_JOB_TOKEN" "http://nadien-worker:8000/api/collectors/observium/rrd?days=7")
+                    echo "POST /api/collectors/observium/rrd?days=7 -> $code (attempt $attempt)"
+                    [ "$code" = 409 ] || break
+                    sleep 30
+                  done
+                  [ "$code" = 202 ]
               env:
                 - name: NADIEN_JOB_TOKEN
                   valueFrom: { secretKeyRef: { name: nadien-env, key: NADIEN_JOB_TOKEN } }
@@ -204,7 +222,7 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 0
-      activeDeadlineSeconds: 120
+      activeDeadlineSeconds: 1500
       ttlSecondsAfterFinished: 86400
       template:
         metadata:
@@ -224,9 +242,15 @@ spec:
                 - sh
                 - -c
                 - |
-                  code=$(curl -sS --max-time 20 --retry 6 --retry-delay 5 --retry-connrefused -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $NADIEN_JOB_TOKEN" "http://nadien-worker:8000/api/collectors/observium-csr/rrd?days=7")
-                  echo "POST /api/collectors/observium-csr/rrd?days=7 -> $code"
-                  [ "$code" = 202 ] || [ "$code" = 409 ]
+                  # A 409 means another sync holds the runner (e.g. the */10 utilization run fired at the same minute):
+                  # retry every 30 s for up to 20 min, then fail so the skipped run shows in the Job history too.
+                  for attempt in $(seq 1 40); do
+                    code=$(curl -sS --max-time 20 --retry 6 --retry-delay 5 --retry-connrefused -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $NADIEN_JOB_TOKEN" "http://nadien-worker:8000/api/collectors/observium-csr/rrd?days=7")
+                    echo "POST /api/collectors/observium-csr/rrd?days=7 -> $code (attempt $attempt)"
+                    [ "$code" = 409 ] || break
+                    sleep 30
+                  done
+                  [ "$code" = 202 ]
               env:
                 - name: NADIEN_JOB_TOKEN
                   valueFrom: { secretKeyRef: { name: nadien-env, key: NADIEN_JOB_TOKEN } }
@@ -254,7 +278,7 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 0
-      activeDeadlineSeconds: 120
+      activeDeadlineSeconds: 1500
       ttlSecondsAfterFinished: 86400
       template:
         metadata:
@@ -274,9 +298,15 @@ spec:
                 - sh
                 - -c
                 - |
-                  code=$(curl -sS --max-time 20 --retry 6 --retry-delay 5 --retry-connrefused -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $NADIEN_JOB_TOKEN" "http://nadien-worker:8000/api/collectors/all/sync")
-                  echo "POST /api/collectors/all/sync -> $code"
-                  [ "$code" = 202 ] || [ "$code" = 409 ]
+                  # A 409 means another sync holds the runner (e.g. the */10 utilization run fired at the same minute):
+                  # retry every 30 s for up to 20 min, then fail so the skipped run shows in the Job history too.
+                  for attempt in $(seq 1 40); do
+                    code=$(curl -sS --max-time 20 --retry 6 --retry-delay 5 --retry-connrefused -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $NADIEN_JOB_TOKEN" "http://nadien-worker:8000/api/collectors/all/sync")
+                    echo "POST /api/collectors/all/sync -> $code (attempt $attempt)"
+                    [ "$code" = 409 ] || break
+                    sleep 30
+                  done
+                  [ "$code" = 202 ]
               env:
                 - name: NADIEN_JOB_TOKEN
                   valueFrom: { secretKeyRef: { name: nadien-env, key: NADIEN_JOB_TOKEN } }
