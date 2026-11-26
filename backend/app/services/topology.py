@@ -122,6 +122,8 @@ class _Discovery:
         self.lldp_mac_ports: dict[int, set[str]] = {}
         # Ports a description named a peer for, refused because their LLDP neighbour cannot be that peer.
         self.lldp_refused: set[int] = set()
+        # Bundles whose members LLDP links one by one (bundles_with_lldp_members): filled by from_config.
+        self.lldp_bundles: set[int] = set()
         self.created_ids: set[int] = set()
         from ..config import settings  # read at run time, like fresh_lldp: tests change it
 
@@ -287,9 +289,11 @@ class _Discovery:
         Ports are grouped by device pair first, so the work is linear in the number of ports.
         """
         lldp_pairs = {frozenset((adj.a.device_id, adj.b.device_id)) for adj in self.adjacencies.values()}
+        self.lldp_bundles = self.bundles_with_lldp_members()
         by_pair: dict[frozenset[int], dict[int, list[Interface]]] = {}
         for iface in self.ifaces.values():
-            if (iface.id in self.covered or iface.id in self.lldp_seen or iface.parent_id or not iface.description
+            if (iface.id in self.covered or iface.id in self.lldp_seen or iface.id in self.lldp_bundles
+                    or iface.parent_id or not iface.description
                     or iface.if_type in ("subinterface", "virtual") or self.long_down(iface)):
                 continue
             remote = self.mentioned_device(iface.description)
@@ -307,6 +311,19 @@ class _Discovery:
             (_, ours), (_, theirs) = sides.items()
             for a, b in self.best_config_pairs(ours, theirs):
                 self.add(a, b, "config")
+
+    def bundles_with_lldp_members(self) -> set[int]:
+        """Bundles whose member ports LLDP already links, one by one when the far end's members have no bundle in the
+        inventory (PE1-ATN910-NTT-BAJAWA Eth-Trunk2: members to PE1-NCS57C3-NTT-ENDE TenGigE0/0/0/0-3). LLDP on the
+        members speaks for the bundle, so its description (still "to PE1-ATN910-NTT-ENDE", the box replaced) pairs
+        nothing."""
+        members = {i for adj in self.adjacencies.values() if adj.source == "lldp" for pair in adj.member_pairs for i in pair}
+        linked: Counter[int] = Counter(self.ifaces[i].parent_id for i in members
+                                       if i in self.ifaces and self.ifaces[i].parent_id)
+        size: Counter[int] = Counter(i.parent_id for i in self.ifaces.values() if i.parent_id in linked)
+        # Most members, not one: a single member LLDP files elsewhere (KDL-KWU-BNG1-M4 Eth-Trunk12, 1 of 4 members
+        # to an OLT) is a stray reading, not the bundle moving.
+        return {bundle for bundle, n in linked.items() if n * 2 > size[bundle]}
 
     @staticmethod
     def best_config_pairs(ours: list[Interface], theirs: list[Interface]) -> list[tuple[Interface, Interface]]:
@@ -390,7 +407,8 @@ class _Discovery:
         remote_id = next(iter(pair - {device_id}))
         for a in ours:
             b = self.named_port(remote_id, a.description or "")
-            if b is None or b.id in self.covered or b.id in self.lldp_seen or not self.lldp_allows(b, device_id):
+            if (b is None or b.id in self.covered or b.id in self.lldp_seen or b.id in self.lldp_bundles
+                    or not self.lldp_allows(b, device_id)):
                 continue
             if self.names_another_device(b, device_id):
                 self.contradicted.add(frozenset((a.id, b.id)))
@@ -609,6 +627,8 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
             # a config-described link whose port, or that port's bundle, a current link now uses: an earlier
             # pairing of the same descriptions, not a second link (else every re-pairing leaves one down behind)
             or (link.discovery_source == "config" and bool(_with_parents(run, key) & run.covered))
+            # a config-described link on a bundle whose members LLDP now links elsewhere (the far box was replaced)
+            or (link.discovery_source == "config" and bool(key & run.lldp_bundles))
             or link.discovery_source == "approved"  # approval revoked, or LLDP now sees the ports directly
             or link.discovery_source == "ip"  # the address pair is gone, or LLDP now links one of its ports
             or any(run.ifaces[i].if_type == "virtual" for i in key if i in run.ifaces)  # a VLAN/management interface
