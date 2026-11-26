@@ -516,3 +516,16 @@ class IpAllocateIn(BaseModel):
     label: str = Field(min_length=1, max_length=120)
     note: str | None = Field(None, max_length=2000)
     days: int | None = Field(None, ge=1, le=365)
+
+
+# --------------------------------------------------------------------------- IPv6 plan
+
+
+class Ipv6PopDecision(BaseModel):
+    decision: Literal["city", "parent", "ignore", "review"]
+    city_code: str | None = Field(None, max_length=32, description="Register city (decision city / parent)")
+    note: str | None = Field(None, max_length=2000)
+
+
+class Ipv6AssignmentPatch(BaseModel):
+    status: Literal["proposed", "confirmed"]

@@ -13,7 +13,8 @@ from .collectors.scheduler import Scheduler
 from .config import settings
 from .database import SessionLocal, init_schema
 from .routers import (ai, analysis, auth, capacity, changes, collectors, configs, dashboard, insights, integrations,
-                      inventory, mop, paths, portal, resources, sso, topology, topology_insights, twin, validation)
+                      inventory, ipv6_plan, mop, paths, portal, resources, sso, topology, topology_insights, twin,
+                      validation)
 from .services import cache, collector_settings
 from .services.auth import authorize, ensure_admin
 
@@ -87,6 +88,7 @@ for r in (
     twin.router,
     changes.router,
     resources.router,
+    ipv6_plan.router,
     auth.account,
     auth.users,
     auth.audit_logs,

@@ -9,6 +9,7 @@ import Changes from './pages/Changes'
 import CollectorSettings from './pages/CollectorSettings'
 import Collectors from './pages/Collectors'
 import ResourceRegistry from './pages/ResourceRegistry'
+import Ipv6Plan from './pages/Ipv6Plan'
 import ConfigGenerator from './pages/ConfigGenerator'
 import Dashboard from './pages/Dashboard'
 import DeviceDetail from './pages/DeviceDetail'
@@ -36,6 +37,7 @@ const NAV: NavItem[] = [
   { to: '/configs', label: 'Config Generator', mark: 'CG', tag: 'P7' },
   { to: '/changes', label: 'Change & Eksekusi', mark: 'CE', tag: 'P7' },
   { to: '/resources', label: 'Resource Registry', mark: 'RR', tag: 'P7' },
+  { to: '/ipv6', label: 'IPv6 / SRv6 Plan', mark: 'V6', tag: 'P7' },
   { to: '/ai', label: 'AI Assistant', mark: 'AI', tag: 'P9' },
   { to: '/twin', label: 'Digital Twin', mark: 'DT', tag: 'P10' },
   { to: '/collectors', label: 'Collectors', mark: 'CO', tag: 'P1' },
@@ -151,6 +153,7 @@ function Shell() {
             <Route path="/capacity" element={<Capacity />} />
             <Route path="/collectors" element={<Collectors />} />
             <Route path="/resources" element={<ResourceRegistry />} />
+            <Route path="/ipv6" element={<Ipv6Plan />} />
             <Route path="/settings" element={<CollectorSettings />} />
             <Route path="/access" element={<Access />} />
             <Route path="/users" element={<Navigate to="/access?tab=users" replace />} />
