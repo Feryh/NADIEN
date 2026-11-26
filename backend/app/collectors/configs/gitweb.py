@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from ... import models as m
 from ...config import settings
 from ...services.areas import pop_code_for_hostname
+from ...services.resources import record_pseudowires
 from ...services.topology import discover_links, norm_host
 from ..observium.parsers import DeviceRecord, infer_pop, role_from_hostname, short_hostname
 from ..observium.sync import UNASSIGNED as UNASSIGNED_POP
@@ -247,6 +248,8 @@ class _Sync:
         apply_config(self.db, device, cfg, create_ports=config_only)
         if config_only:
             self._config_only_ports(device)
+        self.db.flush()  # a device created from this config needs its id for the pseudowire rows
+        self.report.counts["pseudowires"] += record_pseudowires(self.db, device.id, item.text, cfg.vendor)
         self.report.counts["applied"] += 1
         self._remember(item, "applied", device, created=created)
 

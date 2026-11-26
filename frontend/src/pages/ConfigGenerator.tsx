@@ -749,10 +749,48 @@ function L2vpnHostnameForm({ devices, baseQuery, standardPw, vlanMode, vcIds, on
           {Object.values(result.endpoints).filter((ep) => ep.label === 'A' || b).map((ep) => (
             <EndpointConfig key={ep.label} ep={ep} textUrl={(part) => `/api/configs/l2vpn/text?side=${ep.label}&part=${part}&${query}`} />
           ))}
+          <ReserveResources a={a} b={b} bHasPort={bMode === 'port' && !!bPort.trim()} rows={rows}
+            label={name.trim() || 'L2VPN'} />
           <p className="hint">Config ini belum tercatat sebagai layanan: untuk MoP dan pengajuan change, buat layanannya dari Customer Path atau Inventory → Service.</p>
         </>
       )}
       {query && !result && !error && <div className="muted">Menyusun konfigurasi…</div>}
+    </div>
+  )
+}
+
+/** Holds this L2VPN's VLANs (on the PEs that get an access port) and VC ids (between the two PEs) in the resource
+ * registry, so a parallel design does not take them before the change is pushed. */
+function ReserveResources({ a, b, bHasPort, rows, label }: {
+  a: DeviceOption | null
+  b: DeviceOption | null
+  bHasPort: boolean
+  rows: VcIdView[]
+  label: string
+}) {
+  const { can } = useAuth()
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
+  useEffect(() => setMessage(null), [a?.id, b?.id, rows.map((r) => `${r.vlan}:${r.vc_id}`).join(',')])
+  if (!a || !rows.length || !can('engineer')) return null
+  const items = rows.flatMap((r) => [
+    ...(r.vlan != null ? [{ kind: 'vlan', device_id: a.id, value: r.vlan }] : []),
+    ...(r.vlan != null && b && bHasPort ? [{ kind: 'vlan', device_id: b.id, value: r.vlan }] : []),
+    ...(b ? [{ kind: 'vc_id', device_id: a.id, peer_device_id: b.id, value: r.vc_id }] : []),
+  ])
+  async function reserve() {
+    try {
+      const r = await api.post<{ reservations: unknown[] }>('/resources/reservations', { label, items, source: 'generator' })
+      setMessage({ ok: true, text: `${r.reservations.length} VLAN/VC id direservasi untuk ${label} (lihat Resource Registry).` })
+    } catch (e) {
+      setMessage({ ok: false, text: (e as Error).message })
+    }
+  }
+  return (
+    <div className="reserve-resources">
+      <button type="button" onClick={reserve} title="Tahan VLAN dan VC id ini di Resource Registry sampai terlihat di config">
+        Reservasi {items.length} VLAN/VC id
+      </button>
+      {message && <span className={message.ok ? 'small' : 'small text-bad'}> {message.text}</span>}
     </div>
   )
 }

@@ -652,3 +652,114 @@ class LinkApproval(Base):
     # The port also carries another link (a bundle to a third-party NNI, one VLAN per far end): drawn even though
     # LLDP or the config already links one of its ports.
     shared: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+
+
+# --------------------------------------------------------------------------- resource registry (VLAN, VC id, IP)
+
+
+class ConfigPseudowire(Base):
+    """A pseudowire found in a device's RANCID config (neighbour loopback + VC/PW id), refreshed on every gitweb
+    apply: the VC ids already used towards each far PE, without fetching configs at request time."""
+
+    __tablename__ = "config_pseudowires"
+    __table_args__ = (UniqueConstraint("device_id", "peer_ip", "vc_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    peer_ip: Mapped[str] = mapped_column(String(64), index=True)
+    vc_id: Mapped[int] = mapped_column(BigInteger)
+
+
+class IpPool(TimestampMixin, Base):
+    """An address block NADIEN hands out prefixes from (P2P links, loopbacks, customer blocks)."""
+
+    __tablename__ = "ip_pools"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    cidr: Mapped[str] = mapped_column(String(64))
+    purpose: Mapped[str] = mapped_column(String(16), default="other")  # p2p | loopback | customer | other
+    default_prefix_len: Mapped[int | None] = mapped_column(Integer)
+    pop_id: Mapped[int | None] = mapped_column(ForeignKey("pops.id", ondelete="SET NULL"), index=True)
+    note: Mapped[str | None] = mapped_column(Text)
+
+
+class ResourceReservation(Base):
+    """A VLAN on a device, a VC id between two PEs, or an IPv4 prefix held for a planned service before it is in
+    any config. What is already configured is read from the inventory and RANCID instead of being stored here.
+
+    status: reserved -> fulfilled (seen in config/inventory) | released (by hand) ; reserved past expires_at = expired.
+    VC ids are stored with device_id < peer_device_id, so a pair has one key whichever end reserved it."""
+
+    __tablename__ = "resource_reservations"
+    __table_args__ = (Index("ix_resource_reservations_lookup", "kind", "device_id", "value"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16))  # vlan | vc_id | ipv4
+    device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    peer_device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    value: Mapped[int | None] = mapped_column(BigInteger)  # VLAN or VC id
+    prefix: Mapped[str | None] = mapped_column(String(64), index=True)  # IPv4 CIDR
+    pool_id: Mapped[int | None] = mapped_column(ForeignKey("ip_pools.id", ondelete="SET NULL"), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="reserved", index=True)
+    source: Mapped[str] = mapped_column(String(16), default="manual")  # manual | generator | change
+    label: Mapped[str] = mapped_column(String(120))
+    service_id: Mapped[int | None] = mapped_column(ForeignKey("services.id", ondelete="SET NULL"), index=True)
+    change_id: Mapped[int | None] = mapped_column(ForeignKey("change_requests.id", ondelete="SET NULL"), index=True)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+# --------------------------------------------------------------------------- IPv6 / SRv6 addressing plan
+
+
+class Ipv6City(TimestampMixin, Base):
+    """A city of the backbone team's IPv6 register (sheet '03 City Register'): its index and blocks."""
+
+    __tablename__ = "ipv6_cities"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(32), unique=True)
+    name: Mapped[str] = mapped_column(String(120))
+    region: Mapped[str] = mapped_column(String(64))
+    region_nibble: Mapped[int] = mapped_column(Integer)  # R in 2400:dc00:RCCN::/48
+    tier: Mapped[str] = mapped_column(String(16))  # METRO | STANDARD
+    city_index: Mapped[int] = mapped_column(Integer)  # CC
+    infra_block: Mapped[str] = mapped_column(String(64))  # /40 metro, /42 standard
+    residential_block: Mapped[str | None] = mapped_column(String(64))
+    cdn48: Mapped[str | None] = mapped_column(String(64))
+    server48: Mapped[str | None] = mapped_column(String(64))
+    oam48: Mapped[str | None] = mapped_column(String(64))
+
+
+class Ipv6PopMap(TimestampMixin, Base):
+    """A planner's decision for one NADIEN POP: which register city it belongs to (overrides the automatic match)."""
+
+    __tablename__ = "ipv6_pop_maps"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pop_id: Mapped[int] = mapped_column(ForeignKey("pops.id", ondelete="CASCADE"), unique=True)
+    city_code: Mapped[str | None] = mapped_column(String(32))  # None with decision "ignore" / "review"
+    decision: Mapped[str] = mapped_column(String(16), default="city")  # city | parent | ignore | review
+    note: Mapped[str | None] = mapped_column(Text)
+    updated_by: Mapped[str] = mapped_column(String(64))
+
+
+class Ipv6Assignment(TimestampMixin, Base):
+    """A device's place in the plan, kept so indexes stay stable when new devices appear: a node index in its
+    city (router) or an OAM address (L2 device). status: proposed (saved draft) | confirmed (agreed / configured)."""
+
+    __tablename__ = "ipv6_assignments"
+    __table_args__ = (UniqueConstraint("city_code", "node_index"), UniqueConstraint("oam_address"))
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), unique=True)
+    city_code: Mapped[str] = mapped_column(String(32), index=True)
+    band: Mapped[str] = mapped_column(String(16))  # backbone | access | oam
+    node_index: Mapped[int | None] = mapped_column(Integer)
+    oam_address: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="proposed")
+    assigned_by: Mapped[str] = mapped_column(String(64))
