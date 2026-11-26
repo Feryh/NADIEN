@@ -606,3 +606,7 @@ tbody tr.selected td { background: #0ea5e914; }
 .trend-pop-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-bottom: 6px; font-size: 12px; }
 .sync-schedule tr.sub-row td { padding-top: 2px; padding-bottom: 2px; background: var(--panel-2); }
 .sync-schedule .job-history { max-height: 420px; overflow-y: auto; }
+.registry .registry-list { max-height: 460px; overflow-y: auto; }
+.registry .card-inner { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
+.registry .reserve-form { align-items: end; }
+.reserve-resources { margin: 8px 0 4px; }

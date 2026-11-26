@@ -96,6 +96,9 @@ class Settings(BaseSettings):
     # unset = only the in-process daily sync-all above. Kubernetes declares its CronJobs here (deploy/k8s).
     sync_schedules: list[dict] | None = None
 
+    # Resource registry: a reservation not seen in any config after this many days stops blocking the value.
+    resource_reservation_days: int = 30
+
     # Link hotspots (utilization of the busiest links/ports): warning and critical levels.
     hotspot_warning_pct: float = 70.0
     hotspot_critical_pct: float = 90.0

@@ -652,3 +652,62 @@ class LinkApproval(Base):
     # The port also carries another link (a bundle to a third-party NNI, one VLAN per far end): drawn even though
     # LLDP or the config already links one of its ports.
     shared: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+
+
+# --------------------------------------------------------------------------- resource registry (VLAN, VC id, IP)
+
+
+class ConfigPseudowire(Base):
+    """A pseudowire found in a device's RANCID config (neighbour loopback + VC/PW id), refreshed on every gitweb
+    apply: the VC ids already used towards each far PE, without fetching configs at request time."""
+
+    __tablename__ = "config_pseudowires"
+    __table_args__ = (UniqueConstraint("device_id", "peer_ip", "vc_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    peer_ip: Mapped[str] = mapped_column(String(64), index=True)
+    vc_id: Mapped[int] = mapped_column(BigInteger)
+
+
+class IpPool(TimestampMixin, Base):
+    """An address block NADIEN hands out prefixes from (P2P links, loopbacks, customer blocks)."""
+
+    __tablename__ = "ip_pools"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    cidr: Mapped[str] = mapped_column(String(64))
+    purpose: Mapped[str] = mapped_column(String(16), default="other")  # p2p | loopback | customer | other
+    default_prefix_len: Mapped[int | None] = mapped_column(Integer)
+    pop_id: Mapped[int | None] = mapped_column(ForeignKey("pops.id", ondelete="SET NULL"), index=True)
+    note: Mapped[str | None] = mapped_column(Text)
+
+
+class ResourceReservation(Base):
+    """A VLAN on a device, a VC id between two PEs, or an IPv4 prefix held for a planned service before it is in
+    any config. What is already configured is read from the inventory and RANCID instead of being stored here.
+
+    status: reserved -> fulfilled (seen in config/inventory) | released (by hand) ; reserved past expires_at = expired.
+    VC ids are stored with device_id < peer_device_id, so a pair has one key whichever end reserved it."""
+
+    __tablename__ = "resource_reservations"
+    __table_args__ = (Index("ix_resource_reservations_lookup", "kind", "device_id", "value"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16))  # vlan | vc_id | ipv4
+    device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    peer_device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    value: Mapped[int | None] = mapped_column(BigInteger)  # VLAN or VC id
+    prefix: Mapped[str | None] = mapped_column(String(64), index=True)  # IPv4 CIDR
+    pool_id: Mapped[int | None] = mapped_column(ForeignKey("ip_pools.id", ondelete="SET NULL"), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="reserved", index=True)
+    source: Mapped[str] = mapped_column(String(16), default="manual")  # manual | generator | change
+    label: Mapped[str] = mapped_column(String(120))
+    service_id: Mapped[int | None] = mapped_column(ForeignKey("services.id", ondelete="SET NULL"), index=True)
+    change_id: Mapped[int | None] = mapped_column(ForeignKey("change_requests.id", ondelete="SET NULL"), index=True)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

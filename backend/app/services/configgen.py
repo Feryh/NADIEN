@@ -40,7 +40,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models as m
-from . import running_config
+from . import resources, running_config
 from .l2vpn_peers import VPLS_DIALECTS, pw_usage, vpls_instances
 from .vendors import DIALECT_LABELS, dialect_for
 
@@ -358,6 +358,8 @@ def _endpoint(db: Session, service: m.Service, customer: m.Customer | None, labe
         _check_kompella(contexts, addressing, config_source, device.id, dialect, out["notes"], warnings)
     elif kind == "l2vpn":
         _check_running_config(contexts, config_source, device.id, dialect, out["notes"], warnings)
+    if kind == "l2vpn":
+        _check_reservations(db, contexts, device.id, peer_id, warnings)
     config, rollback = _assemble(contexts, template, JOIN_TEMPLATES[dialect], warnings)
     unique = list(dict.fromkeys(warnings + [SYNTAX_WARNING]))
     out.update(config=config, rollback=rollback, commit=COMMIT[dialect] if config else [], warnings=unique)
@@ -441,6 +443,23 @@ def allocate_pw(used: set[str], count: int) -> list[str]:
             names.append(f"pw{number}")
         number += 1
     return names
+
+
+def _check_reservations(db: Session, contexts: list[_Ctx], device_id: int, peer_id: int | None,
+                        warnings: list[str]) -> None:
+    """VLANs and VC ids held in the resource registry. A warning, not a conflict: the reservation may be the one
+    made for this very service (the hostname form has no service to tell them apart)."""
+    vlans = {vlan: usage for vlan, usage in resources.vlans_in_use(db, device_id).items()
+             if any(u["source"] == "reservation" for u in usage)}
+    vc_ids = ({vc: usage for vc, usage in resources.vc_ids_in_use(db, device_id, peer_id).items()
+               if any(u["source"] == "reservation" for u in usage)} if peer_id and peer_id != device_id else {})
+    for ctx in contexts:
+        for what, held in ((f"VLAN {ctx.vlan}", vlans.get(ctx.vlan or -1) if ctx.access else None),
+                           (f"VC id {ctx.vc_id}", vc_ids.get(ctx.vc_id))):
+            labels = sorted({u["detail"] for u in held or [] if u["source"] == "reservation"})
+            if labels:
+                warnings.append(f"{what} direservasi untuk {', '.join(labels)} di registry resource: pastikan "
+                                "reservasi itu untuk layanan ini.")
 
 
 def _check_running_config(contexts: list[_Ctx], config_source: ConfigSource, device_id: int, dialect: str,

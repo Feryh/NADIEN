@@ -477,3 +477,42 @@ class SyncAllIn(BaseModel):
     rrd_days: int = Field(2, ge=1, le=365, description="RRD window for links that already have history")
     rrd_backfill_days: int = Field(90, ge=1, le=365, description="RRD window for links without history yet")
     gitweb_full: bool = Field(False, description="Re-read every gitweb file, not only those changed")
+
+
+# --------------------------------------------------------------------------- resource registry
+
+
+class ReservationItem(BaseModel):
+    """One value to hold: a VLAN on a device, a VC id between two PEs, or an IPv4 prefix (optionally in a pool)."""
+
+    kind: Literal["vlan", "vc_id", "ipv4"]
+    device_id: int | None = None
+    peer_device_id: int | None = Field(None, description="VC id: the other PE")
+    value: int | None = Field(None, ge=1, le=4294967295, description="VLAN or VC id")
+    prefix: str | None = Field(None, max_length=64, description="IPv4 CIDR, e.g. 10.20.0.0/30")
+    pool_id: int | None = None
+
+
+class ReservationIn(BaseModel):
+    items: list[ReservationItem] = Field(min_length=1, max_length=200)
+    label: str = Field(min_length=1, max_length=120, description="Customer / circuit / purpose")
+    note: str | None = Field(None, max_length=2000)
+    service_id: int | None = None
+    days: int | None = Field(None, ge=1, le=365, description="Days until the reservation expires; default from settings")
+    source: Literal["manual", "generator"] = "manual"
+
+
+class IpPoolIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    cidr: str = Field(min_length=9, max_length=64, description="IPv4 block, e.g. 10.20.0.0/22")
+    purpose: Literal["p2p", "loopback", "customer", "other"] = "other"
+    default_prefix_len: int | None = Field(None, ge=8, le=32)
+    pop_id: int | None = None
+    note: str | None = Field(None, max_length=2000)
+
+
+class IpAllocateIn(BaseModel):
+    prefix_len: int | None = Field(None, ge=8, le=32, description="Default: the pool's default_prefix_len")
+    label: str = Field(min_length=1, max_length=120)
+    note: str | None = Field(None, max_length=2000)
+    days: int | None = Field(None, ge=1, le=365)
