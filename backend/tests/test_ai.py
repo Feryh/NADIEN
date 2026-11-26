@@ -97,6 +97,8 @@ def test_should_report_refusal_when_claude_declines(monkeypatch):
 @pytest.mark.parametrize("kind, base_url, expected", [
     ("ollama", "http://localhost:11434", False),
     ("openai", "http://10.20.0.5:8001/v1", False),
+    ("ollama", "http://nadien-ollama:11434", False),
+    ("ollama", "http://nadien-ollama.nadien.svc:11434", False),
     ("openai", "https://api.openai.com/v1", True),
     ("anthropic", None, True),
 ])
