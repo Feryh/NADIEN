@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from .. import models as m
 from ..config import settings
 from ..database import get_db
-from ..services import cache
+from ..services import cache, sync_schedule
 from ..services.areas import AREA_ORDER, UNMAPPED_AREA, area_for_pop, area_position
 from .capacity import _Node, _context, _daily_peaks, _link_rows, all_link_capacity
 from .validation import _all as validation_rows
@@ -96,7 +96,11 @@ def _services(db: Session) -> dict[str, Any]:
 @router.get("/data-health")
 def data_health(db: Session = Depends(get_db)):
     """Gaps in the inventory that weaken topology, forecast and validation, and how fresh each sync is."""
-    return cache.cached(("dashboard", "data-health"), lambda: _data_health(db))
+    cached = cache.cached(("dashboard", "data-health"), lambda: _data_health(db))
+    # Not cached: a missed run writes nothing, so no data version would ever invalidate it.
+    schedule = sync_schedule.status(db)
+    return {**cached, "checks": [*cached["checks"], sync_schedule.health_check(schedule)],
+            "schedule_problems": schedule["problems"]}
 
 
 def _check(key: str, label: str, count: int, total: int, severity: str, hint: str) -> dict[str, Any]:

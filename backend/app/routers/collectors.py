@@ -20,7 +20,7 @@ from ..collectors.observium.sync import ALL_PARTS, CSR_SOURCE_NAME, SOURCE_NAME
 from ..config import settings
 from ..database import get_db
 from ..schemas import SyncAllIn
-from ..services import collector_settings
+from ..services import collector_settings, sync_schedule
 from ..services.topology import norm_host
 
 def _current_settings() -> None:
@@ -155,6 +155,20 @@ def _start(kind: str, fn) -> dict:
 def current_job():
     """The running sync (status, phase) or the last finished one with its full report."""
     return runner.current() or {"status": "idle"}
+
+
+@router.get("/jobs")
+def job_history(limit: int = Query(100, ge=1, le=500), kind: str | None = Query(None, max_length=32),
+                db: Session = Depends(get_db)):
+    """Finished and running syncs, newest first: kind, status, start/finish, duration, counts and sync-all steps."""
+    return {"jobs": sync_schedule.job_history(db, limit, kind)}
+
+
+@router.get("/schedule")
+def schedule_status(db: Session = Depends(get_db)):
+    """Expected sync schedules (NADIEN_SYNC_SCHEDULES) against the jobs that ran: ok, failed, missed, and which
+    sync blocked a missed run."""
+    return sync_schedule.status(db)
 
 
 @router.post("/all/sync", status_code=202)

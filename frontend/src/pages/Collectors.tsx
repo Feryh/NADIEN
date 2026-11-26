@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { STEP_LABELS, formatDuration, phaseLabel, stepSummary, syncAllSteps } from './syncAllReport'
+import SyncSchedulePanel from './SyncSchedulePanel'
 
 interface BackupList {
   directory: string
@@ -196,6 +197,8 @@ export default function Collectors() {
           CSR dan gitweb dilewati kalau belum di-set. Tombol per langkah di bawah tetap bisa dipakai.
         </p>
       </div>
+
+      <SyncSchedulePanel refreshKey={job?.status === 'running' ? null : job?.finished_at} />
 
       <div className="card">
         <div className="toolbar">

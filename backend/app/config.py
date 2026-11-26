@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = True
     schedule_timezone: str = "Asia/Jakarta"
     gitweb_daily_at: str | None = "02:30"  # HH:MM; empty disables the daily gitweb update
+    # Syncs expected to run on a schedule, checked against the jobs that ran (services/sync_schedule.py). JSON list;
+    # unset = only the in-process daily sync-all above. Kubernetes declares its CronJobs here (deploy/k8s).
+    sync_schedules: list[dict] | None = None
 
     # Link hotspots (utilization of the busiest links/ports): warning and critical levels.
     hotspot_warning_pct: float = 70.0
