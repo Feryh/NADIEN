@@ -41,20 +41,32 @@ function loadHistory(linkId: number): Promise<DayPeak[]> {
   return pending
 }
 
-/** The last TREND_DAYS of one link, or of several added up per day (an OLT's uplinks), against their capacity. */
+/** The last TREND_DAYS of one link (every sample, as stored), or of several added up (an OLT's uplinks). A link's
+ *  history holds one peak per day plus the live samples of the last day or two, so each link is reduced to its peak
+ *  per day before the links are added: adding every sample of a day counted 61 samples of one 8 Gbps link as 394 G. */
 export function combineTrend(histories: DayPeak[][], capacityGbps: number, now = Date.now()): TrendPoint[] {
   const since = now - TREND_DAYS * 86_400_000
-  const byDay = new Map<string, DayPeak>()
+  const recent = histories.map((history) => history.filter((p) => p.t >= since))
+  const points = recent.length === 1 ? recent[0] : sumDailyPeaks(recent)
+  return [...points].sort((a, b) => a.t - b.t)
+    .map((p) => ({ t: p.t, gbps: p.gbps, pct: capacityGbps ? (p.gbps / capacityGbps) * 100 : 0 }))
+}
+
+function sumDailyPeaks(histories: DayPeak[][]): DayPeak[] {
+  const total = new Map<string, DayPeak>()
   for (const history of histories) {
+    const peaks = new Map<string, DayPeak>()
     for (const p of history) {
-      if (p.t < since) continue
       const day = new Date(p.t).toISOString().slice(0, 10)
-      const sum = byDay.get(day)
-      byDay.set(day, sum ? { t: Math.min(sum.t, p.t), gbps: sum.gbps + p.gbps } : { ...p })
+      const best = peaks.get(day)
+      if (!best || p.gbps > best.gbps) peaks.set(day, p)
+    }
+    for (const [day, p] of peaks) {
+      const sum = total.get(day)
+      total.set(day, sum ? { t: Math.min(sum.t, p.t), gbps: sum.gbps + p.gbps } : { ...p })
     }
   }
-  return [...byDay.values()].sort((a, b) => a.t - b.t)
-    .map((p) => ({ ...p, pct: capacityGbps ? (p.gbps / capacityGbps) * 100 : 0 }))
+  return [...total.values()]
 }
 
 function loadTrend(linkIds: number[], capacityGbps: number): Promise<TrendPoint[]> {
