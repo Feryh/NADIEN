@@ -140,3 +140,15 @@ def test_should_delete_lldp_rows_older_than_the_age_limit(db):
                           remote_port_id="ge-0/0/1", collected_at=NOW - timedelta(days=20)))
     db.commit()
     assert discover_links(db).lldp_rows_deleted == 1
+
+
+def test_should_keep_a_twin_hidden_when_it_was_decommissioned_without_ever_being_polled(db):
+    pop = m.Pop(code="JKT", name="Jakarta")
+    db.add(pop)
+    db.flush()
+    twin = m.Device(hostname='"JKT-CSF-CLDMGMT-01"', pop_id=pop.id, status="decommissioned", hidden=True,
+                    gone_since=datetime(2000, 1, 1, tzinfo=timezone.utc))
+    db.add(twin)
+    db.commit()
+    discover_links(db)
+    assert twin.hidden is True
