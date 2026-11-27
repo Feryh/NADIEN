@@ -125,6 +125,8 @@ class Device(TimestampMixin, Base):
     # lldp_max_age_days its links and LLDP rows are deleted and it is `hidden` (services/lifecycle.py).
     gone_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     hidden: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # Known only from neighbours' LLDP (collectors/lldp_only.py); cleared once Observium polls it.
+    lldp_only: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     pop: Mapped[Pop] = relationship(back_populates="devices")
     interfaces: Mapped[list["Interface"]] = relationship(

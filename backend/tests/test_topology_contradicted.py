@@ -534,3 +534,58 @@ def test_should_not_draw_links_of_a_decommissioned_device_from_its_config(db):
     db.commit()
     assert links == 1 and discover_links(db).config_links == 0
     assert all(l.status == "down" for l in db.scalars(select(m.Link)))
+
+
+
+def _olt_chain(db) -> None:
+    """GTO-KTT-BNG1-M4 Eth-Trunk5 goes to GTO-TLB-OLT1-HW (not polled); GTO-TLB-OLT2-HW, behind it, serves cell site
+    SUL-GO-GTL-0086-ME1-ZTE. Someone approved the trunk onto the cell site's port (they share Eth-Trunk5.575)."""
+    pop = m.Pop(code="GTO", name="Gorontalo")
+    db.add(pop)
+    db.flush()
+    bng, olt2, csr = (m.Device(hostname=h, pop_id=pop.id) for h in ("GTO-KTT-BNG1-M4", "GTO-TLB-OLT2-HW", "SUL-GO-GTL-0086-ME1-ZTE"))
+    db.add_all([bng, olt2, csr])
+    db.flush()
+    trunk = m.Interface(device_id=bng.id, name="Eth-Trunk5", if_type="bundle", speed_gbps=40, oper_status="up",
+                        description="to_olt GTO-TLB-OLT1-HW")
+    site = m.Interface(device_id=csr.id, name="xgei-1/1/0/9", speed_gbps=10, oper_status="up")
+    db.add_all([trunk, site, m.Interface(device_id=olt2.id, name="ethernet0/9/2", speed_gbps=10, oper_status="up")])
+    db.flush()
+    for k, port in enumerate(("25GE0/5/25", "25GE0/5/26")):
+        db.add(m.Interface(device_id=bng.id, name=port, speed_gbps=10, oper_status="up", parent_id=trunk.id))
+        db.add(m.LldpNeighbor(device_id=bng.id, local_interface=port, remote_system_name="GTO-TLB-OLT1-HW",
+                              remote_port_id=f"ethernet0/8/{k}"))
+    db.add(m.LldpNeighbor(device_id=csr.id, local_interface="xgei-1/1/0/9", remote_system_name="GTO-TLB-OLT2-HW",
+                          remote_port_id="ethernet0/9/2"))
+    db.add(m.LinkApproval(a_interface_id=trunk.id, b_interface_id=site.id, approved_by="admin", shared=True))
+    db.commit()
+
+
+def _link_names(db) -> list[str]:
+    return sorted(f"{l.name} {l.discovery_source}" for l in db.scalars(select(m.Link)))
+
+
+def test_should_link_the_trunk_to_the_box_its_lldp_names_when_observium_does_not_poll_that_box(db):
+    _olt_chain(db)
+    discover_links(db)
+    olt1 = db.scalar(select(m.Device).where(m.Device.hostname == "GTO-TLB-OLT1-HW"))
+    assert olt1 is not None and olt1.lldp_only
+    assert [n for n in _link_names(db) if "OLT1" in n] == [
+        "GTO-KTT-BNG1-M4:25GE0/5/25 <> GTO-TLB-OLT1-HW:ethernet0/8/0 lldp",
+        "GTO-KTT-BNG1-M4:25GE0/5/26 <> GTO-TLB-OLT1-HW:ethernet0/8/1 lldp"]
+
+
+def test_should_not_draw_an_approved_link_when_lldp_links_both_its_ports_to_other_boxes(db):
+    _olt_chain(db)
+    discover_links(db)
+    assert not any("approved" in n for n in _link_names(db))
+
+
+def test_should_not_create_a_device_for_a_carrier_box_at_a_site_the_inventory_lacks(db):
+    _network(db, "")
+    kdr = db.scalar(select(m.Device).where(m.Device.hostname == "KDR-PUW-BNG1-M4"))
+    db.add(m.LldpNeighbor(device_id=kdr.id, local_interface="Eth-Trunk1", remote_system_name="JK-KYB-04-PE1-CSFCB1",
+                          remote_port_id="Hu0/1/0/5"))
+    db.commit()
+    discover_links(db)
+    assert db.scalar(select(m.Device).where(m.Device.hostname == "JK-KYB-04-PE1-CSFCB1")) is None
