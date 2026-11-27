@@ -4,7 +4,7 @@ import re
 from collections.abc import Callable
 
 from . import fiberhome, ios, iosxr, junos, sros, vrp, zte
-from .base import ParsedConfig
+from .base import ParsedConfig, unquote
 
 PARSERS: dict[str, Callable[[str], ParsedConfig]] = {
     "iosxr": iosxr.parse,
@@ -58,4 +58,8 @@ def parse_config(text: str, hint: str | None = None) -> ParsedConfig:
     vendor = detect_vendor(text, hint)
     if vendor is None:
         raise ValueError("Cannot detect config vendor; pass vendor=" + "|".join(PARSERS))
-    return PARSERS[vendor](text)
+    cfg = PARSERS[vendor](text)
+    if cfg.hostname:
+        # Dell OS writes `hostname "JKT-CSF-CLDMGMT-01"`: the quotes ended up in the device name.
+        cfg.hostname = unquote(cfg.hostname)
+    return cfg

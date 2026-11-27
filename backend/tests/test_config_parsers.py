@@ -91,3 +91,8 @@ def test_hint_wins_and_unknown_raises():
     assert detect_vendor("anything", "Junos") == "junos"
     with pytest.raises(ValueError):
         parse_config("just some text")
+
+
+def test_should_drop_quotes_from_hostname_when_config_quotes_it():
+    cfg = parse_config('hostname "JKT-CSF-CLDMGMT-01"\n!\ninterface ethernet1/1/1\n description TO-X\n!\n', "ios")
+    assert cfg.hostname == "JKT-CSF-CLDMGMT-01"
