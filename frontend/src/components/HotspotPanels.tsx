@@ -25,36 +25,55 @@ const POPOVER_WIDTH = 320
 
 interface TrendPoint { t: number; gbps: number; pct: number }
 
-// One request per link while the page is open: hovering back and forth must not refetch.
-const trendCache = new Map<number, Promise<TrendPoint[]>>()
+interface DayPeak { t: number; gbps: number }
 
-function loadTrend(linkId: number, capacityGbps: number): Promise<TrendPoint[]> {
-  let pending = trendCache.get(linkId)
+// One request per link while the page is open: hovering back and forth must not refetch.
+const historyCache = new Map<number, Promise<DayPeak[]>>()
+
+function loadHistory(linkId: number): Promise<DayPeak[]> {
+  let pending = historyCache.get(linkId)
   if (!pending) {
-    const since = Date.now() - TREND_DAYS * 86_400_000
     pending = api.get<LinkCapacityDetail>(`/capacity/links/${linkId}?months=1`).then((d) => d.history
-      .map((h) => ({ t: Date.parse(h.ts), gbps: Math.max(h.in_gbps, h.out_gbps) }))
-      .filter((p) => p.t >= since)
-      .sort((a, b) => a.t - b.t)
-      .map((p) => ({ ...p, pct: capacityGbps ? (p.gbps / capacityGbps) * 100 : 0 })))
-    pending.catch(() => trendCache.delete(linkId))  // a failed load is tried again on the next hover
-    trendCache.set(linkId, pending)
+      .map((h) => ({ t: Date.parse(h.ts), gbps: Math.max(h.in_gbps, h.out_gbps) })))
+    pending.catch(() => historyCache.delete(linkId))  // a failed load is tried again on the next hover
+    historyCache.set(linkId, pending)
   }
   return pending
 }
 
+/** The last TREND_DAYS of one link, or of several added up per day (an OLT's uplinks), against their capacity. */
+export function combineTrend(histories: DayPeak[][], capacityGbps: number, now = Date.now()): TrendPoint[] {
+  const since = now - TREND_DAYS * 86_400_000
+  const byDay = new Map<string, DayPeak>()
+  for (const history of histories) {
+    for (const p of history) {
+      if (p.t < since) continue
+      const day = new Date(p.t).toISOString().slice(0, 10)
+      const sum = byDay.get(day)
+      byDay.set(day, sum ? { t: Math.min(sum.t, p.t), gbps: sum.gbps + p.gbps } : { ...p })
+    }
+  }
+  return [...byDay.values()].sort((a, b) => a.t - b.t)
+    .map((p) => ({ ...p, pct: capacityGbps ? (p.gbps / capacityGbps) * 100 : 0 }))
+}
+
+function loadTrend(linkIds: number[], capacityGbps: number): Promise<TrendPoint[]> {
+  return Promise.all(linkIds.map(loadHistory)).then((histories) => combineTrend(histories, capacityGbps))
+}
+
 const dayLabel = (t: number) => new Date(t).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' })
 
-function TrendPopover({ linkId, capacityGbps, at, pinned, warningPct, criticalPct }: {
-  linkId: number; capacityGbps: number; at: DOMRect; pinned: boolean; warningPct: number; criticalPct: number
+function TrendPopover({ linkIds, capacityGbps, at, pinned, warningPct, criticalPct, empty }: {
+  linkIds: number[]; capacityGbps: number; at: DOMRect; pinned: boolean; warningPct: number; criticalPct: number; empty?: string
 }) {
   const [points, setPoints] = useState<TrendPoint[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const key = linkIds.join(",")
   useEffect(() => {
     setPoints(null)
     setError(null)
-    loadTrend(linkId, capacityGbps).then(setPoints).catch((e: Error) => setError(e.message))
-  }, [linkId, capacityGbps])
+    loadTrend(linkIds, capacityGbps).then(setPoints).catch((e: Error) => setError(e.message))
+  }, [key, capacityGbps])  // eslint-disable-line react-hooks/exhaustive-deps -- key stands for linkIds
 
   // Fixed to the viewport: the table scrolls sideways and would clip a popover inside it.
   const left = Math.max(8, Math.min(at.right - POPOVER_WIDTH, window.innerWidth - POPOVER_WIDTH - 8))
@@ -71,7 +90,7 @@ function TrendPopover({ linkId, capacityGbps, at, pinned, warningPct, criticalPc
       </div>
       {error && <div className="error-text small">{error}</div>}
       {!points && !error && <div className="muted small">Memuat…</div>}
-      {points && !points.length && <div className="muted small">Belum ada histori {TREND_DAYS} hari terakhir untuk link ini.</div>}
+      {points && !points.length && <div className="muted small">{empty ?? `Belum ada histori ${TREND_DAYS} hari terakhir untuk link ini.`}</div>}
       {points && points.length > 0 && (
         <LineChart width={POPOVER_WIDTH - 24} height={140} data={points} margin={{ top: 6, right: 8, bottom: 0, left: -18 }}>
           <CartesianGrid stroke="#64748b" strokeOpacity={0.25} />
@@ -89,22 +108,30 @@ function TrendPopover({ linkId, capacityGbps, at, pinned, warningPct, criticalPc
   )
 }
 
+/** Hover shows a row's 7-day trend; a click keeps it open (touch screens have no hover). */
+function useTrendHover() {
+  const [trend, setTrend] = useState<{ id: number; at: DOMRect; pinned: boolean } | null>(null)
+  const cellProps = (id: number) => ({
+    className: 'trend-cell',
+    onMouseEnter: (e: MouseEvent<HTMLElement>) => {
+      const at = e.currentTarget.getBoundingClientRect()
+      setTrend((t) => (t?.pinned ? t : { id, at, pinned: false }))
+    },
+    onMouseLeave: () => setTrend((t) => (t?.pinned ? t : null)),
+    onClick: (e: MouseEvent<HTMLElement>) => {
+      const at = e.currentTarget.getBoundingClientRect()
+      setTrend((t) => (t?.pinned && t.id === id ? null : { id, at, pinned: true }))
+    },
+  })
+  return { trend, cellProps }
+}
+
 export function LinkHotspotsPanel() {
   const [data, setData] = useState<Hotspots | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [kind, setKind] = useState<'' | 'bundle' | 'physical'>('')
   const [q, setQ] = useState('')
-  // Hover shows a link's 7-day trend; a click keeps it open (touch screens have no hover).
-  const [trend, setTrend] = useState<{ linkId: number; at: DOMRect; pinned: boolean } | null>(null)
-  const hoverTrend = (linkId: number, e: MouseEvent<HTMLElement>) => {
-    const at = e.currentTarget.getBoundingClientRect()
-    setTrend((t) => (t?.pinned ? t : { linkId, at, pinned: false }))
-  }
-  const leaveTrend = () => setTrend((t) => (t?.pinned ? t : null))
-  const pinTrend = (linkId: number, e: MouseEvent<HTMLElement>) => {
-    const at = e.currentTarget.getBoundingClientRect()
-    setTrend((t) => (t?.pinned && t.linkId === linkId ? null : { linkId, at, pinned: true }))
-  }
+  const { trend, cellProps } = useTrendHover()
 
   useEffect(() => {
     api.get<Hotspots>('/capacity/hotspots?limit=2000').then(setData).catch((e: Error) => setError(e.message))
@@ -153,8 +180,7 @@ export function LinkHotspotsPanel() {
                 <td className="num">{fmtG(r.capacity_gbps)}</td>
                 <td className="num">{fmtG(r.current_gbps)}</td>
                 <td className="num muted">{r.live_gbps != null ? fmtG(r.live_gbps) : '–'}</td>
-                <td className="trend-cell" onMouseEnter={(e) => hoverTrend(r.link_id, e)} onMouseLeave={leaveTrend}
-                  onClick={(e) => pinTrend(r.link_id, e)}>
+                <td {...cellProps(r.link_id)}>
                   <Pct value={r.utilization_pct} level={r.level} /> <span className="trend-hint" aria-hidden="true">📈</span>
                 </td>
               </tr>
@@ -166,8 +192,8 @@ export function LinkHotspotsPanel() {
       </div>
       <Pager paged={paged} unit="link" />
       {trend && data && (() => {
-        const row = data.links.rows.find((r) => r.link_id === trend.linkId)
-        return row ? <TrendPopover linkId={row.link_id} capacityGbps={row.capacity_gbps} at={trend.at} pinned={trend.pinned}
+        const row = data.links.rows.find((r) => r.link_id === trend.id)
+        return row ? <TrendPopover linkIds={[row.link_id]} capacityGbps={row.capacity_gbps} at={trend.at} pinned={trend.pinned}
           warningPct={data.thresholds.warning_pct} criticalPct={data.thresholds.critical_pct} /> : null
       })()}
     </div>
@@ -177,6 +203,7 @@ export function LinkHotspotsPanel() {
 export function OltHotspotsPanel() {
   const [data, setData] = useState<OltCapacity | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const { trend, cellProps } = useTrendHover()
 
   useEffect(() => {
     api.get<OltCapacity>('/capacity/olts?limit=2000').then(setData).catch((e: Error) => setError(e.message))
@@ -200,7 +227,8 @@ export function OltHotspotsPanel() {
             <tr><th>OLT</th><th>POP</th>
               <th title="Total ONT online dibagi kapasitas seluruh port PON (port × maks ONT per port)">Utilisasi GPON</th>
               <th className="num" title={`Port PON aktif (ada ONT) dari seluruh port PON; penuh = terisi ≥ ${data?.thresholds.warning_pct ?? 70}% dari ${data?.thresholds.pon_max_onts ?? 64} ONT; dan port terpadat`}>Port PON</th>
-              <th className="num">Uplink</th><th>Utilisasi uplink</th></tr>
+              <th className="num">Uplink</th>
+              <th title="Link: peak hari lengkap terakhir (persentil 95 sampel 5 menit, lonjakan sekali dilewati). Tanpa link: rate live port uplink pada sync utilisasi terakhir. Arahkan mouse atau klik untuk tren 7 hari">Utilisasi uplink</th></tr>
           </thead>
           <tbody>
             {paged.pageRows.map((r) => (
@@ -217,9 +245,12 @@ export function OltHotspotsPanel() {
                   {r.busiest_pon_pct != null && <div className="muted small">terpadat {r.busiest_pon_onts}/{data?.thresholds.pon_max_onts ?? 64} ONT</div>}</td>
                 <td className="num">{r.uplinks ? `${r.uplinks} ${r.uplink_source === 'port' ? 'port' : 'link'} · ${fmtG(r.uplink_capacity_gbps)}` : '–'}
                   {r.uplinks_down > 0 && <> <span className="pill pill-bad">{r.uplinks_down} down</span></>}</td>
-                <td>{r.uplinks
+                <td {...(r.uplinks ? cellProps(r.device_id) : {})}>{r.uplinks
                   ? <><Pct value={r.uplink_utilization_pct} level={r.uplink_level} /> <span className="muted small">{fmtG(r.uplink_current_gbps)}</span>
-                    {r.uplink_source === 'port' && <div className="muted small" title="Perangkat lawan tidak ada di inventory/LLDP: dibaca dari port uplink OLT (rate live)">dari port, tanpa link</div>}</>
+                    {' '}<span className="trend-hint" aria-hidden="true">📈</span>
+                    {r.uplink_source === 'port'
+                      ? <div className="muted small" title="Perangkat lawan tidak ada di inventory/LLDP: dibaca dari port uplink OLT (rate live)">live · dari port, tanpa link</div>
+                      : <div className="muted small" title="Peak hari lengkap terakhir: persentil 95 sampel 5 menit, lonjakan sekali dilewati">peak harian (p95)</div>}</>
                   : <span className="muted">tanpa uplink</span>}</td>
               </tr>
             ))}
@@ -229,6 +260,12 @@ export function OltHotspotsPanel() {
         </table>
       </div>
       <Pager paged={paged} unit="OLT" />
+      {trend && data && (() => {
+        const row = data.rows.find((r) => r.device_id === trend.id)
+        return row ? <TrendPopover linkIds={row.uplink_link_ids} capacityGbps={row.uplink_capacity_gbps} at={trend.at}
+          pinned={trend.pinned} warningPct={data.thresholds.warning_pct} criticalPct={data.thresholds.critical_pct}
+          empty={row.uplink_link_ids.length ? undefined : 'Uplink dibaca dari port OLT (tanpa link): belum ada histori.'} /> : null
+      })()}
     </div>
   )
 }

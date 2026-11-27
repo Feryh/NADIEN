@@ -158,6 +158,8 @@ export interface OltCapacity {
     /** link: discovered uplinks; port: no link reaches the OLT, read on its own uplink ports in service. */
     uplink_source: 'link' | 'port' | null
     uplink_capacity_gbps: number
+    /** Links whose histories add up to the uplink trend; empty when read on the OLT's own ports. */
+    uplink_link_ids: number[]
     uplink_current_gbps: number
     uplink_utilization_pct: number
     uplink_level: HotspotLevel
