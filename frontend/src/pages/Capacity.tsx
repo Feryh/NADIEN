@@ -77,6 +77,7 @@ export default function Capacity() {
 function LinkTable({ selectedId, onOpen }: { selectedId: number | null; onOpen: (id: number) => void }) {
   const [links, setLinks] = useState<LinkCapacity[]>([])
   const [filter, setFilter] = useState<CapacityColor | ''>('')
+  const [showViaNni, setShowViaNni] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -87,14 +88,26 @@ function LinkTable({ selectedId, onOpen }: { selectedId: number | null; onOpen: 
   }, [])
 
   // Thousands of links (sorted soonest-to-exhaust): paged, "Semua" renders every one.
-  const rows = useMemo(() => (filter ? links.filter((l) => l.color === filter) : links), [links, filter])
-  const paged = usePaged(rows, filter)
+  // A link riding a carrier NNI is planned on the NNI (tab "NNI & port bersama"): its own trend is one site's share
+  // of a port many sites fill, so it stays out of this forecast unless asked for.
+  const viaNniCount = useMemo(() => links.filter((l) => l.via_nni).length, [links])
+  const rows = useMemo(
+    () => links.filter((l) => (showViaNni || !l.via_nni) && (!filter || l.color === filter)),
+    [links, filter, showViaNni],
+  )
+  const paged = usePaged(rows, `${filter}|${showViaNni}`)
 
   return (
     <>
         <div className="toolbar">
           <h2>Link Capacity & Forecast</h2>
           <div className="spacer" />
+          {viaNniCount > 0 && (
+            <label className="muted small" title="Link yang lewat NNI carrier diplanning di tab NNI & port bersama">
+              <input type="checkbox" checked={showViaNni} onChange={(e) => setShowViaNni(e.target.checked)} />{' '}
+              Tampilkan {viaNniCount} link via NNI
+            </label>
+          )}
           <select value={filter} onChange={(e) => setFilter(e.target.value as CapacityColor | '')}>
             <option value="">Semua warna</option>
             <option value="red">Merah</option>

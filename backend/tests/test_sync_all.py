@@ -292,6 +292,14 @@ def test_should_start_sync_all_once_per_day(sched):
     assert first is not None and second is None and calls == [1]
 
 
+def test_should_record_the_started_job_on_the_claimed_run_when_sync_all_starts(sched, db):
+    factory, runner = sched
+    job_id = scheduler.tick(runner, factory, now=_at(2, 31), start_job=lambda db, p: {})
+    runner.wait(5)
+    db.expire_all()
+    assert db.scalar(select(m.ScheduledRun.job_id).where(m.ScheduledRun.job == "sync-all")) == job_id
+
+
 def test_should_not_start_sync_all_when_gitweb_daily_run_already_ran_today(sched, db):
     factory, runner = sched
     db.add(m.ScheduledRun(job="gitweb", run_date="2026-11-03"))

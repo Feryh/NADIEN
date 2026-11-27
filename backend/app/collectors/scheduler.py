@@ -13,7 +13,7 @@ from collections.abc import Callable
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
@@ -59,11 +59,12 @@ def _release(session_factory: sessionmaker, job: str, run_date: str) -> None:
 
 
 def _record(session_factory: sessionmaker, job: str, run_date: str, job_id: str) -> None:
+    # One UPDATE, not load-then-flush: the job it names is already running and writing on its own, and an ORM flush
+    # raises StaleDataError when the row it loaded no longer matches (seen with a shared SQLite connection).
     with session_factory() as db:
-        row = db.query(m.ScheduledRun).filter_by(job=job, run_date=run_date).one_or_none()
-        if row is not None:
-            row.job_id = job_id
-            db.commit()
+        db.execute(update(m.ScheduledRun).where(m.ScheduledRun.job == job, m.ScheduledRun.run_date == run_date)
+                   .values(job_id=job_id))
+        db.commit()
 
 
 def tick(runner: JobRunner, session_factory: sessionmaker = SessionLocal, now: datetime | None = None,

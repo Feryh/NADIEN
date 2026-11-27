@@ -24,9 +24,13 @@ UTILIZATION = {"key": "util", "label": "Utilisasi", "kinds": ["observium-utiliza
 
 @pytest.fixture
 def schedules(monkeypatch):
+    real_status = sync_schedule.status
+
     def use(*specs: dict) -> None:
         monkeypatch.setattr(settings, "sync_schedules", list(specs))
         monkeypatch.setattr(settings, "schedule_timezone", "Asia/Jakarta")
+        # The API reads the wall clock; the jobs below are placed around NOW, so a later day would see missed runs.
+        monkeypatch.setattr(sync_schedule, "status", lambda db, now=None: real_status(db, now or NOW))
 
     return use
 
