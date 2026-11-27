@@ -100,6 +100,23 @@ def test_should_list_olt_when_uplink_utilization_reaches_threshold(db, client):
     assert (row["uplink_utilization_pct"], row["uplink_level"]) == (95.0, "critical")
 
 
+def test_should_name_the_live_uplink_links_when_olt_uplink_trend_is_drawn_from_them(db, client):
+    _olt(db, pon_online=[10], uplink_gbps=7.2)
+    live = db.scalars(select(m.Link)).one()
+    row = client.get("/api/capacity/olts?only_hotspots=false").json()["rows"][0]
+    assert row["uplink_link_ids"] == [live.id]
+
+
+def test_should_name_no_uplink_links_when_olt_uplink_is_read_on_its_ports(db, client):
+    olt = _olt(db, pon_online=[10], uplink_gbps=0.0)
+    db.execute(m.Link.__table__.delete())
+    db.add(m.Interface(device_id=olt.id, name="XFP 20/1", speed_gbps=10, admin_status="up", oper_status="up",
+                       in_gbps=7.6, out_gbps=0.3))
+    db.commit()
+    row = client.get("/api/capacity/olts?only_hotspots=false").json()["rows"][0]
+    assert row["uplink_link_ids"] == []
+
+
 def test_should_count_only_live_uplinks_when_a_stale_link_shares_the_port(db, client):
     olt = _olt(db, pon_online=[10], uplink_gbps=7.2)
     live = db.scalars(select(m.Link)).one()

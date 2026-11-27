@@ -509,6 +509,8 @@ def _olt_uplink(links: list[s.LinkCapacity], ports: list[Any]) -> dict[str, Any]
     pct = utilization_pct(current_gbps, capacity_gbps) if capacity_gbps > 0 else 0.0
     return {"uplinks": len(live) if source == "link" else len(ports) if source == "port" else 0,
             "uplink_source": source, "uplink_capacity_gbps": round(capacity_gbps, 3),
+            # The links whose histories add up to the uplink's 7-day trend (none when read on the OLT's own ports).
+            "uplink_link_ids": [u.link_id for u in live] if source == "link" else [],
             "uplink_current_gbps": round(current_gbps, 3), "uplink_utilization_pct": round(pct, 1),
             "uplink_level": hotspot_level(pct), "uplinks_down": sum(1 for u in links if u.status == "down")}
 
