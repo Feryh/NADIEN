@@ -238,7 +238,7 @@ export function OltHotspotsPanel() {
           <thead>
             <tr><th>OLT</th><th>POP</th>
               <th title="Total ONT online dibagi kapasitas seluruh port PON (port × maks ONT per port)">Utilisasi GPON</th>
-              <th className="num" title={`Port PON aktif (ada ONT) dari seluruh port PON; penuh = terisi ≥ ${data?.thresholds.warning_pct ?? 70}% dari ${data?.thresholds.pon_max_onts ?? 64} ONT; dan port terpadat`}>Port PON</th>
+              <th className="num" title={`Port PON aktif (ada ONT) dari seluruh port PON; port yang terisi ≥ ${data?.thresholds.warning_pct ?? 70}% dari ${data?.thresholds.pon_max_onts ?? 64} ONT; dan port terpadat`}>Port PON</th>
               <th className="num">Uplink</th>
               <th title="Link: peak hari lengkap terakhir (persentil 95 sampel 5 menit, lonjakan sekali dilewati). Tanpa link: rate live port uplink pada sync utilisasi terakhir. Arahkan mouse atau klik untuk tren 7 hari">Utilisasi uplink</th></tr>
           </thead>
@@ -253,8 +253,9 @@ export function OltHotspotsPanel() {
                   : <span className="muted small" title="OLT tidak melaporkan jumlah ONT">tanpa data ONT</span>}</td>
                 <td className="num">
                   <span className="muted small">aktif</span> {r.pon_used} <span className="muted small">/ {r.pon_total}</span>
-                  {' · '}<span className="muted small">penuh</span> {r.pon_hot_ports}
-                  {r.busiest_pon_pct != null && <div className="muted small">terpadat {r.busiest_pon_onts}/{data?.thresholds.pon_max_onts ?? 64} ONT</div>}</td>
+                  {' · '}<span className="muted small">≥{data?.thresholds.warning_pct ?? 70}%:</span> {r.pon_hot_ports}
+                  {r.busiest_pon_pct != null && <div className="muted small">
+                    terpadat {r.busiest_pon_onts}/{data?.thresholds.pon_max_onts ?? 64} ONT ({r.busiest_pon_pct.toFixed(0)}%)</div>}</td>
                 <td className="num">{r.uplinks ? `${r.uplinks} ${r.uplink_source === 'port' ? 'port' : 'link'} · ${fmtG(r.uplink_capacity_gbps)}` : '–'}
                   {r.uplinks_down > 0 && <> <span className="pill pill-bad">{r.uplinks_down} down</span></>}</td>
                 <td {...(r.uplinks ? cellProps(r.device_id) : {})}>{r.uplinks
