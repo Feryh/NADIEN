@@ -199,7 +199,7 @@ export function OltHotspotsPanel() {
           <thead>
             <tr><th>OLT</th><th>POP</th>
               <th title="Total ONT online dibagi kapasitas seluruh port PON (port × maks ONT per port)">Utilisasi GPON</th>
-              <th className="num" title="Port PON yang terisi ≥ threshold, dan port terpadat">Port PON ≥ threshold</th>
+              <th className="num" title={`Port PON aktif (ada ONT) dari seluruh port PON; penuh = terisi ≥ ${data?.thresholds.warning_pct ?? 70}% dari ${data?.thresholds.pon_max_onts ?? 64} ONT; dan port terpadat`}>Port PON</th>
               <th className="num">Uplink</th><th>Utilisasi uplink</th></tr>
           </thead>
           <tbody>
@@ -211,7 +211,9 @@ export function OltHotspotsPanel() {
                   ? <><Pct value={r.pon_utilization_pct} level={r.pon_level} />{' '}
                     <span className="muted small">{r.onts_online.toLocaleString('id-ID')} / {r.pon_capacity_onts.toLocaleString('id-ID')} ONT</span></>
                   : <span className="muted small" title="OLT tidak melaporkan jumlah ONT">tanpa data ONT</span>}</td>
-                <td className="num">{r.pon_hot_ports} <span className="muted small">/ {r.pon_total}</span>
+                <td className="num">
+                  <span className="muted small">aktif</span> {r.pon_used} <span className="muted small">/ {r.pon_total}</span>
+                  {' · '}<span className="muted small">penuh</span> {r.pon_hot_ports}
                   {r.busiest_pon_pct != null && <div className="muted small">terpadat {r.busiest_pon_onts}/{data?.thresholds.pon_max_onts ?? 64} ONT</div>}</td>
                 <td className="num">{r.uplinks ? `${r.uplinks} ${r.uplink_source === 'port' ? 'port' : 'link'} · ${fmtG(r.uplink_capacity_gbps)}` : '–'}
                   {r.uplinks_down > 0 && <> <span className="pill pill-bad">{r.uplinks_down} down</span></>}</td>
