@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     # LLDP rows not refreshed this many days before the newest ones belong to a box Observium no longer polls
     # (replaced, removed): discovery ignores them instead of drawing links it can no longer see.
     lldp_max_age_days: int = 7
+    # A neighbour LLDP names that Observium does not poll (GTO-TLB-OLT1-HW behind GTO-KTT-BNG1-M4 Eth-Trunk5) becomes
+    # an LLDP-only device when its name follows the network's convention at a site the inventory has.
+    lldp_create_devices: bool = True
 
     # RANCID config archive used by Observium (Observium's API does not expose configs).
     # Either a local/mounted path, or SFTP to the Observium server with a read-only SSH account.

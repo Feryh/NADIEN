@@ -385,17 +385,40 @@ class _Discovery:
 
     def from_approvals(self) -> None:
         """Pairs an engineer confirmed by hand (LinkApproval), unless LLDP or the config already linked either port:
-        once the box in between is in the inventory, what LLDP sees wins and the approval is no longer used.
+        once the box in between is in the inventory, what LLDP sees wins and the approval is no longer used. A shared
+        approval yields too once LLDP links both its ports to other boxes: GTO-KTT-BNG1-M4 Eth-Trunk5 was approved onto
+        cell site SUL-GO-GTL-0086-ME1-ZTE, which LLDP puts behind GTO-TLB-OLT2-HW while the trunk goes to
+        GTO-TLB-OLT1-HW; the pair only shares an L3 sub-interface (Eth-Trunk5.575), not a cable.
         Approved pairs may share a port: a hub's trunk often reaches several sites over a carrier, one sub-interface
         each (MKS-BSW-BNG2-M8 Eth-Trunk40.100 to KDR, .400 to GTO)."""
         taken = set(self.covered)
+        lldp_far = self.lldp_far_devices()
         for approval in self.db.scalars(select(LinkApproval)):
             a, b = self.ifaces.get(approval.a_interface_id), self.ifaces.get(approval.b_interface_id)
             if a is None or b is None:
                 continue
+            if lldp_far.get(a.id, set()) - {b.device_id} and lldp_far.get(b.id, set()) - {a.device_id}:
+                self.stats["approvals_overruled_by_lldp"] += 1
+                continue
             # A shared approval rides a port that also carries another link (third-party NNI, one VLAN per far end).
             if approval.shared or (a.id not in taken and b.id not in taken):
                 self.add(a, b, "approved")
+
+    def lldp_far_devices(self) -> dict[int, set[int]]:
+        """Port -> the devices LLDP links it to; a member's far device counts for its bundle too."""
+        far: dict[int, set[int]] = {}
+        for adj in self.adjacencies.values():
+            if adj.source != "lldp":
+                continue
+            for pair in (*adj.member_pairs, frozenset((adj.a.id, adj.b.id))):
+                ends = [self.ifaces[i] for i in pair if i in self.ifaces]
+                if len(ends) != 2:
+                    continue
+                for mine, other in ((ends[0], ends[1]), (ends[1], ends[0])):
+                    for port_id in (mine.id, mine.parent_id):
+                        if port_id:
+                            far.setdefault(port_id, set()).add(other.device_id)
+        return far
 
     def one_sided(self, pair: frozenset[int], sides: dict[int, list[Interface]]) -> None:
         """Only one end describes the other (typical for a cell-site uplink to a metro box that is
@@ -551,8 +574,11 @@ def discover_links(db: Session, valid_iface_ids: set[int] | None = None) -> Disc
     phantom ports left by earlier runs; without it nothing is treated as phantom."""
     from .lifecycle import run_lifecycle  # late: lifecycle imports models only, topology is imported early
 
+    from ..collectors.lldp_only import sync_lldp_only_devices
+
     now = datetime.now(timezone.utc)
     lifecycle = run_lifecycle(db, now)
+    sync_lldp_only_devices(db)
     run = _Discovery(db)
     unresolved = run.from_lldp()
     run.from_config()
